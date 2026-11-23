@@ -19,6 +19,7 @@ export class Game {
   private scoreA: HTMLElement;
   private scoreB: HTMLElement;
   private status: HTMLElement;
+  private possessionEl: HTMLElement;
   private debugStats: HTMLElement;
   private chargeEl: HTMLElement;
   private chargeFill: HTMLElement;
@@ -37,6 +38,7 @@ export class Game {
     this.scoreA = document.getElementById('score-a')!;
     this.scoreB = document.getElementById('score-b')!;
     this.status = document.getElementById('status')!;
+    this.possessionEl = document.getElementById('possession')!;
     this.debugStats = document.getElementById('debug-stats')!;
     this.chargeEl = document.getElementById('charge')!;
     this.chargeFill = document.getElementById('charge-fill')!;
@@ -78,7 +80,7 @@ export class Game {
     }
 
     this.lastZoom = this.sim.isZoomOut(intent);
-    this.view.sync(this.sim, this.lastZoom);
+    this.view.sync(this.sim, this.lastZoom, dt);
     this.view.render();
     this.updateHud();
 
@@ -90,6 +92,23 @@ export class Game {
     this.scoreB.textContent = String(this.sim.match.score[1]);
     this.status.textContent = this.sim.match.statusMessage;
 
+    const b = this.sim.ball;
+    this.possessionEl.classList.remove('you', 'orange', 'free');
+    if (b.possession === 'held' && b.ownerId !== null) {
+      if (b.ownerId === this.sim.humanId) {
+        this.possessionEl.textContent = 'You have the ball';
+        this.possessionEl.classList.add('you');
+      } else {
+        const owner = this.sim.players[b.ownerId];
+        const team = owner?.team === 1 ? 'Orange' : 'Blue';
+        this.possessionEl.textContent = `${team} has the ball`;
+        this.possessionEl.classList.add(owner?.team === 1 ? 'orange' : 'you');
+      }
+    } else {
+      this.possessionEl.textContent = 'Ball free — press E near it';
+      this.possessionEl.classList.add('free');
+    }
+
     if (this.sim.charge.active) {
       this.chargeEl.classList.add('visible');
       this.chargeFill.style.width = `${Math.round(this.sim.charge.amount * 100)}%`;
@@ -100,7 +119,6 @@ export class Game {
     this.debugStats.style.display = this.tunables.showDebugStats ? 'block' : 'none';
     if (this.tunables.showDebugStats) {
       const h = this.sim.getHuman();
-      const b = this.sim.ball;
       const owner =
         b.ownerId === null ? 'free' : b.ownerId === this.sim.humanId ? 'you' : `p${b.ownerId}`;
       const ballDist = h.position.distanceTo(b.position);

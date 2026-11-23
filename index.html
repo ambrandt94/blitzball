@@ -96,6 +96,34 @@
         text-align: center;
         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
       }
+      #possession {
+        position: absolute;
+        top: 92px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 6px 16px;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        background: rgba(6, 16, 32, 0.82);
+        border: 2px solid rgba(255, 224, 102, 0.7);
+        color: #ffe066;
+        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+      }
+      #possession.you {
+        border-color: #2b9fff;
+        color: #9fd4ff;
+      }
+      #possession.orange {
+        border-color: #ff6a3d;
+        color: #ffb090;
+      }
+      #possession.free {
+        border-color: #ffe066;
+        color: #ffe066;
+      }
       #charge {
         position: absolute;
         bottom: 120px;
@@ -192,6 +220,7 @@
           </div>
         </div>
         <div id="status">Greybox — claim, pass, shoot</div>
+        <div id="possession" class="free">Ball free</div>
         <div id="debug-stats"></div>
         <div id="hints">
           <div><kbd>WASD</kbd> thrust · <kbd>Space</kbd>/<kbd>C</kbd> up/down · <kbd>Shift</kbd> sprint</div>
