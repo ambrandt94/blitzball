@@ -6,6 +6,9 @@ export function defaultTunables(): Tunables {
     // World-Y reads clearer in greybox; goal-axis remains a Dev toggle (Alex unsure).
     goalAxisUp: false,
     zoomHoldMode: true,
+    // Standard FPS / over-shoulder: mouse-right → look right, mouse-up → look up.
+    mouseLookInvertX: false,
+    mouseLookInvertY: false,
     wallEscapeSpeed: WALL.escapeSpeed,
     wallEscapeAngle: WALL.escapeAngle,
     claimRadius: PLAYER.claimRadius,
@@ -48,6 +51,8 @@ export class DevPanel {
 
     this.bool('Goal-axis up (vs world Y)', 'goalAxisUp');
     this.bool('Zoom = hold (off = toggle)', 'zoomHoldMode');
+    this.bool('Invert mouse look X', 'mouseLookInvertX');
+    this.bool('Invert mouse look Y', 'mouseLookInvertY');
     this.bool('Charge ghost trail', 'showChargeGhost');
     this.bool('Debug stats', 'showDebugStats');
     this.range('Wall escape speed', 'wallEscapeSpeed', 10, 45, 0.5);

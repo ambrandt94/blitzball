@@ -233,8 +233,12 @@ export class Simulation {
   }
 
   private applyLook(intent: InputIntent): void {
-    this.yaw -= intent.lookDelta.x;
-    this.pitch -= intent.lookDelta.y;
+    // Standard FPS: mouse-right / stick-right → yaw+, look right;
+    // mouse-up (negative movementY) → pitch+, look up (via subtracting lookDelta.y).
+    const sx = this.tunables.mouseLookInvertX ? -1 : 1;
+    const sy = this.tunables.mouseLookInvertY ? -1 : 1;
+    this.yaw += intent.lookDelta.x * sx;
+    this.pitch -= intent.lookDelta.y * sy;
     const maxPitch = Math.PI / 2 - 0.08;
     this.pitch = THREE.MathUtils.clamp(this.pitch, -maxPitch, maxPitch);
   }

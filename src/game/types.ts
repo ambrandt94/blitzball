@@ -9,6 +9,10 @@ export type PossessionState = 'free' | 'held';
 export interface Tunables {
   goalAxisUp: boolean;
   zoomHoldMode: boolean; // true = hold V/LB; false = toggle
+  /** When true, flip yaw so mouse-right looks left (non-standard). */
+  mouseLookInvertX: boolean;
+  /** When true, flip pitch so mouse-up looks down (flight-sim style). */
+  mouseLookInvertY: boolean;
   wallEscapeSpeed: number;
   wallEscapeAngle: number;
   claimRadius: number;
