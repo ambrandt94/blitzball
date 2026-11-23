@@ -661,8 +661,11 @@ export class SceneView {
     const humanCharge =
       player.role === 'human' && player.id === sim.humanId && sim.charge.active ? sim.charge : null;
     const pose = player.actionPose;
+    // Aiming keeps the carry pose. The shoot charge would pull both arms back
+    // and leave the ball floating in front of an empty chest.
+    const aimingShot = sim.shotAim.active && player.id === sim.humanId;
 
-    if (pose === 'hold') {
+    if (pose === 'hold' || aimingShot) {
       yL = 1.05;
       yR = -1.05;
       zL = 0.55;

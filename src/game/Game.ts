@@ -174,7 +174,7 @@ export class Game {
         `up ${this.tunables.goalAxisUp ? 'goal-axis' : 'world-Y'}`,
         `zoom ${this.lastZoom ? 'out' : 'chase'} (${this.tunables.zoomHoldMode ? 'hold' : 'toggle'})`,
         this.sim.shotAim.active
-          ? `arc ${this.sim.shotAim.origin.distanceTo(this.sim.shotAim.target).toFixed(1)}u`
+          ? `arc ${b.position.distanceTo(this.sim.shotAim.target).toFixed(1)}u bend ${Math.hypot(this.sim.shotAim.bendRight, this.sim.shotAim.bendUp).toFixed(1)}`
           : 'arc idle',
         `shoulder ${this.sim.shoulderLateral.toFixed(2)}`,
         this.sim.aimCursor.visible ? `cursor ${this.sim.aimCursor.kind}` : 'cursor off',

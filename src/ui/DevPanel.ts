@@ -25,6 +25,9 @@ export function defaultTunables(): Tunables {
     swimAnim: true,
     strafeSpeedMult: PLAYER.strafeSpeedMult,
     arcAimDistance: SHOT_ARC.aimDistance,
+    arcAimSpeed: SHOT_ARC.aimSpeed,
+    arcBendSpeed: SHOT_ARC.bendSpeed,
+    arcBendLimit: SHOT_ARC.bendLimit,
     arcHeight: SHOT_ARC.height,
     arcChargeFlatten: SHOT_ARC.chargeFlatten,
     defenseActive: false,
@@ -87,6 +90,9 @@ export class DevPanel {
     this.range('Shoulder transition', 'shoulderTransition', 1, 18, 0.1);
     this.range('Aim cursor distance', 'aimCursorDistance', 6, 48, 0.5);
     this.range('Arc aim distance', 'arcAimDistance', 8, 90, 0.5);
+    this.range('Arc aim speed', 'arcAimSpeed', 4, 70, 1);
+    this.range('Arc bend speed', 'arcBendSpeed', 0, 140, 1);
+    this.range('Arc bend limit', 'arcBendLimit', 0, 1.5, 0.05);
     this.range('Arc height', 'arcHeight', 0, 0.8, 0.01);
     this.range('Arc charge flatten', 'arcChargeFlatten', 0, 1, 0.05);
     this.range('Teammate pass delay', 'teammatePassDelay', 0.3, 3, 0.05);

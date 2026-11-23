@@ -36,11 +36,17 @@ export interface Tunables {
   swimAnim: boolean;
   /** Speed multiplier while right-click strafe/aim is held. */
   strafeSpeedMult: number;
-  /** Look-ray distance from the locked shot origin to the aim marker. */
+  /** Look-ray distance from the hand to the marker when an aim starts. */
   arcAimDistance: number;
-  /** Lob height as a fraction of the origin→target chord. */
+  /** World units per second WASD slides the aim marker. */
+  arcAimSpeed: number;
+  /** World units of Bezier-control bend per radian of mouse while aiming. */
+  arcBendSpeed: number;
+  /** Cap on mouse bend as a fraction of the hand→marker chord. */
+  arcBendLimit: number;
+  /** Resting lob height as a fraction of the hand→marker chord. */
   arcHeight: number;
-  /** How much a full charge flattens the lob (0 = no flatten, 1 = flat). */
+  /** How much a full charge flattens the resting lob (0 = no flatten, 1 = flat). */
   arcChargeFlatten: number;
   /** When false, the opposing team holds its spots and does not chase or tackle. */
   defenseActive: boolean;
