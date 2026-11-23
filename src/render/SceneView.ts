@@ -515,9 +515,16 @@ export class SceneView {
       this.faceBody(mesh, p.facing, p.up);
       this.poseLimbs(mesh, p, sim, dt);
       const ring = mesh.getObjectByName('carrierRing');
+      const locked = sim.shotAim.lockId === p.id;
       if (ring) {
-        ring.visible = p.hasBall;
+        ring.visible = p.hasBall || locked;
         ring.rotation.z = this.pulse * 2.5;
+        const ringMat = ring instanceof THREE.Mesh ? (ring.material as THREE.MeshBasicMaterial) : null;
+        if (ringMat) {
+          ringMat.color.setHex(locked ? 0xc6ff6a : 0xffe066);
+          const pulse = locked ? 1.35 + Math.sin(this.pulse * 9) * 0.12 : 1;
+          ring.scale.setScalar(pulse);
+        }
       }
       const badge = mesh.getObjectByName('teamBadge');
       if (badge) badge.lookAt(this.camera.position);
@@ -584,6 +591,13 @@ export class SceneView {
       this.shotMarker.position.copy(sim.shotAim.target);
       this.shotMarkerRing.position.copy(sim.shotAim.target);
       this.shotMarkerRing.lookAt(this.camera.position);
+      const locked = sim.shotAim.lockId !== null;
+      const markerHex = locked ? 0xc6ff6a : 0xffe066;
+      (this.shotMarker.material as THREE.MeshBasicMaterial).color.setHex(markerHex);
+      (this.shotMarkerRing.material as THREE.MeshBasicMaterial).color.setHex(locked ? 0xf4ffe4 : 0xfff4cc);
+      const lockPulse = locked ? 1.2 + Math.sin(this.pulse * 9) * 0.12 : 1;
+      this.shotMarker.scale.setScalar(lockPulse);
+      this.shotMarkerRing.scale.setScalar(lockPulse);
     }
 
     this.syncAimCursor(sim);
@@ -611,7 +625,10 @@ export class SceneView {
     if (cursor.kind === 'wall') color = 0xd5e6f2;
     else if (cursor.kind === 'ball') color = 0xffe066;
     else if (cursor.kind === 'goal') color = 0xc8ff9a;
-    else if (cursor.kind === 'player') color = TEAM_COLORS[cursor.team ?? 0] ?? 0x9af3ff;
+    else if (cursor.kind === 'player') {
+      const lockedOn = sim.shotAim.lockId !== null && sim.shotAim.active;
+      color = lockedOn ? 0xc6ff6a : (TEAM_COLORS[cursor.team ?? 0] ?? 0x9af3ff);
+    }
     this.aimCursorMat.color.setHex(color);
     this.aimCursorMat.opacity = acquired ? 1 : 0.95;
   }

@@ -34,18 +34,23 @@ export class InputManager {
   private lmbPressed = false;
   private rmbDown = false;
   private wheel = 0;
+  /** Set when pointerrawupdate already recorded this frame's motion. */
+  private sawPointerDelta = false;
   private canvas: HTMLElement;
 
   constructor(canvas: HTMLElement) {
     this.canvas = canvas;
-    window.addEventListener('keydown', this.onKeyDown);
-    window.addEventListener('keyup', this.onKeyUp);
+    window.addEventListener('keydown', this.onKeyDown, true);
+    window.addEventListener('keyup', this.onKeyUp, true);
     window.addEventListener('blur', this.onBlur);
     canvas.addEventListener('click', this.onClick);
     document.addEventListener('pointerlockchange', this.onPointerLock);
-    document.addEventListener('mousemove', this.onMouseMove);
-    canvas.addEventListener('mousedown', this.onMouseDown);
-    window.addEventListener('mouseup', this.onMouseUp);
+    // While a button is held, some Chrome builds report movementX/Y as 0 on
+    // mousemove and put the real delta on coalesced pointerrawupdate events.
+    document.addEventListener('pointerrawupdate', this.onPointerRaw, true);
+    document.addEventListener('mousemove', this.onMouseMove, true);
+    canvas.addEventListener('mousedown', this.onMouseDown, true);
+    window.addEventListener('mouseup', this.onMouseUp, true);
     // Right-click is strafe/aim. Kill the browser menu on press and on the
     // contextmenu event, including when the pointer is not yet locked.
     canvas.addEventListener('contextmenu', this.onContextMenu, { capture: true });
@@ -54,14 +59,15 @@ export class InputManager {
   }
 
   dispose(): void {
-    window.removeEventListener('keydown', this.onKeyDown);
-    window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('keydown', this.onKeyDown, true);
+    window.removeEventListener('keyup', this.onKeyUp, true);
     window.removeEventListener('blur', this.onBlur);
     this.canvas.removeEventListener('click', this.onClick);
     document.removeEventListener('pointerlockchange', this.onPointerLock);
-    document.removeEventListener('mousemove', this.onMouseMove);
-    this.canvas.removeEventListener('mousedown', this.onMouseDown);
-    window.removeEventListener('mouseup', this.onMouseUp);
+    document.removeEventListener('pointerrawupdate', this.onPointerRaw, true);
+    document.removeEventListener('mousemove', this.onMouseMove, true);
+    this.canvas.removeEventListener('mousedown', this.onMouseDown, true);
+    window.removeEventListener('mouseup', this.onMouseUp, true);
     this.canvas.removeEventListener('contextmenu', this.onContextMenu, { capture: true });
     document.removeEventListener('contextmenu', this.onContextMenu, { capture: true });
     this.canvas.removeEventListener('wheel', this.onWheel);
@@ -78,9 +84,12 @@ export class InputManager {
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
-    if (e.repeat) return;
     if (this.typingTarget(e)) return;
+    // Repeats still count. Pointer lock can leave a dev-panel control focused,
+    // and the first keydown is then dropped; the repeats are the only signal
+    // that the key is physically down.
     this.keys.add(e.code);
+    if (e.repeat) return;
     this.justPressed.add(e.code);
     if (KEYS.up.includes(e.code) || e.code === 'Space') e.preventDefault();
   };
@@ -104,10 +113,37 @@ export class InputManager {
     // Unlock/lock often delivers a cursor-warp mousemove. Drop it so the view does not flick.
     this.mouseDelta.x = 0;
     this.mouseDelta.y = 0;
+    this.sawPointerDelta = false;
+    if (this.pointerLocked) this.blurGameFocus();
+  };
+
+  /** Sum coalesced deltas. The parent event's own movementX is 0 on some held-button frames. */
+  private movementOf(e: PointerEvent): { x: number; y: number } {
+    const coal = e.getCoalescedEvents?.() ?? [];
+    if (coal.length > 0) {
+      let x = 0;
+      let y = 0;
+      for (const c of coal) {
+        x += c.movementX;
+        y += c.movementY;
+      }
+      if (x !== 0 || y !== 0) return { x, y };
+    }
+    return { x: e.movementX, y: e.movementY };
+  }
+
+  private onPointerRaw = (event: Event): void => {
+    if (!this.pointerLocked) return;
+    const e = event as PointerEvent;
+    const d = this.movementOf(e);
+    if (d.x === 0 && d.y === 0) return;
+    this.mouseDelta.x += d.x;
+    this.mouseDelta.y += d.y;
+    this.sawPointerDelta = true;
   };
 
   private onMouseMove = (e: MouseEvent): void => {
-    if (!this.pointerLocked) return;
+    if (!this.pointerLocked || this.sawPointerDelta) return;
     this.mouseDelta.x += e.movementX;
     this.mouseDelta.y += e.movementY;
   };
@@ -115,14 +151,22 @@ export class InputManager {
   private onMouseDown = (e: MouseEvent): void => {
     // The click that captures the pointer is not a shot or a pass.
     if (!this.pointerLocked) return;
+    // A drag starting here would swallow later keydowns. Aiming is not a drag.
+    e.preventDefault();
+    this.blurGameFocus();
     if (e.button === 0) {
       this.lmbDown = true;
       this.lmbPressed = true;
     }
     if (e.button === 2) {
       this.rmbDown = true;
-      e.preventDefault();
     }
+  };
+
+  /** Pointer lock does not move focus. A dev slider would keep eating WASD. */
+  private blurGameFocus(): void {
+    const el = document.activeElement;
+    if (el instanceof HTMLElement && el !== document.body && el !== this.canvas) el.blur();
   };
 
   private onMouseUp = (e: MouseEvent): void => {
@@ -182,6 +226,9 @@ export class InputManager {
   }
 
   private typingTarget(e: KeyboardEvent): boolean {
+    // Captured pointer means the player is in the arena, even if a range
+    // input kept document focus. Those controls are not text fields.
+    if (this.pointerLocked) return false;
     const t = e.target;
     if (!(t instanceof HTMLElement)) return false;
     return t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
@@ -247,6 +294,8 @@ export class InputManager {
 
     this.justPressed.clear();
     this.lmbPressed = false;
+    this.sawPointerDelta = false;
+    if (this.pointerLocked) this.blurGameFocus();
 
     return intent;
   }

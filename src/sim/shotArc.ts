@@ -67,7 +67,9 @@ export function arcControl(
  *
  * The resting lob is `heightFrac` of the chord, pushed along `up`.
  * `bendRight` / `bendUp` are extra world-unit offsets along camera right / up
- * (the mouse). Both are taken perpendicular to the chord, so the bend changes
+ * (the mouse). `handFrac` is a chord-fraction bias along camera right (the
+ * throwing hand) and shares the mouse cap. Both are taken perpendicular to the
+ * chord, so the bend changes
  * the curve without moving the target. Mouse bend is capped at
  * `maxBendFrac` × chord, then the point is pulled toward the chord midpoint
  * until it lies inside the sphere of radius `limit`. A sphere is convex, so
@@ -84,6 +86,7 @@ export function shapedControl(
   bendUp: number,
   maxBendFrac: number,
   limit: number,
+  handFrac = 0,
 ): THREE.Vector3 {
   _mid.copy(origin).lerp(target, 0.5);
   _chord.copy(target).sub(origin);
@@ -106,7 +109,9 @@ export function shapedControl(
   if (_axisRight.lengthSq() < 1e-6) _axisRight.crossVectors(_chord, _axisUp);
   _axisRight.normalize();
 
-  let br = bendRight;
+  // Hand bias is part of the same capped offset as the mouse, so a strong
+  // bend still owns the shape. With no mouse input the bias is the whole curve.
+  let br = bendRight + handFrac * len;
   let bu = bendUp;
   const mouseLen = Math.hypot(br, bu);
   const maxMouse = Math.max(0, maxBendFrac) * len;

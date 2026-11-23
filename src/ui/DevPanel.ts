@@ -29,7 +29,10 @@ export function defaultTunables(): Tunables {
     arcBendSpeed: SHOT_ARC.bendSpeed,
     arcBendLimit: SHOT_ARC.bendLimit,
     arcHeight: SHOT_ARC.height,
-    arcChargeFlatten: SHOT_ARC.chargeFlatten,
+    arcHandCurve: SHOT_ARC.handCurve,
+    shotPowerRate: SHOT_ARC.powerRate,
+    shotPowerAngle: SHOT_ARC.powerAngle,
+    teammateLockRadius: SHOT_ARC.teammateLockRadius,
     defenseActive: false,
     teammatePassDelay: PRACTICE.passDelay,
     shoulderOffset: CAMERA.shoulderOffset,
@@ -94,7 +97,10 @@ export class DevPanel {
     this.range('Arc bend speed', 'arcBendSpeed', 0, 140, 1);
     this.range('Arc bend limit', 'arcBendLimit', 0, 1.5, 0.05);
     this.range('Arc height', 'arcHeight', 0, 0.8, 0.01);
-    this.range('Arc charge flatten', 'arcChargeFlatten', 0, 1, 0.05);
+    this.range('Arc hand curve', 'arcHandCurve', 0, 0.6, 0.01);
+    this.range('Power fill rate', 'shotPowerRate', 0.2, 4, 0.05);
+    this.range('Power angle', 'shotPowerAngle', 0, 0.4, 0.01);
+    this.range('Teammate lock radius', 'teammateLockRadius', 0.3, 3, 0.05);
     this.range('Teammate pass delay', 'teammatePassDelay', 0.3, 3, 0.05);
   }
 

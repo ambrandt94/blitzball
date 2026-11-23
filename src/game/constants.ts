@@ -32,9 +32,11 @@ export const PLAYER = {
 /**
  * Underwater shots are not gravity arcs. The ball stays in the hand while
  * aiming and flies a quadratic Bezier from that hand to the marker.
- * `height` is the resting lob as a fraction of the chord, along camera up.
- * Mouse bend is added on top, in world units, capped at `bendLimit` × chord.
- * `chargeFlatten` scales the resting lob down as the charge fills.
+ * `height` is a small resting lob as a fraction of the chord, along camera up.
+ * `handCurve` bends that lob toward the throwing (screen-right) hand from the
+ * first frame of the hold. Mouse bend is added on top, in world units, capped
+ * at `bendLimit` × chord. `powerRate` oscillates the shot meter; `powerAngle`
+ * is the extra loft at the top of that meter.
  */
 export const SHOT_ARC = {
   /** Look-ray distance to the marker when the aim starts. */
@@ -45,8 +47,15 @@ export const SHOT_ARC = {
   bendSpeed: 42,
   /** Max mouse bend as a fraction of the origin→target chord. */
   bendLimit: 0.85,
-  height: 0.34,
-  chargeFlatten: 0.55,
+  height: 0.06,
+  /** Fraction of the chord, toward camera-right / the right hand. */
+  handCurve: 0.12,
+  /** Empty-to-full sweeps per second. A full up-and-down cycle is two sweeps. */
+  powerRate: 1.15,
+  /** Extra loft, fraction of the chord, at power 1. */
+  powerAngle: 0.08,
+  /** Added to the player radius when the look ray acquires a teammate. */
+  teammateLockRadius: 1.15,
   minDuration: 0.28,
   samples: 22,
   /** Marker cannot sit closer than this to the ball. */

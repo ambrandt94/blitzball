@@ -55,6 +55,7 @@ export class Game {
   private debugStats: HTMLElement;
   private chargeEl: HTMLElement;
   private chargeFill: HTMLElement;
+  private chargeLabel: HTMLElement;
 
   constructor(app: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -74,6 +75,7 @@ export class Game {
     this.debugStats = document.getElementById('debug-stats')!;
     this.chargeEl = document.getElementById('charge')!;
     this.chargeFill = document.getElementById('charge-fill')!;
+    this.chargeLabel = document.getElementById('charge-label')!;
 
     this.onResize();
     window.addEventListener('resize', this.onResize);
@@ -103,8 +105,10 @@ export class Game {
 
     const fresh = this.input.sample(dt);
     if (fresh.toggleDev) this.dev.toggle();
-    // Mouse look is a per-frame distance, not a per-tick rate. Apply it even
-    // when this frame does not run a physics step, and never more than once.
+    // Mouse look is a per-frame distance, not a per-tick rate. Arm the shot
+    // first so this sample's drag bends the arc instead of yawing the camera.
+    // Apply it even when this frame does not run a physics step, and never more than once.
+    this.sim.armShotAim(fresh);
     this.sim.applyFrameLook(fresh);
     this.sim.nudgeAimDistance(fresh.aimRangeDelta);
     this.sim.noteZoomToggle(fresh);
@@ -157,7 +161,11 @@ export class Game {
 
     if (this.sim.charge.active) {
       this.chargeEl.classList.add('visible');
-      this.chargeFill.style.width = `${Math.round(this.sim.charge.amount * 100)}%`;
+      const pct = Math.round(this.sim.charge.amount * 100);
+      this.chargeFill.style.width = `${pct}%`;
+      const shooting = this.sim.charge.kind === 'shoot';
+      this.chargeLabel.textContent = shooting ? `Power ${pct}` : `Pass ${pct}`;
+      this.chargeEl.classList.toggle('shot', shooting);
     } else {
       this.chargeEl.classList.remove('visible');
     }
