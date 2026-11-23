@@ -1,0 +1,116 @@
+import { FIXED_DT } from './constants';
+import { InputManager } from '../input/InputManager';
+import { SceneView } from '../render/SceneView';
+import { Simulation } from '../sim/Simulation';
+import { DevPanel, defaultTunables } from '../ui/DevPanel';
+
+export class Game {
+  private sim: Simulation;
+  private view: SceneView;
+  private input: InputManager;
+  private dev: DevPanel;
+  private canvas: HTMLCanvasElement;
+  private accum = 0;
+  private last = 0;
+  private running = false;
+  private lastZoom = false;
+  private tunables = defaultTunables();
+
+  private scoreA: HTMLElement;
+  private scoreB: HTMLElement;
+  private status: HTMLElement;
+  private debugStats: HTMLElement;
+  private chargeEl: HTMLElement;
+  private chargeFill: HTMLElement;
+
+  constructor(app: HTMLElement) {
+    this.canvas = document.createElement('canvas');
+    app.insertBefore(this.canvas, app.firstChild);
+
+    this.view = new SceneView(this.canvas);
+    this.input = new InputManager(this.canvas);
+    this.sim = new Simulation(this.tunables);
+    this.dev = new DevPanel(document.getElementById('dev-panel')!, this.tunables, () => {
+      this.sim.orientAfterUpToggle();
+    });
+
+    this.scoreA = document.getElementById('score-a')!;
+    this.scoreB = document.getElementById('score-b')!;
+    this.status = document.getElementById('status')!;
+    this.debugStats = document.getElementById('debug-stats')!;
+    this.chargeEl = document.getElementById('charge')!;
+    this.chargeFill = document.getElementById('charge-fill')!;
+
+    this.onResize();
+    window.addEventListener('resize', this.onResize);
+  }
+
+  start(): void {
+    this.running = true;
+    this.last = performance.now();
+    requestAnimationFrame(this.frame);
+  }
+
+  private onResize = (): void => {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    this.canvas.width = Math.floor(w * Math.min(devicePixelRatio, 2));
+    this.canvas.height = Math.floor(h * Math.min(devicePixelRatio, 2));
+    this.canvas.style.width = `${w}px`;
+    this.canvas.style.height = `${h}px`;
+    this.view.setSize(w, h);
+  };
+
+  private frame = (now: number): void => {
+    if (!this.running) return;
+    const dt = Math.min(0.05, (now - this.last) / 1000);
+    this.last = now;
+    this.accum += dt;
+
+    const intent = this.input.sample();
+    if (intent.toggleDev) this.dev.toggle();
+
+    let steps = 0;
+    while (this.accum >= FIXED_DT && steps < 5) {
+      this.sim.step(FIXED_DT, intent);
+      this.accum -= FIXED_DT;
+      steps++;
+    }
+
+    this.lastZoom = this.sim.isZoomOut(intent);
+    this.view.sync(this.sim, this.lastZoom);
+    this.view.render();
+    this.updateHud();
+
+    requestAnimationFrame(this.frame);
+  };
+
+  private updateHud(): void {
+    this.scoreA.textContent = String(this.sim.match.score[0]);
+    this.scoreB.textContent = String(this.sim.match.score[1]);
+    this.status.textContent = this.sim.match.statusMessage;
+
+    if (this.sim.charge.active) {
+      this.chargeEl.classList.add('visible');
+      this.chargeFill.style.width = `${Math.round(this.sim.charge.amount * 100)}%`;
+    } else {
+      this.chargeEl.classList.remove('visible');
+    }
+
+    this.debugStats.style.display = this.tunables.showDebugStats ? 'block' : 'none';
+    if (this.tunables.showDebugStats) {
+      const h = this.sim.getHuman();
+      const b = this.sim.ball;
+      const owner =
+        b.ownerId === null ? 'free' : b.ownerId === this.sim.humanId ? 'you' : `p${b.ownerId}`;
+      const ballDist = h.position.distanceTo(b.position);
+      this.debugStats.textContent = [
+        `spd ${h.velocity.length().toFixed(1)}`,
+        `ball spd ${b.velocity.length().toFixed(1)} dist ${ballDist.toFixed(1)} (${owner})`,
+        `up ${this.tunables.goalAxisUp ? 'goal-axis' : 'world-Y'}`,
+        `zoom ${this.lastZoom ? 'out' : 'chase'} (${this.tunables.zoomHoldMode ? 'hold' : 'toggle'})`,
+        `3v3 stubs: 4 inactive  AI:1`,
+      ].join('\n');
+    }
+  }
+}

@@ -1,0 +1,211 @@
+import * as THREE from 'three';
+import { INPUT } from '../game/constants';
+import type { InputIntent } from '../game/types';
+
+const KEYS = {
+  forward: ['KeyW', 'ArrowUp'],
+  back: ['KeyS', 'ArrowDown'],
+  left: ['KeyA', 'ArrowLeft'],
+  right: ['KeyD', 'ArrowRight'],
+  up: ['Space'],
+  down: ['KeyC', 'ControlLeft'],
+  sprint: ['ShiftLeft', 'ShiftRight'],
+  claim: ['KeyE'],
+  drop: ['KeyQ'],
+  pass: ['KeyF'],
+  zoom: ['KeyV'],
+  reset: ['KeyR'],
+  toggleDev: ['Backquote'],
+};
+
+function deadzone(v: number, dz = INPUT.stickDeadzone): number {
+  if (Math.abs(v) < dz) return 0;
+  const sign = Math.sign(v);
+  return sign * ((Math.abs(v) - dz) / (1 - dz));
+}
+
+export class InputManager {
+  private keys = new Set<string>();
+  private justPressed = new Set<string>();
+  private mouseDelta = { x: 0, y: 0 };
+  private pointerLocked = false;
+  private lmbDown = false;
+  private lmbPressed = false;
+  private rmbPressed = false;
+  private canvas: HTMLElement;
+
+  constructor(canvas: HTMLElement) {
+    this.canvas = canvas;
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
+    window.addEventListener('blur', this.onBlur);
+    canvas.addEventListener('click', this.onClick);
+    document.addEventListener('pointerlockchange', this.onPointerLock);
+    document.addEventListener('mousemove', this.onMouseMove);
+    canvas.addEventListener('mousedown', this.onMouseDown);
+    window.addEventListener('mouseup', this.onMouseUp);
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  dispose(): void {
+    window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('blur', this.onBlur);
+    this.canvas.removeEventListener('click', this.onClick);
+    document.removeEventListener('pointerlockchange', this.onPointerLock);
+    document.removeEventListener('mousemove', this.onMouseMove);
+    this.canvas.removeEventListener('mousedown', this.onMouseDown);
+    window.removeEventListener('mouseup', this.onMouseUp);
+  }
+
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (e.repeat) return;
+    this.keys.add(e.code);
+    this.justPressed.add(e.code);
+    if (KEYS.up.includes(e.code) || e.code === 'Space') e.preventDefault();
+  };
+
+  private onKeyUp = (e: KeyboardEvent): void => {
+    this.keys.delete(e.code);
+  };
+
+  private onBlur = (): void => {
+    this.keys.clear();
+    this.lmbDown = false;
+  };
+
+  private onClick = (): void => {
+    if (!this.pointerLocked) this.canvas.requestPointerLock();
+  };
+
+  private onPointerLock = (): void => {
+    this.pointerLocked = document.pointerLockElement === this.canvas;
+  };
+
+  private onMouseMove = (e: MouseEvent): void => {
+    if (!this.pointerLocked) return;
+    this.mouseDelta.x += e.movementX;
+    this.mouseDelta.y += e.movementY;
+  };
+
+  private onMouseDown = (e: MouseEvent): void => {
+    if (e.button === 0) {
+      this.lmbDown = true;
+      this.lmbPressed = true;
+    }
+    if (e.button === 2) this.rmbPressed = true;
+  };
+
+  private onMouseUp = (e: MouseEvent): void => {
+    if (e.button === 0) this.lmbDown = false;
+  };
+
+  private anyDown(codes: string[]): boolean {
+    return codes.some((c) => this.keys.has(c));
+  }
+
+  private anyJust(codes: string[]): boolean {
+    return codes.some((c) => this.justPressed.has(c));
+  }
+
+  private readGamepad(): Partial<InputIntent> | null {
+    const pads = navigator.getGamepads?.() ?? [];
+    const pad = pads.find((p) => p && p.connected);
+    if (!pad) return null;
+
+    const lx = deadzone(pad.axes[0] ?? 0);
+    const ly = deadzone(pad.axes[1] ?? 0);
+    const rx = deadzone(pad.axes[2] ?? 0);
+    const ry = deadzone(pad.axes[3] ?? 0);
+
+    const buttons = pad.buttons;
+    const a = buttons[0]?.pressed ?? false;
+    const x = buttons[2]?.pressed ?? false;
+    const b = buttons[1]?.pressed ?? false;
+    const lb = buttons[4]?.pressed ?? false;
+    const lt = (buttons[6]?.value ?? 0) > 0.4;
+    const rt = (buttons[7]?.value ?? 0) > 0.15;
+    const rtPressed = buttons[7]?.pressed && (buttons[7].value ?? 0) > 0.5;
+    const rs = buttons[11]?.pressed ?? false;
+
+    // Edge detect for gamepad face buttons via previous frame would be better;
+    // for greybox treat held as intent edge each frame when just crossing — simplified: use pressed each frame for claim via A edge via value.
+    return {
+      move: new THREE.Vector3(lx, 0, -ly),
+      lookDelta: {
+        x: rx * INPUT.gamepadLookSens,
+        y: ry * INPUT.gamepadLookSens,
+      },
+      up: (buttons[5]?.pressed ? 1 : 0) - (lt ? 1 : 0),
+      sprint: buttons[10]?.pressed ?? false,
+      claim: a,
+      drop: b,
+      pass: x,
+      shoot: Boolean(rtPressed),
+      shootHeld: rt,
+      passHeld: x,
+      zoomOut: lb,
+      zoomTogglePressed: rs,
+      resetBall: buttons[8]?.pressed ?? false,
+    };
+  }
+
+  sample(): InputIntent {
+    const move = new THREE.Vector3(
+      (this.anyDown(KEYS.right) ? 1 : 0) - (this.anyDown(KEYS.left) ? 1 : 0),
+      0,
+      (this.anyDown(KEYS.forward) ? 1 : 0) - (this.anyDown(KEYS.back) ? 1 : 0),
+    );
+    if (move.lengthSq() > 1) move.normalize();
+
+    const lookDelta = {
+      x: this.mouseDelta.x * INPUT.mouseSensitivity,
+      y: this.mouseDelta.y * INPUT.mouseSensitivity,
+    };
+    this.mouseDelta.x = 0;
+    this.mouseDelta.y = 0;
+
+    const intent: InputIntent = {
+      move,
+      lookDelta,
+      up: (this.anyDown(KEYS.up) ? 1 : 0) - (this.anyDown(KEYS.down) ? 1 : 0),
+      sprint: this.anyDown(KEYS.sprint),
+      claim: this.anyJust(KEYS.claim),
+      drop: this.anyJust(KEYS.drop),
+      pass: this.anyJust(KEYS.pass) || this.rmbPressed,
+      shoot: this.lmbPressed,
+      shootHeld: this.lmbDown,
+      passHeld: this.anyDown(KEYS.pass),
+      zoomOut: this.anyDown(KEYS.zoom),
+      zoomTogglePressed: this.anyJust(KEYS.zoom),
+      resetBall: this.anyJust(KEYS.reset),
+      toggleDev: this.anyJust(KEYS.toggleDev),
+    };
+
+    const pad = this.readGamepad();
+    if (pad) {
+      if (pad.move && pad.move.lengthSq() > intent.move.lengthSq()) intent.move.copy(pad.move);
+      if (pad.lookDelta) {
+        intent.lookDelta.x += pad.lookDelta.x * (1 / 60);
+        intent.lookDelta.y += pad.lookDelta.y * (1 / 60);
+      }
+      if (pad.up) intent.up = Math.max(-1, Math.min(1, intent.up + (pad.up ?? 0)));
+      intent.sprint = intent.sprint || Boolean(pad.sprint);
+      intent.claim = intent.claim || Boolean(pad.claim);
+      intent.drop = intent.drop || Boolean(pad.drop);
+      intent.pass = intent.pass || Boolean(pad.pass);
+      intent.shoot = intent.shoot || Boolean(pad.shoot);
+      intent.shootHeld = intent.shootHeld || Boolean(pad.shootHeld);
+      intent.passHeld = intent.passHeld || Boolean(pad.passHeld);
+      intent.zoomOut = intent.zoomOut || Boolean(pad.zoomOut);
+      intent.zoomTogglePressed = intent.zoomTogglePressed || Boolean(pad.zoomTogglePressed);
+      intent.resetBall = intent.resetBall || Boolean(pad.resetBall);
+    }
+
+    this.justPressed.clear();
+    this.lmbPressed = false;
+    this.rmbPressed = false;
+
+    return intent;
+  }
+}
