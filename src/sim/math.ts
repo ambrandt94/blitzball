@@ -39,3 +39,29 @@ export function clampMagnitude(v: THREE.Vector3, max: number): THREE.Vector3 {
 export function damp(current: THREE.Vector3, target: THREE.Vector3, lambda: number, dt: number): void {
   current.lerp(target, 1 - Math.exp(-lambda * dt));
 }
+
+const _tip = new THREE.Vector3(0, 0, 1);
+const _aimed = new THREE.Vector3();
+const _qa = new THREE.Quaternion();
+const _qb = new THREE.Quaternion();
+
+/** Short-arc turn of a unit direction. Pitch is included; the path does not cut through zero. */
+export function rotateToward(current: THREE.Vector3, target: THREE.Vector3, lambda: number, dt: number): void {
+  if (target.lengthSq() < 1e-8) return;
+  _aimed.copy(target).normalize();
+  if (current.lengthSq() < 1e-8) {
+    current.copy(_aimed);
+    return;
+  }
+  current.normalize();
+  const dot = THREE.MathUtils.clamp(current.dot(_aimed), -1, 1);
+  if (dot > 0.9995) {
+    current.copy(_aimed);
+    return;
+  }
+  const alpha = 1 - Math.exp(-lambda * dt);
+  _qa.setFromUnitVectors(_tip, current);
+  _qb.setFromUnitVectors(_tip, _aimed);
+  _qa.slerp(_qb, alpha);
+  current.copy(_tip).applyQuaternion(_qa).normalize();
+}

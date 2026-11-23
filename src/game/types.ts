@@ -6,6 +6,9 @@ export type PlayerRole = 'human' | 'ai' | 'stub';
 
 export type PossessionState = 'free' | 'held';
 
+/** Short greybox pose. `hold` lasts while carrying; the others are timed. */
+export type ActionPose = 'none' | 'claim' | 'hold' | 'pass' | 'shoot';
+
 export interface Tunables {
   goalAxisUp: boolean;
   zoomHoldMode: boolean; // true = hold V/LB; false = toggle
@@ -22,6 +25,15 @@ export interface Tunables {
   aimAssist: number;
   showChargeGhost: boolean;
   showDebugStats: boolean;
+  /** Body slerp toward velocity, radians-worth of rate (1/seconds). */
+  bodyTurnRate: number;
+  /** Speed under which facing falls back to aim / camera. */
+  bodyIdleSpeed: number;
+  /** Paddle cycles per second at full speed. */
+  swimAnimRate: number;
+  /** Arm/leg swing in radians at full speed. */
+  swimAnimAmount: number;
+  swimAnim: boolean;
 }
 
 export interface PlayerState {
@@ -40,6 +52,9 @@ export interface PlayerState {
   reclaimGrace: number;
   /** Stub slots reserved for future 3v3 AI. */
   active: boolean;
+  actionPose: ActionPose;
+  /** Seconds left on a one-shot pose (claim / pass / shoot). */
+  actionPoseTime: number;
 }
 
 export interface BallState {

@@ -8,6 +8,7 @@ import {
   PLAYER,
 } from '../game/constants';
 import type {
+  ActionPose,
   BallState,
   ChargeState,
   InputIntent,
@@ -21,7 +22,7 @@ import {
   clampMagnitude,
   damp,
   goalCenter,
-  orthonormalBasis,
+  rotateToward,
 } from './math';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
@@ -46,6 +47,8 @@ function makePlayer(
     tackleCooldown: 0,
     reclaimGrace: 0,
     active,
+    actionPose: 'none',
+    actionPoseTime: 0,
   };
 }
 
@@ -70,6 +73,8 @@ export class Simulation {
     camUp: new THREE.Vector3(),
     holdTarget: new THREE.Vector3(),
     aim: new THREE.Vector3(),
+    faceTarget: new THREE.Vector3(),
+    upHint: new THREE.Vector3(),
   };
 
   tunables: Tunables;
@@ -131,9 +136,12 @@ export class Simulation {
         p.position.set(p.id % 2 === 0 ? 0 : (p.id % 3) - 1, (p.id % 5) * 0.2, z);
         p.velocity.set(0, 0, 0);
         p.facing.set(0, 0, p.team === 0 ? 1 : -1);
+        p.up.copy(authoritativeUp(this.tunables.goalAxisUp));
         p.hasBall = false;
         p.tackleCooldown = 0;
         p.reclaimGrace = 0;
+        p.actionPose = 'none';
+        p.actionPoseTime = 0;
       }
     }
 
@@ -226,6 +234,17 @@ export class Simulation {
     for (const p of this.players) {
       if (p.tackleCooldown > 0) p.tackleCooldown -= dt;
       if (p.reclaimGrace > 0) p.reclaimGrace -= dt;
+      if (p.actionPoseTime > 0) {
+        p.actionPoseTime -= dt;
+        if (p.actionPoseTime <= 0) {
+          p.actionPoseTime = 0;
+          p.actionPose = p.hasBall ? 'hold' : 'none';
+        }
+      } else if (p.hasBall && p.actionPose === 'none') {
+        p.actionPose = 'hold';
+      } else if (!p.hasBall && p.actionPose === 'hold') {
+        p.actionPose = 'none';
+      }
     }
     if (this.ball.claimLock > 0) this.ball.claimLock -= dt;
 
@@ -305,62 +324,100 @@ export class Simulation {
   ): void {
     if (!player.active) return;
 
-    const basis = isHuman
-      ? this.cameraBasis()
-      : orthonormalBasis(player.facing, authoritativeUp(this.tunables.goalAxisUp));
-
     const moveLocal = intent.move.clone();
     if (moveLocal.lengthSq() > 1) moveLocal.normalize();
 
     // Human: camera-relative stick. AI: intent.move is already a world-space wish (xyz).
+    // Idle fallback: camera look for the human, the move wish for AI.
     const wish = this.tmp.moveWorld;
+    const aimDir = this.tmp.faceTarget;
     if (isHuman) {
+      const basis = this.cameraBasis();
       wish
         .copy(basis.right)
         .multiplyScalar(moveLocal.x)
         .add(basis.forward.clone().multiplyScalar(moveLocal.z))
         .add(basis.up.clone().multiplyScalar(intent.up));
+      aimDir.copy(basis.forward);
     } else {
       wish.set(moveLocal.x, intent.up !== 0 ? intent.up : moveLocal.y, moveLocal.z);
+      if (wish.lengthSq() > 1e-6) aimDir.copy(wish).normalize();
+      else aimDir.copy(player.facing);
     }
     if (wish.lengthSq() > 1) wish.normalize();
 
     player.sprinting = intent.sprint && !player.hasBall;
     let maxSpeed = PLAYER.maxSpeed;
-    let accel = this.tunables.playerAccel;
-    let turn = PLAYER.turnRate;
-    if (player.hasBall) {
-      maxSpeed *= PLAYER.carrierSpeedMult;
-      turn *= PLAYER.carrierTurnMult;
-    }
+    const accel = this.tunables.playerAccel;
+    if (player.hasBall) maxSpeed *= PLAYER.carrierSpeedMult;
     if (player.sprinting) maxSpeed *= PLAYER.sprintMult;
 
     if (wish.lengthSq() > 1e-6) {
       const targetVel = wish.multiplyScalar(maxSpeed);
       player.velocity.lerp(targetVel, 1 - Math.exp(-accel * dt / maxSpeed));
-      if (!isHuman) {
-        damp(player.facing, wish, turn, dt);
-        if (player.facing.lengthSq() < 1e-8) player.facing.set(0, 0, 1);
-        else player.facing.normalize();
-      }
     } else {
       // Water drag when coasting
       player.velocity.multiplyScalar(Math.exp(-PLAYER.drag * dt));
     }
 
-    // The chase view is the aim. Snap the body to it so mouse-right turns the
-    // swimmer right on the same step as the camera, and the held ball stays
-    // in front of that heading instead of lagging on the old facing.
-    if (isHuman) {
-      player.facing.copy(basis.forward);
-      if (player.facing.lengthSq() < 1e-8) player.facing.set(0, 0, 1);
-      else player.facing.normalize();
-    }
+    this.steerBody(player, aimDir, dt);
 
     clampMagnitude(player.velocity, maxSpeed * 1.15);
     player.position.addScaledVector(player.velocity, dt);
     constrainPlayerToSphere(player.position, player.velocity, PLAYER.radius);
-    player.up.copy(authoritativeUp(this.tunables.goalAxisUp));
+  }
+
+  /** Face velocity while swimming, including pitch. Nearly still, ease back to aim. */
+  private steerBody(player: PlayerState, aim: THREE.Vector3, dt: number): void {
+    const speed = player.velocity.length();
+    const target = this.tmp.aim;
+    target.copy(aim);
+    if (target.lengthSq() < 1e-8) target.copy(player.facing);
+    else target.normalize();
+
+    if (speed > 1e-4) {
+      const swim = this.tmp.upHint.copy(player.velocity).normalize();
+      const follow = THREE.MathUtils.smoothstep(speed, this.tunables.bodyIdleSpeed * 0.35, this.tunables.bodyIdleSpeed);
+      target.lerp(swim, follow);
+      if (target.lengthSq() < 1e-8) target.copy(swim);
+      else target.normalize();
+    }
+
+    let rate = this.tunables.bodyTurnRate;
+    if (player.hasBall) rate *= PLAYER.carrierTurnMult;
+    rotateToward(player.facing, target, rate, dt);
+    this.alignBodyUp(player, dt);
+  }
+
+  /** Keep a body-up that pitches with facing and does not roll when looking straight up. */
+  private alignBodyUp(player: PlayerState, dt: number): void {
+    const facing = player.facing;
+    const world = authoritativeUp(this.tunables.goalAxisUp);
+    const hinted = this.tmp.faceTarget.copy(world).addScaledVector(facing, -world.dot(facing));
+    const up = player.up;
+    up.addScaledVector(facing, -up.dot(facing));
+    if (hinted.lengthSq() > 1e-4) {
+      hinted.normalize();
+      if (up.lengthSq() < 1e-6) up.copy(hinted);
+      else {
+        up.normalize();
+        damp(up, hinted, 5, dt);
+        up.addScaledVector(facing, -up.dot(facing));
+        if (up.lengthSq() < 1e-6) up.copy(hinted);
+        else up.normalize();
+      }
+    } else if (up.lengthSq() < 1e-6) {
+      up.set(1, 0, 0).addScaledVector(facing, -facing.x);
+      if (up.lengthSq() < 1e-6) up.set(0, 0, 1);
+      up.normalize();
+    } else {
+      up.normalize();
+    }
+  }
+
+  private playPose(player: PlayerState, pose: ActionPose, seconds: number): void {
+    player.actionPose = pose;
+    player.actionPoseTime = Math.max(player.actionPoseTime, seconds);
   }
 
   private resolveAiActions(player: PlayerState, intent: InputIntent, _dt: number): void {
@@ -381,6 +438,7 @@ export class Simulation {
         this.charge.active = true;
         this.charge.kind = 'shoot';
         this.charge.amount = Math.min(1, this.charge.amount + dt / BALL.chargeTime);
+        this.playPose(human, 'shoot', 0.22);
         this.updateChargeGhost(human);
       } else if (this.charge.active && this.charge.kind === 'shoot') {
         this.releaseShot(human, this.charge.amount);
@@ -390,6 +448,7 @@ export class Simulation {
         this.charge.active = true;
         this.charge.kind = 'pass';
         this.charge.amount = Math.min(1, this.charge.amount + dt / (BALL.chargeTime * 0.7));
+        this.playPose(human, 'pass', 0.2);
         this.updateChargeGhost(human);
       } else if (this.charge.active && this.charge.kind === 'pass') {
         this.releasePass(human, Math.max(0.35, this.charge.amount));
@@ -467,12 +526,17 @@ export class Simulation {
   }
 
   private giveBall(player: PlayerState): void {
-    for (const p of this.players) p.hasBall = false;
+    for (const p of this.players) {
+      if (!p.hasBall) continue;
+      p.hasBall = false;
+      if (p.actionPose === 'hold') p.actionPose = 'none';
+    }
     player.hasBall = true;
     this.ball.possession = 'held';
     this.ball.ownerId = player.id;
     this.ball.lastOwnerId = player.id;
     this.ball.velocity.set(0, 0, 0);
+    this.playPose(player, 'claim', 0.34);
   }
 
   private stripBall(tacker: PlayerState, owner: PlayerState): void {
@@ -523,6 +587,7 @@ export class Simulation {
     const speed = THREE.MathUtils.lerp(BALL.shootSpeedMin, BALL.shootSpeedMax, charge);
     const impulse = aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.35));
     this.releaseBall(impulse);
+    this.playPose(player, 'shoot', 0.3);
     this.match.statusMessage = charge > 0.7 ? 'Charged shot!' : 'Shot';
   }
 
@@ -553,6 +618,7 @@ export class Simulation {
     this.placeRelease(player, aim);
     const speed = BALL.passSpeed * (0.65 + 0.35 * charge);
     this.releaseBall(aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.25)));
+    this.playPose(player, 'pass', 0.28);
     this.match.statusMessage = best ? 'Pass' : 'Pass (no target)';
   }
 

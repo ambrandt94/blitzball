@@ -18,6 +18,11 @@ export function defaultTunables(): Tunables {
     aimAssist: 0.35,
     showChargeGhost: true,
     showDebugStats: true,
+    bodyTurnRate: PLAYER.bodyTurnRate,
+    bodyIdleSpeed: PLAYER.bodyIdleSpeed,
+    swimAnimRate: PLAYER.swimAnimRate,
+    swimAnimAmount: PLAYER.swimAnimAmount,
+    swimAnim: true,
   };
 }
 
@@ -62,6 +67,11 @@ export class DevPanel {
     this.range('Player accel', 'playerAccel', 15, 80, 1);
     this.range('Ball drag', 'ballDrag', 0.2, 3, 0.05);
     this.range('Aim assist', 'aimAssist', 0, 1, 0.05);
+    this.range('Body turn rate', 'bodyTurnRate', 2, 16, 0.5);
+    this.range('Idle face speed', 'bodyIdleSpeed', 0.2, 6, 0.1);
+    this.bool('Paddle anim', 'swimAnim');
+    this.range('Paddle rate', 'swimAnimRate', 0.2, 4, 0.1);
+    this.range('Paddle amount', 'swimAnimAmount', 0, 1.4, 0.05);
   }
 
   private bool(label: string, key: keyof Tunables): void {
