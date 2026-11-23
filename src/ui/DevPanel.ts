@@ -6,6 +6,9 @@ export function defaultTunables(): Tunables {
     // World-Y reads clearer in greybox; goal-axis remains a Dev toggle (Alex unsure).
     goalAxisUp: false,
     zoomHoldMode: true,
+    // Standard FPS / over-shoulder: mouse-right → look right, mouse-up → look up.
+    mouseLookInvertX: false,
+    mouseLookInvertY: false,
     wallEscapeSpeed: WALL.escapeSpeed,
     wallEscapeAngle: WALL.escapeAngle,
     claimRadius: PLAYER.claimRadius,
@@ -15,6 +18,11 @@ export function defaultTunables(): Tunables {
     aimAssist: 0.35,
     showChargeGhost: true,
     showDebugStats: true,
+    bodyTurnRate: PLAYER.bodyTurnRate,
+    bodyIdleSpeed: PLAYER.bodyIdleSpeed,
+    swimAnimRate: PLAYER.swimAnimRate,
+    swimAnimAmount: PLAYER.swimAnimAmount,
+    swimAnim: true,
   };
 }
 
@@ -48,6 +56,8 @@ export class DevPanel {
 
     this.bool('Goal-axis up (vs world Y)', 'goalAxisUp');
     this.bool('Zoom = hold (off = toggle)', 'zoomHoldMode');
+    this.bool('Invert mouse look X', 'mouseLookInvertX');
+    this.bool('Invert mouse look Y', 'mouseLookInvertY');
     this.bool('Charge ghost trail', 'showChargeGhost');
     this.bool('Debug stats', 'showDebugStats');
     this.range('Wall escape speed', 'wallEscapeSpeed', 10, 45, 0.5);
@@ -57,6 +67,11 @@ export class DevPanel {
     this.range('Player accel', 'playerAccel', 15, 80, 1);
     this.range('Ball drag', 'ballDrag', 0.2, 3, 0.05);
     this.range('Aim assist', 'aimAssist', 0, 1, 0.05);
+    this.range('Body turn rate', 'bodyTurnRate', 2, 16, 0.5);
+    this.range('Idle face speed', 'bodyIdleSpeed', 0.2, 6, 0.1);
+    this.bool('Paddle anim', 'swimAnim');
+    this.range('Paddle rate', 'swimAnimRate', 0.2, 4, 0.1);
+    this.range('Paddle amount', 'swimAnimAmount', 0, 1.4, 0.05);
   }
 
   private bool(label: string, key: keyof Tunables): void {
@@ -70,7 +85,9 @@ export class DevPanel {
     input.checked = Boolean(this.tunables[key]);
     input.addEventListener('change', () => {
       (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
-      this.onChange();
+      // Only the up-axis change rebuilds the chase basis. Invert toggles and
+      // other checkboxes must not snap yaw/pitch back to kickoff.
+      if (key === 'goalAxisUp') this.onChange();
     });
     row.appendChild(lab);
     row.appendChild(input);
@@ -100,7 +117,6 @@ export class DevPanel {
       const n = parseFloat(input.value);
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
       value.textContent = n.toFixed(2);
-      this.onChange();
     });
     wrap.appendChild(name);
     wrap.appendChild(input);

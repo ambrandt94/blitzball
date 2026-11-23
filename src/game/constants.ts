@@ -13,6 +13,14 @@ export const PLAYER = {
   carrierSpeedMult: 0.82,
   carrierTurnMult: 0.72,
   turnRate: 10,
+  /** How fast the body slerps toward swim velocity (1/seconds). */
+  bodyTurnRate: 7,
+  /** Below this speed the body eases back to aim instead of velocity. */
+  bodyIdleSpeed: 1.8,
+  /** Paddle cycles per second at full sprint. */
+  swimAnimRate: 1.7,
+  /** Paddle / kick swing in radians at full speed. */
+  swimAnimAmount: 0.7,
   claimRadius: 1.65,
   claimFacingDot: 0.15,
   reclaimCoyote: 0.18,

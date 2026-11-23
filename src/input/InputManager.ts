@@ -60,6 +60,7 @@ export class InputManager {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (e.repeat) return;
+    if (this.typingTarget(e)) return;
     this.keys.add(e.code);
     this.justPressed.add(e.code);
     if (KEYS.up.includes(e.code) || e.code === 'Space') e.preventDefault();
@@ -80,6 +81,9 @@ export class InputManager {
 
   private onPointerLock = (): void => {
     this.pointerLocked = document.pointerLockElement === this.canvas;
+    // Unlock/lock often delivers a cursor-warp mousemove. Drop it so the view does not flick.
+    this.mouseDelta.x = 0;
+    this.mouseDelta.y = 0;
   };
 
   private onMouseMove = (e: MouseEvent): void => {
@@ -89,6 +93,8 @@ export class InputManager {
   };
 
   private onMouseDown = (e: MouseEvent): void => {
+    // The click that captures the pointer is not a shot or a pass.
+    if (!this.pointerLocked) return;
     if (e.button === 0) {
       this.lmbDown = true;
       this.lmbPressed = true;
@@ -150,7 +156,13 @@ export class InputManager {
     };
   }
 
-  sample(): InputIntent {
+  private typingTarget(e: KeyboardEvent): boolean {
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return false;
+    return t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
+  }
+
+  sample(frameDt: number): InputIntent {
     const move = new THREE.Vector3(
       (this.anyDown(KEYS.right) ? 1 : 0) - (this.anyDown(KEYS.left) ? 1 : 0),
       0,
@@ -186,8 +198,8 @@ export class InputManager {
     if (pad) {
       if (pad.move && pad.move.lengthSq() > intent.move.lengthSq()) intent.move.copy(pad.move);
       if (pad.lookDelta) {
-        intent.lookDelta.x += pad.lookDelta.x * (1 / 60);
-        intent.lookDelta.y += pad.lookDelta.y * (1 / 60);
+        intent.lookDelta.x += pad.lookDelta.x * frameDt;
+        intent.lookDelta.y += pad.lookDelta.y * frameDt;
       }
       if (pad.up) intent.up = Math.max(-1, Math.min(1, intent.up + (pad.up ?? 0)));
       intent.sprint = intent.sprint || Boolean(pad.sprint);

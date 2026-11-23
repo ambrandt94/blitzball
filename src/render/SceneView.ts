@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { ARENA_RADIUS, BALL, GOAL } from '../game/constants';
+import { ARENA_RADIUS, BALL, GOAL, PLAYER } from '../game/constants';
+import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
 
 /** High-contrast team colors for greybox readability. */
@@ -57,27 +58,32 @@ function buildHumanoid(team: 0 | 1, isHuman: boolean): THREE.Group {
   visor.position.set(0, 0.14, 1.05);
   group.add(visor);
 
-  // Arms out to sides, slightly forward
+  // Arms: pivot at the shoulder so a local yaw swings the hand forward/back.
   for (const side of [-1, 1] as const) {
-    const upper = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.18, 0.2), mat);
-    upper.position.set(side * 0.58, 0.04, 0.2);
-    upper.rotation.z = side * 0.2;
-    group.add(upper);
-
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.13, 6, 6), accentMat);
-    hand.position.set(side * 0.95, 0.04, 0.28);
-    group.add(hand);
+    const pivot = new THREE.Group();
+    pivot.name = side < 0 ? 'armL' : 'armR';
+    pivot.position.set(side * 0.3, 0.08, 0.28);
+    const upper = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.16, 0.16), mat);
+    upper.position.set(side * 0.34, 0, 0);
+    pivot.add(upper);
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 6), accentMat);
+    hand.position.set(side * 0.68, 0, 0);
+    pivot.add(hand);
+    group.add(pivot);
   }
 
-  // Legs trailing back
+  // Legs: pivot at the hip, limb extends back along -Z. rotation.x is the kick.
   for (const side of [-1, 1] as const) {
-    const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.18, 0.7), mat);
-    thigh.position.set(side * 0.2, -0.04, -0.65);
-    group.add(thigh);
-
-    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.12, 0.28), darkMat);
-    foot.position.set(side * 0.2, -0.06, -1.05);
-    group.add(foot);
+    const pivot = new THREE.Group();
+    pivot.name = side < 0 ? 'legL' : 'legR';
+    pivot.position.set(side * 0.16, -0.04, -0.32);
+    const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.16, 0.58), mat);
+    thigh.position.set(0, 0, -0.3);
+    pivot.add(thigh);
+    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.22), darkMat);
+    foot.position.set(0, -0.02, -0.64);
+    pivot.add(foot);
+    group.add(pivot);
   }
 
   // Explicit facing chevron (white) ahead of head
@@ -150,6 +156,7 @@ export class SceneView {
   private camPos = new THREE.Vector3();
   private camTarget = new THREE.Vector3();
   private camUp = new THREE.Vector3(0, 1, 0);
+  private worldUp = new THREE.Vector3(0, 1, 0);
   private camInitialized = false;
   private pulse = 0;
 
@@ -427,6 +434,7 @@ export class SceneView {
       const lookTarget = p.position.clone().add(p.facing);
       mesh.up.copy(p.up);
       mesh.lookAt(lookTarget);
+      this.poseLimbs(mesh, p, sim, dt);
       const ring = mesh.getObjectByName('carrierRing');
       if (ring) {
         ring.visible = p.hasBall;
@@ -483,13 +491,81 @@ export class SceneView {
 
     this.writeLine(this.ballTrail, this.trailPositions, sim.ball.trail, TRAIL_MAX);
 
-    const up = sim.getHuman().up;
-    this.pip.position.copy(sim.ball.position).addScaledVector(up, 1.15);
+    this.worldUp.set(0, sim.tunables.goalAxisUp ? 0 : 1, sim.tunables.goalAxisUp ? 1 : 0);
+    this.pip.position.copy(sim.ball.position).addScaledVector(this.worldUp, 1.15);
     this.pip.visible = true;
     const pipPulse = 1.35 + Math.sin(this.pulse * 4) * 0.12;
     this.pip.scale.set(pipPulse, pipPulse, pipPulse);
 
     this.writeLine(this.chargeGhost, this.ghostPositions, sim.chargeGhost, GHOST_MAX);
+  }
+
+  /** Paddle/kick plus a few stiff poses. Rotations are set absolutely each frame. */
+  private poseLimbs(mesh: THREE.Group, player: PlayerState, sim: Simulation, dt: number): void {
+    const armL = mesh.getObjectByName('armL');
+    const armR = mesh.getObjectByName('armR');
+    const legL = mesh.getObjectByName('legL');
+    const legR = mesh.getObjectByName('legR');
+    if (!armL || !armR || !legL || !legR) return;
+
+    const tun = sim.tunables;
+    const speed01 = Math.min(1, player.velocity.length() / (PLAYER.maxSpeed * PLAYER.sprintMult));
+    const ud = mesh.userData as { swimPhase?: number };
+    if (ud.swimPhase === undefined) ud.swimPhase = player.id * 0.37;
+    const hz = tun.swimAnimRate * (0.3 + 0.7 * speed01);
+    ud.swimPhase += dt * hz;
+    const wave = Math.sin(ud.swimPhase * Math.PI * 2);
+    const amp = tun.swimAnim ? tun.swimAnimAmount * speed01 : 0;
+
+    // Arms stick out along local X. Yaw swings them forward (+Z) and back.
+    let yL = 0.35 + wave * amp;
+    let yR = -0.35 - wave * amp;
+    let zL = 0.5;
+    let zR = -0.5;
+    let xLegL = -wave * amp * 0.9;
+    let xLegR = wave * amp * 0.9;
+
+    const humanCharge =
+      player.role === 'human' && player.id === sim.humanId && sim.charge.active ? sim.charge : null;
+    const pose = player.actionPose;
+
+    if (pose === 'hold') {
+      yL = 1.05;
+      yR = -1.05;
+      zL = 0.55;
+      zR = -0.55;
+      xLegL *= 0.35;
+      xLegR *= 0.35;
+    } else if (pose === 'claim') {
+      yL = 1.4;
+      yR = -1.4;
+      zL = -0.2;
+      zR = 0.2;
+    } else if (pose === 'pass' || humanCharge?.kind === 'pass') {
+      const ext = humanCharge?.kind === 'pass' ? 0.3 + 0.7 * humanCharge.amount : Math.min(1, player.actionPoseTime / 0.22);
+      yR = THREE.MathUtils.lerp(yR, -1.5, ext);
+      zR = THREE.MathUtils.lerp(zR, -0.05, ext);
+      yL = THREE.MathUtils.lerp(yL, 0.15, ext);
+    } else if (pose === 'shoot' || humanCharge?.kind === 'shoot') {
+      if (humanCharge?.kind === 'shoot') {
+        const c = humanCharge.amount;
+        yL = THREE.MathUtils.lerp(0.15, -0.9, c);
+        yR = THREE.MathUtils.lerp(-0.15, 0.9, c);
+        zL = 0.25;
+        zR = -0.25;
+      } else {
+        const follow = Math.min(1, player.actionPoseTime / 0.26);
+        yL = THREE.MathUtils.lerp(yL, 1.3, follow);
+        yR = THREE.MathUtils.lerp(yR, -1.3, follow);
+        zL = THREE.MathUtils.lerp(zL, -0.25, follow);
+        zR = THREE.MathUtils.lerp(zR, 0.25, follow);
+      }
+    }
+
+    armL.rotation.set(0, yL, zL);
+    armR.rotation.set(0, yR, zR);
+    legL.rotation.set(xLegL, 0, 0);
+    legR.rotation.set(xLegR, 0, 0);
   }
 
   render(): void {

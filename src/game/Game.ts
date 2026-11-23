@@ -3,6 +3,34 @@ import { InputManager } from '../input/InputManager';
 import { SceneView } from '../render/SceneView';
 import { Simulation } from '../sim/Simulation';
 import { DevPanel, defaultTunables } from '../ui/DevPanel';
+import type { InputIntent } from './types';
+
+/** Keep one-frame button edges until a physics step actually consumes them. */
+function orEdges(pending: InputIntent, fresh: InputIntent): InputIntent {
+  return {
+    ...fresh,
+    claim: pending.claim || fresh.claim,
+    drop: pending.drop || fresh.drop,
+    pass: pending.pass || fresh.pass,
+    shoot: pending.shoot || fresh.shoot,
+    resetBall: pending.resetBall || fresh.resetBall,
+  };
+}
+
+function withoutEdges(intent: InputIntent): InputIntent {
+  return {
+    ...intent,
+    move: intent.move.clone(),
+    lookDelta: { x: 0, y: 0 },
+    claim: false,
+    drop: false,
+    pass: false,
+    shoot: false,
+    resetBall: false,
+    zoomTogglePressed: false,
+    toggleDev: false,
+  };
+}
 
 export class Game {
   private sim: Simulation;
@@ -14,6 +42,7 @@ export class Game {
   private last = 0;
   private running = false;
   private lastZoom = false;
+  private pendingEdge: InputIntent | null = null;
   private tunables = defaultTunables();
 
   private scoreA: HTMLElement;
@@ -69,17 +98,24 @@ export class Game {
     this.last = now;
     this.accum += dt;
 
-    const intent = this.input.sample();
-    if (intent.toggleDev) this.dev.toggle();
+    const fresh = this.input.sample(dt);
+    if (fresh.toggleDev) this.dev.toggle();
+    // Mouse look is a per-frame distance, not a per-tick rate. Apply it even
+    // when this frame does not run a physics step, and never more than once.
+    this.sim.applyFrameLook(fresh);
+    this.sim.noteZoomToggle(fresh);
+
+    const intent = this.pendingEdge ? orEdges(this.pendingEdge, fresh) : fresh;
 
     let steps = 0;
     while (this.accum >= FIXED_DT && steps < 5) {
-      this.sim.step(FIXED_DT, intent);
+      this.sim.step(FIXED_DT, steps === 0 ? intent : withoutEdges(intent));
       this.accum -= FIXED_DT;
       steps++;
     }
+    this.pendingEdge = steps > 0 ? null : intent;
 
-    this.lastZoom = this.sim.isZoomOut(intent);
+    this.lastZoom = this.sim.isZoomOut(fresh);
     this.view.sync(this.sim, this.lastZoom, dt);
     this.view.render();
     this.updateHud();
