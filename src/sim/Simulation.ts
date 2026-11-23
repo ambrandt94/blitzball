@@ -29,7 +29,7 @@ import {
   rotateToward,
   stabilizeUp,
 } from './math';
-import { arcControl, clampEndInside, quadraticPoint, quadraticVelocity } from './shotArc';
+import { clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
 function makePlayer(
@@ -65,11 +65,17 @@ export class Simulation {
   charge: ChargeState = { active: false, kind: null, amount: 0 };
   /** Ghost trail samples while charging (beginner aid) or aiming an arc. */
   chargeGhost: THREE.Vector3[] = [];
-  /** Locked shot origin and the live aim marker. `active` while shoot is held. */
+  /**
+   * Live aim while shoot is held. The marker stays put until WASD or the wheel
+   * moves it. Mouse look is stored as a control-point bend instead of yaw.
+   */
   readonly shotAim = {
     active: false,
-    origin: new THREE.Vector3(),
     target: new THREE.Vector3(),
+    /** Control-point offset along camera right, world units. */
+    bendRight: 0,
+    /** Control-point offset along camera up, world units. */
+    bendUp: 0,
   };
   /** Added to Arc aim distance by the mouse wheel. */
   private aimDistanceBias = 0;
@@ -166,6 +172,8 @@ export class Simulation {
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
     this.shotAim.active = false;
+    this.shotAim.bendRight = 0;
+    this.shotAim.bendUp = 0;
     this.match.resetTimer = 0;
     this.kickoffLock = 2.2;
     this.match.statusMessage = 'Face-off…';
@@ -300,6 +308,15 @@ export class Simulation {
   applyFrameLook(intent: InputIntent): void {
     const sx = this.tunables.mouseLookInvertX ? -1 : 1;
     const sy = this.tunables.mouseLookInvertY ? -1 : 1;
+    // While a shot is held the view stays put so the marker doesn't swim,
+    // and the same mouse deltas bend the Bezier control point instead.
+    if (this.shotAim.active) {
+      this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
+      this.shotAim.bendUp += -intent.lookDelta.y * sy * this.tunables.arcBendSpeed;
+      this.clampStoredBend();
+      if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
+      return;
+    }
     this.yaw += intent.lookDelta.x * sx;
     this.pitch -= intent.lookDelta.y * sy;
     const maxPitch = Math.PI / 2 - 0.08;
@@ -309,7 +326,13 @@ export class Simulation {
   /** Mouse-wheel aim range. Call once per rendered frame, not per physics step. */
   nudgeAimDistance(delta: number): void {
     if (delta === 0) return;
+    const before = this.aimDistanceBias;
     this.aimDistanceBias = THREE.MathUtils.clamp(this.aimDistanceBias + delta, -40, 48);
+    const applied = this.aimDistanceBias - before;
+    if (applied === 0 || !this.shotAim.active) return;
+    this.shotAim.target.addScaledVector(this.cameraBasis().forward, applied);
+    this.clampShotTarget();
+    if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
   }
 
   /** Latch zoom-out when Dev is in toggle mode. Call once per press, not per step. */
@@ -353,14 +376,20 @@ export class Simulation {
     }
     if (wish.lengthSq() > 1) wish.normalize();
 
+    // Shot hold spends WASD on the marker. Coast to a stop instead of swimming.
+    // shotAim stays active through the release frame, which is sampled with
+    // the button already up, so that frame does not get a swim step either.
+    const aimingShot = isHuman && player.hasBall && (intent.shootHeld || this.shotAim.active);
+    if (aimingShot) wish.set(0, 0, 0);
+
+    // Strafe glues facing to the camera. A shot hold does too, so the ball
+    // stays in front of the chest, but it does not take the strafe speed tax.
     const aimLocked = isHuman && intent.strafe;
     player.sprinting = intent.sprint && !player.hasBall;
     let maxSpeed = PLAYER.maxSpeed;
     const accel = this.tunables.playerAccel;
     if (player.hasBall) maxSpeed *= PLAYER.carrierSpeedMult;
     if (player.sprinting) maxSpeed *= PLAYER.sprintMult;
-    // Strafe keeps the camera basis (already how human wish is built) but
-    // spends speed for a body that stays glued to the aim instead of the swim.
     if (aimLocked) maxSpeed *= this.tunables.strafeSpeedMult;
 
     if (wish.lengthSq() > 1e-6) {
@@ -371,7 +400,7 @@ export class Simulation {
       player.velocity.multiplyScalar(Math.exp(-PLAYER.drag * dt));
     }
 
-    this.steerBody(player, aimDir, dt, aimLocked);
+    this.steerBody(player, aimDir, dt, aimLocked || aimingShot);
 
     clampMagnitude(player.velocity, maxSpeed * 1.15);
     player.position.addScaledVector(player.velocity, dt);
@@ -454,17 +483,18 @@ export class Simulation {
         human.reclaimGrace = PLAYER.reclaimCoyote;
         this.match.statusMessage = 'Ball dropped';
       } else if (intent.shootHeld) {
-        if (!this.shotAim.active) {
-          this.shotAim.active = true;
-          this.shotAim.origin.copy(this.ball.position);
-        }
-        this.updateShotTarget();
+        // Snap before placing the marker or the preview, so both start in the hand.
+        this.stickBallToHand(human);
+        if (!this.shotAim.active) this.beginShotAim();
+        this.slideShotTarget(intent, dt);
         this.charge.active = true;
         this.charge.kind = 'shoot';
         this.charge.amount = Math.min(1, this.charge.amount + dt / BALL.chargeTime);
-        this.playPose(human, 'shoot', 0.22);
+        // Stay in the carry pose. A shoot windup pulls the arms off the ball.
+        human.actionPose = 'hold';
+        human.actionPoseTime = 0;
         this.updateChargeGhost(human);
-        this.match.statusMessage = 'Aiming arc — release to shoot';
+        this.match.statusMessage = 'Aiming — WASD marker, mouse bends, wheel range';
       } else if (this.charge.active && this.charge.kind === 'shoot') {
         this.releaseShot(human, this.charge.amount);
         this.charge = { active: false, kind: null, amount: 0 };
@@ -583,6 +613,8 @@ export class Simulation {
 
   private clearShotAim(): void {
     this.shotAim.active = false;
+    this.shotAim.bendRight = 0;
+    this.shotAim.bendUp = 0;
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
   }
@@ -590,26 +622,88 @@ export class Simulation {
   private aimDistance(): number {
     return THREE.MathUtils.clamp(
       this.tunables.arcAimDistance + this.aimDistanceBias,
-      4,
+      SHOT_ARC.minRange,
       ARENA_RADIUS - BALL.radius - 0.5,
     );
   }
 
-  private updateShotTarget(): void {
+  private markerLimit(): number {
+    return ARENA_RADIUS - BALL.radius - 0.3;
+  }
+
+  /** Place the marker straight down the look, at the current range. */
+  private beginShotAim(): void {
+    this.shotAim.active = true;
+    this.shotAim.bendRight = 0;
+    this.shotAim.bendUp = 0;
     const forward = this.cameraBasis().forward;
-    const raw = this.tmp.holdTarget.copy(this.shotAim.origin).addScaledVector(forward, this.aimDistance());
-    const limit = ARENA_RADIUS - BALL.radius - 0.3;
-    clampEndInside(this.shotAim.target, this.shotAim.origin, raw, limit);
+    const raw = this.tmp.holdTarget.copy(this.ball.position).addScaledVector(forward, this.aimDistance());
+    this.clampShotTarget(raw);
+  }
+
+  /**
+   * Slide the marker with the same camera-relative axes as swimming.
+   * W/S push it along the look (range), A/D strafe it, Space/C raise it.
+   * The wheel is a second range control, applied in nudgeAimDistance.
+   */
+  private slideShotTarget(intent: InputIntent, dt: number): void {
+    const basis = this.cameraBasis();
+    const wish = this.tmp.moveWorld
+      .copy(basis.right)
+      .multiplyScalar(intent.move.x)
+      .addScaledVector(basis.forward, intent.move.z)
+      .addScaledVector(basis.up, intent.up);
+    if (wish.lengthSq() > 1) wish.normalize();
+    if (wish.lengthSq() > 1e-8) {
+      this.shotAim.target.addScaledVector(wish, Math.max(0, this.tunables.arcAimSpeed) * dt);
+    }
+    this.clampShotTarget();
+  }
+
+  private clampShotTarget(from?: THREE.Vector3): void {
+    clampAimMarker(
+      this.shotAim.target,
+      from ?? this.shotAim.target,
+      this.ball.position,
+      SHOT_ARC.minRange,
+      this.markerLimit(),
+    );
+  }
+
+  private clampStoredBend(): void {
+    const max = ARENA_RADIUS * 1.5;
+    const m = Math.hypot(this.shotAim.bendRight, this.shotAim.bendUp);
+    if (m > max && m > 1e-8) {
+      const scale = max / m;
+      this.shotAim.bendRight *= scale;
+      this.shotAim.bendUp *= scale;
+    }
   }
 
   /** Bezier that would fly if the shot were released at the current charge. */
   private plannedArc(charge: number): { p0: THREE.Vector3; p1: THREE.Vector3; p2: THREE.Vector3; duration: number } {
-    const p0 = this.shotAim.origin.clone();
+    const limit = this.markerLimit();
+    const p0 = this.ball.position.clone();
+    if (p0.length() > limit) p0.setLength(limit);
     const p2 = this.shotAim.target.clone();
     const flatten = 1 - this.tunables.arcChargeFlatten * THREE.MathUtils.clamp(charge, 0, 1);
     const height = Math.max(0, this.tunables.arcHeight * flatten);
-    const p1 = arcControl(new THREE.Vector3(), p0, p2, this.cameraBasis().up, height);
-    const length = Math.max(0.5, p0.distanceTo(p2));
+    const basis = this.cameraBasis();
+    const p1 = shapedControl(
+      new THREE.Vector3(),
+      p0,
+      p2,
+      basis.right,
+      basis.up,
+      height,
+      this.shotAim.bendRight,
+      this.shotAim.bendUp,
+      this.tunables.arcBendLimit,
+      limit,
+    );
+    const straight = Math.max(0.5, p0.distanceTo(p2));
+    const via = p0.distanceTo(p1) + p1.distanceTo(p2);
+    const length = Math.max(straight, (straight + via) * 0.5);
     const speed = THREE.MathUtils.lerp(BALL.shootSpeedMin, BALL.shootSpeedMax, charge);
     const duration = Math.max(SHOT_ARC.minDuration, length / speed);
     return { p0, p1, p2, duration };
@@ -656,11 +750,8 @@ export class Simulation {
    * There is no gravity in the water sim — the curve is the whole flight.
    */
   private releaseArcShot(player: PlayerState, charge: number): void {
-    if (!this.shotAim.active) {
-      this.shotAim.active = true;
-      this.shotAim.origin.copy(this.ball.position);
-      this.updateShotTarget();
-    }
+    this.stickBallToHand(player);
+    if (!this.shotAim.active) this.beginShotAim();
     const arc = this.plannedArc(charge);
     this.releaseBall();
     this.ball.position.copy(arc.p0);
@@ -673,8 +764,19 @@ export class Simulation {
     };
     quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 0, arc.duration);
     this.shotAim.active = false;
+    this.shotAim.bendRight = 0;
+    this.shotAim.bendUp = 0;
     this.playPose(player, 'shoot', 0.3);
     this.match.statusMessage = charge > 0.7 ? 'Charged arc!' : 'Arc shot';
+  }
+
+  /** Carry point: in front of the chest, along facing. No lag. */
+  private stickBallToHand(owner: PlayerState): void {
+    this.ball.position
+      .copy(owner.position)
+      .addScaledVector(owner.facing, BALL.holdOffset)
+      .addScaledVector(owner.up, 0.15);
+    this.ball.velocity.copy(owner.velocity);
   }
 
   /** Put a released ball just outside the body along `aim` so the carrier doesn't block it. */
@@ -758,8 +860,9 @@ export class Simulation {
       const owner = this.players[this.ball.ownerId];
       if (!owner) return;
       if (this.shotAim.active && owner.id === this.humanId) {
-        this.ball.position.copy(this.shotAim.origin);
-        this.ball.velocity.set(0, 0, 0);
+        // The carry lag is enough to leave the ball hanging in the water
+        // while the body coasts. During an aim it stays on the hold point.
+        this.stickBallToHand(owner);
         return;
       }
       const holdTarget = this.tmp.holdTarget

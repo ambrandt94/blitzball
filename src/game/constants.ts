@@ -30,17 +30,27 @@ export const PLAYER = {
 };
 
 /**
- * Underwater shots are not gravity arcs. The ball only feels drag once it is
- * free, so a shot is a quadratic Bezier from the locked press-point to the
- * aim marker. `height` is the lob as a fraction of the chord, pushed along
- * camera up. `chargeFlatten` scales that lob down as the charge fills.
+ * Underwater shots are not gravity arcs. The ball stays in the hand while
+ * aiming and flies a quadratic Bezier from that hand to the marker.
+ * `height` is the resting lob as a fraction of the chord, along camera up.
+ * Mouse bend is added on top, in world units, capped at `bendLimit` × chord.
+ * `chargeFlatten` scales the resting lob down as the charge fills.
  */
 export const SHOT_ARC = {
+  /** Look-ray distance to the marker when the aim starts. */
   aimDistance: 32,
+  /** How fast WASD slides the marker, world units per second. */
+  aimSpeed: 22,
+  /** World units of control-point bend per radian of mouse. */
+  bendSpeed: 42,
+  /** Max mouse bend as a fraction of the origin→target chord. */
+  bendLimit: 0.85,
   height: 0.34,
   chargeFlatten: 0.55,
   minDuration: 0.28,
   samples: 22,
+  /** Marker cannot sit closer than this to the ball. */
+  minRange: 4,
 };
 
 export const BALL = {

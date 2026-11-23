@@ -3,11 +3,12 @@
  *   npx tsx src/sim/rotationCheck.ts
  */
 import * as THREE from 'three';
-import { ARENA_RADIUS, CAMERA, PLAYER } from '../game/constants';
+import { ARENA_RADIUS, BALL, CAMERA, PLAYER, SHOT_ARC } from '../game/constants';
 import type { InputIntent } from '../game/types';
 import { defaultTunables } from '../ui/DevPanel';
 import { Simulation } from './Simulation';
-import { rotateToward, stabilizeUp } from './math';
+import { lookBasis, rotateToward, stabilizeUp } from './math';
+import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere } from './wallPhysics';
 
 function fail(message: string): never {
@@ -180,7 +181,15 @@ function checkWall(): void {
   }
 }
 
-function checkArc(): void {
+function holdPoint(sim: Simulation): THREE.Vector3 {
+  const human = sim.getHuman();
+  return human.position
+    .clone()
+    .addScaledVector(human.facing, BALL.holdOffset)
+    .addScaledVector(human.up, 0.15);
+}
+
+function aimingSim(): { sim: Simulation; human: ReturnType<Simulation['getHuman']>; hold: InputIntent } {
   const sim = new Simulation(defaultTunables());
   sim.kickoffLock = 0;
   for (const p of sim.players) {
@@ -192,32 +201,187 @@ function checkArc(): void {
   human.facing.set(0, 0, 1);
   human.up.set(0, 1, 0);
   human.hasBall = true;
+  human.actionPose = 'hold';
   sim.ball.possession = 'held';
   sim.ball.ownerId = human.id;
   sim.ball.lastOwnerId = human.id;
-  sim.ball.position.set(0, 1, -5.2);
-  sim.yaw = 1.2;
-  sim.pitch = 0.2;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.position.copy(holdPoint(sim));
   const hold = blankIntent();
   hold.shootHeld = true;
-  sim.step(1 / 60, hold);
+  return { sim, human, hold };
+}
+
+function checkArcHand(): void {
+  const { sim, human, hold } = aimingSim();
+  // Camera looks off the body's facing so the carry pose has to turn,
+  // and the swimmer still has speed. WASD / rise must not add thrust.
+  sim.yaw = 0.7;
+  human.velocity.set(0, 0, 6);
+  hold.move.set(1, 0, 0);
+  hold.up = 1;
+  const startBall = sim.ball.position.clone();
+  const startPlayer = human.position.clone();
+  for (let i = 0; i < 30; i++) sim.step(1 / 60, hold);
   if (!sim.shotAim.active) fail('shot aim did not lock');
-  const origin = sim.shotAim.origin.clone();
-  if (sim.chargeGhost.length < 4) fail('arc preview missing');
-  sim.yaw = 0.8;
-  sim.nudgeAimDistance(4);
+  if (human.actionPose !== 'hold') fail(`aim pose was ${human.actionPose}, ball would leave the hands`);
+  if (Math.abs(human.velocity.x) > 0.4 || human.velocity.y > 0.4) {
+    fail(`WASD still swam during the hold (${human.velocity.x.toFixed(2)}, ${human.velocity.y.toFixed(2)})`);
+  }
+  const carried = sim.ball.position.distanceTo(holdPoint(sim));
+  if (carried > 0.05) fail(`ball left the hand by ${carried.toFixed(2)}`);
+  if (sim.ball.position.distanceTo(startBall) < 0.2) {
+    fail('ball froze in the water instead of moving with the hold pose');
+  }
+  if (human.position.distanceTo(startPlayer) < 0.15) fail('player did not coast while aiming');
+}
+
+function checkArcBend(): void {
+  const { sim, hold } = aimingSim();
   sim.step(1 / 60, hold);
-  if (sim.shotAim.origin.distanceTo(origin) > 0.02) fail('shot origin moved while aiming');
+  if (sim.chargeGhost.length < 4) fail('arc preview missing');
+  const start = sim.chargeGhost[0];
+  if (!start || start.distanceTo(sim.ball.position) > 0.05) fail('preview does not start on the ball');
+  const target = sim.shotAim.target.clone();
+  const yaw = sim.yaw;
+  const pitch = sim.pitch;
+  const mid = sim.chargeGhost[Math.floor(sim.chargeGhost.length / 2)]!.clone();
+  const look = blankIntent();
+  look.lookDelta.x = 0.4;
+  look.lookDelta.y = -0.3;
+  sim.applyFrameLook(look);
+  if (Math.abs(sim.yaw - yaw) > 1e-6 || Math.abs(sim.pitch - pitch) > 1e-6) {
+    fail('mouse still turned the camera while aiming');
+  }
+  if (sim.shotAim.target.distanceTo(target) > 0.02) fail('mouse moved the aim point');
+  const expectRight = 0.4 * sim.tunables.arcBendSpeed;
+  const expectUp = 0.3 * sim.tunables.arcBendSpeed;
+  if (Math.abs(sim.shotAim.bendRight - expectRight) > 0.05) {
+    fail(`side bend ${sim.shotAim.bendRight.toFixed(2)} != ${expectRight.toFixed(2)}`);
+  }
+  if (Math.abs(sim.shotAim.bendUp - expectUp) > 0.05) {
+    fail(`up bend ${sim.shotAim.bendUp.toFixed(2)} != ${expectUp.toFixed(2)}`);
+  }
+  const bent = sim.chargeGhost[Math.floor(sim.chargeGhost.length / 2)];
+  if (!bent || bent.distanceTo(mid) < 1) fail('arc preview did not change shape');
+  const last = sim.chargeGhost[sim.chargeGhost.length - 1];
+  if (!last || last.distanceTo(sim.shotAim.target) > 0.05) fail('preview does not end on the marker');
+}
+
+function checkArcMarker(): void {
+  const { sim, human, hold } = aimingSim();
+  sim.step(1 / 60, hold);
+  const playerBefore = human.position.clone();
+  const before = sim.shotAim.target.clone();
+  hold.move.set(1, 0, 0);
+  const frames = 30;
+  for (let i = 0; i < frames; i++) sim.step(1 / 60, hold);
+  const moved = sim.shotAim.target.distanceTo(before);
+  const expect = sim.tunables.arcAimSpeed * (frames / 60);
+  if (Math.abs(moved - expect) > 0.35) fail(`marker moved ${moved.toFixed(2)}, expected ${expect.toFixed(2)}`);
+  if (human.position.distanceTo(playerBefore) > 0.15) fail('player swam while WASD moved the marker');
+  const right = lookBasis(sim.yaw, sim.pitch, false).right;
+  const lateral = sim.shotAim.target.clone().sub(before).dot(right);
+  if (lateral < expect * 0.9) fail(`A/D did not strafe the marker (${lateral.toFixed(2)})`);
+
+  const forward = lookBasis(sim.yaw, sim.pitch, false).forward;
+  const ranged = sim.shotAim.target.clone();
+  sim.nudgeAimDistance(6);
+  const delta = sim.shotAim.target.clone().sub(ranged);
+  const along = delta.dot(forward);
+  if (Math.abs(along - 6) > 0.05) fail(`wheel range slid ${along.toFixed(2)} instead of 6`);
+  if (delta.addScaledVector(forward, -along).length() > 0.05) fail('wheel moved the marker off the look axis');
+}
+
+function checkArcFlight(): void {
+  const { sim, hold } = aimingSim();
+  sim.step(1 / 60, hold);
+  const look = blankIntent();
+  look.lookDelta.x = 0.15;
+  look.lookDelta.y = -0.2;
+  sim.applyFrameLook(look);
+  sim.step(1 / 60, hold);
   const target = sim.shotAim.target.clone();
   const last = sim.chargeGhost[sim.chargeGhost.length - 1];
   if (!last || last.distanceTo(target) > 0.05) fail('preview does not end on the marker');
   const release = blankIntent();
   sim.step(1 / 60, release);
   if (!sim.ball.arc) fail('release did not start the arc');
-  const steps = Math.ceil(sim.ball.arc.duration * 60) + 3;
-  for (let i = 0; i < steps; i++) sim.step(1 / 60, release);
+  let guard = 0;
+  while (sim.ball.arc && guard < 500) {
+    sim.step(1 / 60, release);
+    guard++;
+  }
+  if (sim.ball.arc) fail('arc did not finish');
   const miss = sim.ball.position.distanceTo(target);
-  if (miss > 1.5) fail(`arc missed the marker by ${miss.toFixed(2)}`);
+  if (miss > 2) fail(`arc missed the marker by ${miss.toFixed(2)}`);
+}
+
+function checkArcClamp(): void {
+  const { sim, hold } = aimingSim();
+  sim.step(1 / 60, hold);
+  sim.shotAim.bendRight = 900;
+  sim.shotAim.bendUp = -900;
+  sim.step(1 / 60, hold);
+  const limit = ARENA_RADIUS - BALL.radius;
+  for (const p of sim.chargeGhost) {
+    if (p.length() > limit + 0.05) fail(`preview left the arena (${p.length().toFixed(2)})`);
+  }
+  hold.move.set(1, 0, 1);
+  hold.move.normalize();
+  for (let i = 0; i < 240; i++) sim.step(1 / 60, hold);
+  if (sim.shotAim.target.length() > limit + 0.05) {
+    fail(`marker left the arena (${sim.shotAim.target.length().toFixed(2)})`);
+  }
+  if (sim.shotAim.target.distanceTo(sim.ball.position) < SHOT_ARC.minRange - 0.05) {
+    fail('marker collapsed into the ball');
+  }
+  for (const p of sim.chargeGhost) {
+    if (p.length() > limit + 0.05) fail(`bent preview left the arena (${p.length().toFixed(2)})`);
+  }
+}
+
+function checkShapeMath(): void {
+  const origin = new THREE.Vector3(1, 2, 3);
+  const target = new THREE.Vector3(1, 2, 23);
+  const right = new THREE.Vector3(1, 0, 0);
+  const up = new THREE.Vector3(0, 0.7, 0.3).normalize();
+  const resting = arcControl(new THREE.Vector3(), origin, target, up, 0.34);
+  const shaped = shapedControl(new THREE.Vector3(), origin, target, right, up, 0.34, 0, 0, 0.85, 80);
+  if (resting.distanceTo(shaped) > 1e-3) fail('resting lob does not match the old arc control');
+
+  const bent = shapedControl(new THREE.Vector3(), origin, target, right, up, 0.34, 8, -5, 0.85, 80);
+  if (bent.x < resting.x + 4) fail('right bend did not push the control point right');
+  if (bent.y > resting.y - 2) fail('down bend did not lower the control point');
+
+  const insideOrigin = new THREE.Vector3(0, 0, 0);
+  const insideTarget = new THREE.Vector3(0, 0, 10);
+  const shell = 14;
+  const wild = shapedControl(
+    new THREE.Vector3(),
+    insideOrigin,
+    insideTarget,
+    right,
+    new THREE.Vector3(0, 1, 0),
+    0.8,
+    500,
+    500,
+    1.5,
+    shell,
+  );
+  if (wild.length() > shell + 0.02) fail(`control point left the sphere (${wild.length().toFixed(2)})`);
+  const sample = new THREE.Vector3();
+  for (let i = 0; i <= 24; i++) {
+    quadraticPoint(sample, insideOrigin, wild, insideTarget, i / 24);
+    if (sample.length() > shell + 0.05) fail(`curve sample left the sphere (${sample.length().toFixed(2)})`);
+  }
+
+  const far = clampAimMarker(new THREE.Vector3(), new THREE.Vector3(0, 0, 100), new THREE.Vector3(), 4, 40);
+  if (Math.abs(far.length() - 40) > 0.02) fail(`far marker was not clamped (${far.length().toFixed(2)})`);
+  const near = clampAimMarker(new THREE.Vector3(), new THREE.Vector3(0, 0, 1), new THREE.Vector3(), 4, 40);
+  if (near.length() < 3.95) fail(`near marker stayed inside the hand (${near.length().toFixed(2)})`);
 }
 
 function checkPractice(): void {
@@ -303,7 +467,12 @@ export function runRotationChecks(): void {
   checkUpPole();
   checkWall();
   checkStrafe();
-  checkArc();
+  checkArcHand();
+  checkArcBend();
+  checkArcMarker();
+  checkArcFlight();
+  checkArcClamp();
+  checkShapeMath();
   checkPractice();
   checkCamera(false, false);
   checkCamera(false, true);
