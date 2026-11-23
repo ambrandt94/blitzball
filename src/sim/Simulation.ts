@@ -18,6 +18,7 @@ import type {
   Tunables,
 } from '../game/types';
 import { DummyAI } from '../ai/DummyAI';
+import { TeammateAI } from '../ai/TeammateAI';
 import {
   authoritativeUp,
   chaseCameraPosition,
@@ -79,6 +80,7 @@ export class Simulation {
   /** Seconds remaining before play is live (kickoff / after goal). */
   kickoffLock = 0;
   private ai: DummyAI;
+  private teammate: TeammateAI;
   private tmp = {
     moveWorld: new THREE.Vector3(),
     camFwd: new THREE.Vector3(),
@@ -102,6 +104,7 @@ export class Simulation {
       paused: false,
     };
     this.ai = new DummyAI();
+    this.teammate = new TeammateAI();
     this.resetKickoff(true);
   }
 
@@ -121,33 +124,25 @@ export class Simulation {
   resetKickoff(full = false): void {
     if (full) {
       this.players = [];
-      // Team 0 (blue): human + 2 stubs — south of center, attacking +Z
-      this.players.push(
-        makePlayer(0, 0, 'human', new THREE.Vector3(0, 0, -MATCH.kickoffSeparation), true),
-      );
-      this.players.push(
-        makePlayer(1, 0, 'stub', new THREE.Vector3(-4, 1, -MATCH.kickoffSeparation - 2), false),
-      );
-      this.players.push(
-        makePlayer(2, 0, 'stub', new THREE.Vector3(4, -1, -MATCH.kickoffSeparation - 2), false),
-      );
-      // Team 1 (orange): dummy AI + 2 stubs — north of center
-      this.players.push(
-        makePlayer(3, 1, 'ai', new THREE.Vector3(0, 0, MATCH.kickoffSeparation), true),
-      );
-      this.players.push(
-        makePlayer(4, 1, 'stub', new THREE.Vector3(-4, -1, MATCH.kickoffSeparation + 2), false),
-      );
-      this.players.push(
-        makePlayer(5, 1, 'stub', new THREE.Vector3(4, 1, MATCH.kickoffSeparation + 2), false),
-      );
+      const sep = MATCH.kickoffSeparation;
+      // Team 0 (blue): human, one passing teammate, one stub. Attack +Z.
+      this.players.push(makePlayer(0, 0, 'human', new THREE.Vector3(0, 0, -sep), true));
+      this.players.push(makePlayer(1, 0, 'ai', new THREE.Vector3(-6, 1.5, -sep - 3), true));
+      this.players.push(makePlayer(2, 0, 'stub', new THREE.Vector3(6, -1, -sep - 3), false));
+      // Team 1 (orange): one defender who holds unless Defense chases is on, plus stubs.
+      this.players.push(makePlayer(3, 1, 'ai', new THREE.Vector3(0, 0, sep), true));
+      this.players.push(makePlayer(4, 1, 'stub', new THREE.Vector3(-6, -1, sep + 3), false));
+      this.players.push(makePlayer(5, 1, 'stub', new THREE.Vector3(6, 1, sep + 3), false));
       this.humanId = 0;
       this.match.score = [0, 0];
     } else {
       for (const p of this.players) {
         if (!p.active) continue;
-        const z = p.team === 0 ? -MATCH.kickoffSeparation : MATCH.kickoffSeparation;
-        p.position.set(p.id % 2 === 0 ? 0 : (p.id % 3) - 1, (p.id % 5) * 0.2, z);
+        const zSign = p.team === 0 ? -1 : 1;
+        const z = zSign * MATCH.kickoffSeparation;
+        const side = p.id === this.humanId ? 0 : p.team === 0 ? -6 : 0;
+        const lift = p.team === 0 && p.id !== this.humanId ? 1.5 : 0;
+        p.position.set(side, lift, z + (p.id === this.humanId ? 0 : zSign * 3));
         p.velocity.set(0, 0, 0);
         p.facing.set(0, 0, p.team === 0 ? 1 : -1);
         p.up.copy(authoritativeUp(this.tunables.goalAxisUp));
@@ -234,13 +229,32 @@ export class Simulation {
 
     for (const p of this.players) {
       if (!p.active || p.role !== 'ai') continue;
+      const onDefense = p.team !== human.team;
+      if (onDefense && !this.tunables.defenseActive) {
+        p.velocity.set(0, 0, 0);
+        continue;
+      }
       if (!live) {
         p.velocity.multiplyScalar(0.9);
         continue;
       }
-      const aiIntent = this.ai.think(p, this.ball, this.players, this.tunables);
-      this.movePlayer(p, aiIntent, dt, false);
-      this.resolveAiActions(p, aiIntent, dt);
+      if (onDefense) {
+        const aiIntent = this.ai.think(p, this.ball, this.players, this.tunables);
+        this.movePlayer(p, aiIntent, dt, false);
+        this.resolveAiActions(p, aiIntent, dt);
+      } else {
+        const mateIntent = this.teammate.think(
+          p,
+          this.ball,
+          this.players,
+          this.tunables,
+          human,
+          intent.callForPass,
+          dt,
+        );
+        this.movePlayer(p, mateIntent, dt, false);
+        this.resolveTeammate(p, mateIntent);
+      }
     }
 
     if (live) this.updatePossession(human, intent, dt);
@@ -398,6 +412,25 @@ export class Simulation {
     player.actionPoseTime = Math.max(player.actionPoseTime, seconds);
   }
 
+  private resolveTeammate(player: PlayerState, intent: InputIntent): void {
+    if (intent.claim) this.tryClaim(player);
+    if (intent.pass && player.hasBall) this.passToHuman(player);
+  }
+
+  /** Lead the human a little so the return pass is catchable. */
+  private passToHuman(player: PlayerState): void {
+    const human = this.getHuman();
+    const aim = human.position.clone().addScaledVector(human.velocity, 0.28).sub(player.position);
+    if (aim.lengthSq() < 0.25) aim.copy(player.facing);
+    else aim.normalize();
+    this.placeRelease(player, aim);
+    const dist = Math.max(3, player.position.distanceTo(human.position));
+    const speed = Math.min(BALL.passSpeed, Math.max(BALL.passSpeed * 0.45, dist * this.tunables.ballDrag * 1.25));
+    this.releaseBall(aim.multiplyScalar(speed).addScaledVector(player.velocity, 0.15));
+    this.playPose(player, 'pass', 0.28);
+    this.match.statusMessage = 'Pass back';
+  }
+
   private resolveAiActions(player: PlayerState, intent: InputIntent, _dt: number): void {
     if (intent.claim) this.tryClaim(player);
     if (!player.hasBall) return;
@@ -504,7 +537,12 @@ export class Simulation {
     if (this.ball.possession === 'held' && this.ball.ownerId !== player.id) return;
     if (!this.canClaim(player)) return;
     this.giveBall(player);
-    this.match.statusMessage = player.role === 'human' ? 'You have the ball' : 'AI claimed the ball';
+    this.match.statusMessage =
+      player.role === 'human'
+        ? 'You have the ball'
+        : player.team === this.getHuman().team
+          ? 'Teammate has the ball'
+          : 'AI claimed the ball';
   }
 
   private giveBall(player: PlayerState): void {

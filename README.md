@@ -33,6 +33,7 @@ npm run preview  # serve the build
 | Aim an arc shot (origin locks on press; release throws) | Hold LMB | RT |
 | Arc range, while aiming | Mouse wheel | — |
 | Zoom out | `V` (hold or toggle via Dev) | LB |
+| Call for a pass | `G` | — |
 | Reset ball | `R` | Select |
 | Dev panel | `` ` `` | — |
 | Release mouse | `Esc` | — |
@@ -54,8 +55,8 @@ The curve is a quadratic Bezier. The control point is the midpoint of the chord 
 - Beginner charge ghost trail
 - Sphere wall banks; hard straight hits can fly out → possession reset
 - Strict goal rims; continuous play with score + kickoff reset
-- 1vAI dummy opponent
-- **3v3 scaffolding**: six roster slots (human + AI active; four stubs inactive)
+- Practice: one green-ring teammate who gets open, receives a pass, and passes back after **Teammate pass delay** or when you press `G`. The orange defender holds position unless **Defense chases** is on.
+- **3v3 scaffolding**: six roster slots (human + teammate + one defender active; three stubs inactive)
 - Dev toggles: goal-axis vs world-up, zoom mode, invert look X/Y, wall/claim/hold/accel/drag/assist knobs
 
 ## Not in Phase 0
@@ -65,7 +66,7 @@ The curve is a quadratic Bezier. The control point is the midpoint of the chord 
 - Polished art / FF model rips
 - Mobile touch
 - Win-condition settings UI (score-to-N vs timed)
-- Full teammate AI / keeper roles (stubs only)
+- Full 3v3 roles and keepers (one practice teammate only; other slots stay stubs)
 - Remappable inputs UI (constants are tunable in code / Dev panel)
 
 ## Project layout

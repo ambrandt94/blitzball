@@ -42,6 +42,10 @@ export interface Tunables {
   arcHeight: number;
   /** How much a full charge flattens the lob (0 = no flatten, 1 = flat). */
   arcChargeFlatten: number;
+  /** When false, the opposing team holds its spots and does not chase or tackle. */
+  defenseActive: boolean;
+  /** Seconds the teammate holds the ball before passing it back. */
+  teammatePassDelay: number;
 }
 
 export interface PlayerState {
@@ -116,6 +120,8 @@ export interface InputIntent {
   zoomTogglePressed: boolean;
   /** Wheel notches, in world units. Positive lengthens the arc aim. */
   aimRangeDelta: number;
+  /** Ask the teammate to pass now, or to cut harder if they don't have it. */
+  callForPass: boolean;
   resetBall: boolean;
   toggleDev: boolean;
 }

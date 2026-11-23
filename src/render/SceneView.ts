@@ -36,7 +36,7 @@ function makePipTexture(fill: string, stroke: string, mark?: string): THREE.Canv
 }
 
 /** Low-poly swim humanoid: head + torso + limbs, facing +Z local. */
-function buildHumanoid(team: 0 | 1, isHuman: boolean): THREE.Group {
+function buildHumanoid(team: 0 | 1, marker: 'you' | 'mate' | 'none'): THREE.Group {
   const group = new THREE.Group();
   const color = TEAM_COLORS[team]!;
   const accent = TEAM_ACCENT[team]!;
@@ -98,11 +98,11 @@ function buildHumanoid(team: 0 | 1, isHuman: boolean): THREE.Group {
   group.add(chevron);
 
   // You = bright outline disc under body
-  if (isHuman) {
+  if (marker === 'you' || marker === 'mate') {
     const youRing = new THREE.Mesh(
       new THREE.RingGeometry(0.7, 0.9, 24),
       new THREE.MeshBasicMaterial({
-        color: 0xffffff,
+        color: marker === 'you' ? 0xffffff : 0x7dffa8,
         side: THREE.DoubleSide,
         transparent: true,
         opacity: 0.75,
@@ -379,7 +379,8 @@ export class SceneView {
   ensurePlayers(sim: Simulation): void {
     for (const p of sim.players) {
       if (this.playerMeshes.has(p.id)) continue;
-      const group = buildHumanoid(p.team, p.role === 'human');
+      const marker = p.role === 'human' ? 'you' : p.team === 0 && p.role === 'ai' ? 'mate' : 'none';
+      const group = buildHumanoid(p.team, marker);
       group.visible = p.active && p.role !== 'stub';
       this.scene.add(group);
       this.playerMeshes.set(p.id, group);
@@ -434,6 +435,7 @@ export class SceneView {
       resetBall: false,
       toggleDev: false,
       aimRangeDelta: 0,
+      callForPass: false,
     });
 
     const humanPos = sim.getHuman().position;

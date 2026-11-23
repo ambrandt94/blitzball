@@ -1,4 +1,4 @@
-import { BALL, PLAYER, SHOT_ARC, WALL } from '../game/constants';
+import { BALL, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
 import type { Tunables } from '../game/types';
 
 export function defaultTunables(): Tunables {
@@ -27,6 +27,8 @@ export function defaultTunables(): Tunables {
     arcAimDistance: SHOT_ARC.aimDistance,
     arcHeight: SHOT_ARC.height,
     arcChargeFlatten: SHOT_ARC.chargeFlatten,
+    defenseActive: false,
+    teammatePassDelay: PRACTICE.passDelay,
   };
 }
 
@@ -64,6 +66,7 @@ export class DevPanel {
     this.bool('Invert mouse look Y', 'mouseLookInvertY');
     this.bool('Charge ghost trail', 'showChargeGhost');
     this.bool('Debug stats', 'showDebugStats');
+    this.bool('Defense chases', 'defenseActive');
     this.range('Wall escape speed', 'wallEscapeSpeed', 10, 45, 0.5);
     this.range('Wall escape angle', 'wallEscapeAngle', 0.1, 1.2, 0.01);
     this.range('Claim radius', 'claimRadius', 0.8, 3.5, 0.05);
@@ -80,6 +83,7 @@ export class DevPanel {
     this.range('Arc aim distance', 'arcAimDistance', 4, 48, 0.5);
     this.range('Arc height', 'arcHeight', 0, 0.8, 0.01);
     this.range('Arc charge flatten', 'arcChargeFlatten', 0, 1, 0.05);
+    this.range('Teammate pass delay', 'teammatePassDelay', 0.3, 3, 0.05);
   }
 
   private bool(label: string, key: keyof Tunables): void {

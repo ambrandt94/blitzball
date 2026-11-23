@@ -40,6 +40,7 @@ function blankIntent(zoom = false): InputIntent {
     resetBall: false,
     toggleDev: false,
     aimRangeDelta: 0,
+    callForPass: false,
   };
 }
 
@@ -219,6 +220,63 @@ function checkArc(): void {
   if (miss > 1.5) fail(`arc missed the marker by ${miss.toFixed(2)}`);
 }
 
+function checkPractice(): void {
+  const sim = new Simulation(defaultTunables());
+  if (sim.tunables.defenseActive) fail('defense should start holding position');
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('practice roster is missing the teammate or the defender');
+  const held = defense.position.clone();
+  sim.kickoffLock = 0;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.lastOwnerId = sim.humanId;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(mate.position).add(new THREE.Vector3(1.1, 0, 0.4));
+  const intent = blankIntent();
+  for (let i = 0; i < 100; i++) sim.step(1 / 60, intent);
+  if (defense.position.distanceTo(held) > 0.15) fail('frozen defense left its spot');
+  if (!mate.hasBall && mate.position.distanceTo(sim.ball.position) > 2.5) {
+    fail('teammate did not come receive the pass');
+  }
+
+  for (const p of sim.players) p.hasBall = false;
+  mate.hasBall = true;
+  mate.position.set(-4, 1, -2);
+  sim.getHuman().position.set(0, 0, -8);
+  sim.getHuman().velocity.set(0, 0, 0);
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = mate.id;
+  sim.ball.lastOwnerId = mate.id;
+  sim.ball.arc = null;
+  let passed = false;
+  for (let i = 0; i < 140; i++) {
+    const before: string = sim.ball.possession;
+    sim.step(1 / 60, intent);
+    const now: string = sim.ball.possession;
+    if (before === 'held' && now === 'free' && sim.ball.lastOwnerId === mate.id) {
+      const toHuman = sim.getHuman().position.clone().sub(mate.position);
+      if (toHuman.lengthSq() > 0.01 && sim.ball.velocity.dot(toHuman.normalize()) < 2) {
+        fail('pass back was not aimed at the human');
+      }
+      passed = true;
+      break;
+    }
+  }
+  if (!passed) fail('teammate did not pass back');
+
+  sim.tunables.defenseActive = true;
+  const start = defense.position.clone();
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(defense.position).add(new THREE.Vector3(0, 0, -5));
+  mate.active = false;
+  for (let i = 0; i < 80; i++) sim.step(1 / 60, intent);
+  if (defense.position.distanceTo(start) < 0.4) fail('defense toggle did not let them chase');
+}
+
 function checkStrafe(): void {
   const sim = new Simulation(defaultTunables());
   sim.kickoffLock = 0;
@@ -246,6 +304,7 @@ export function runRotationChecks(): void {
   checkWall();
   checkStrafe();
   checkArc();
+  checkPractice();
   checkCamera(false, false);
   checkCamera(false, true);
   checkCamera(true, false);

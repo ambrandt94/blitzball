@@ -14,6 +14,7 @@ function orEdges(pending: InputIntent, fresh: InputIntent): InputIntent {
     pass: pending.pass || fresh.pass,
     shoot: pending.shoot || fresh.shoot,
     resetBall: pending.resetBall || fresh.resetBall,
+    callForPass: pending.callForPass || fresh.callForPass,
   };
 }
 
@@ -30,6 +31,7 @@ function withoutEdges(intent: InputIntent): InputIntent {
     zoomTogglePressed: false,
     toggleDev: false,
     aimRangeDelta: 0,
+    callForPass: false,
   };
 }
 
@@ -138,9 +140,14 @@ export class Game {
         this.possessionEl.classList.add('you');
       } else {
         const owner = this.sim.players[b.ownerId];
-        const team = owner?.team === 1 ? 'Orange' : 'Blue';
-        this.possessionEl.textContent = `${team} has the ball`;
-        this.possessionEl.classList.add(owner?.team === 1 ? 'orange' : 'you');
+        if (owner?.team === 0 && owner.role === 'ai') {
+          this.possessionEl.textContent = 'Teammate has the ball';
+          this.possessionEl.classList.add('you');
+        } else {
+          const team = owner?.team === 1 ? 'Orange' : 'Blue';
+          this.possessionEl.textContent = `${team} has the ball`;
+          this.possessionEl.classList.add(owner?.team === 1 ? 'orange' : 'you');
+        }
       }
     } else {
       this.possessionEl.textContent = 'Ball free — press E near it';
@@ -168,7 +175,7 @@ export class Game {
         this.sim.shotAim.active
           ? `arc ${this.sim.shotAim.origin.distanceTo(this.sim.shotAim.target).toFixed(1)}u`
           : 'arc idle',
-        `3v3 stubs: 4 inactive  AI:1`,
+        `mate + ${this.tunables.defenseActive ? 'defense chases' : 'defense holds'}`,
       ].join('\n');
     }
   }

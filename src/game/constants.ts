@@ -104,3 +104,10 @@ export const MATCH = {
   resetDelay: 1.4,
   kickoffSeparation: 6,
 };
+
+/** Practice partner. Offsets are in world units from the human at kickoff. */
+export const PRACTICE = {
+  openSide: 8,
+  openForward: 6,
+  passDelay: 1.15,
+};

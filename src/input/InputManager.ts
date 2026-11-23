@@ -13,6 +13,7 @@ const KEYS = {
   claim: ['KeyE'],
   drop: ['KeyQ'],
   pass: ['KeyF'],
+  callForPass: ['KeyG'],
   zoom: ['KeyV'],
   reset: ['KeyR'],
   toggleDev: ['Backquote'],
@@ -219,6 +220,7 @@ export class InputManager {
       toggleDev: this.anyJust(KEYS.toggleDev),
       // Wheel-up (negative deltaY) lengthens the aim. ~3 units per notch.
       aimRangeDelta: -this.wheel * 0.03,
+      callForPass: this.anyJust(KEYS.callForPass),
     };
     this.wheel = 0;
 

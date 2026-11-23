@@ -79,5 +79,6 @@ function emptyIntent(): InputIntent {
     resetBall: false,
     toggleDev: false,
     aimRangeDelta: 0,
+    callForPass: false,
   };
 }
