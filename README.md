@@ -48,7 +48,7 @@ The curve is a quadratic Bezier. The control point is the midpoint of the chord 
 
 ## What’s playable
 
-- Sphere arena with wireframe + equator / goal-axis cues
+- Sphere arena, radius 56, with wireframe + equator / goal-axis cues. Swim, pass, and shot speeds are scaled with it so a trip across the sphere takes about as long as before.
 - Human 6DOF swim with sprint; carrier speed/turn damp
 - Chase / over-shoulder camera; zoom-out hold or toggle
 - Ball claim (facing + radius), laggy hold, pass, charged shoot

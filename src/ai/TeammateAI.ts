@@ -24,7 +24,7 @@ export class TeammateAI {
       this.heldFor += dt;
       const toHuman = human.position.clone().sub(self.position);
       const dist = toHuman.length();
-      if (dist > 9) intent.move.copy(toHuman).multiplyScalar(1 / dist);
+      if (dist > 16) intent.move.copy(toHuman).multiplyScalar(1 / dist);
       if (this.heldFor >= tunables.teammatePassDelay || callForPass) intent.pass = true;
       return intent;
     }
@@ -48,7 +48,7 @@ export class TeammateAI {
     const gap = toOpen.length();
     if (gap > 1.2) {
       intent.move.copy(toOpen).multiplyScalar(1 / gap);
-      intent.sprint = callForPass || gap > 11;
+      intent.sprint = callForPass || gap > 18;
     }
     return intent;
   }
@@ -59,11 +59,11 @@ export class TeammateAI {
     const toHuman = human.position.distanceTo(ball.position);
     const speed = ball.velocity.length();
     if (ball.lastOwnerId === human.id && (speed > 3.5 || toMe + 1 < toHuman)) return true;
-    if (speed > 6 && toMe < 18) {
+    if (speed > 8 && toMe < 36) {
       const toward = self.position.clone().sub(ball.position);
       if (toward.lengthSq() > 0.01 && ball.velocity.clone().normalize().dot(toward.normalize()) > 0.35) return true;
     }
-    return toMe + 2.5 < toHuman && toMe < 12;
+    return toMe + 4 < toHuman && toMe < 24;
   }
 
   private openPoint(self: PlayerState, human: PlayerState, players: PlayerState[]): THREE.Vector3 {

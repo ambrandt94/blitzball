@@ -1,13 +1,13 @@
 /** Tunable Phase 0 greybox constants — plan defaults where Input was unanswered. */
 
-export const ARENA_RADIUS = 28;
+export const ARENA_RADIUS = 56;
 
 export const FIXED_DT = 1 / 60;
 
 export const PLAYER = {
   radius: 0.55,
-  maxSpeed: 14,
-  accel: 42,
+  maxSpeed: 28,
+  accel: 84,
   drag: 3.2,
   sprintMult: 1.35,
   carrierSpeedMult: 0.82,
@@ -16,7 +16,7 @@ export const PLAYER = {
   /** How fast the body slerps toward swim velocity (1/seconds). */
   bodyTurnRate: 7,
   /** Below this speed the body eases back to aim instead of velocity. */
-  bodyIdleSpeed: 1.8,
+  bodyIdleSpeed: 3.6,
   /** Paddle cycles per second at full sprint. */
   swimAnimRate: 1.7,
   /** Paddle / kick swing in radians at full speed. */
@@ -36,7 +36,7 @@ export const PLAYER = {
  * camera up. `chargeFlatten` scales that lob down as the charge fills.
  */
 export const SHOT_ARC = {
-  aimDistance: 16,
+  aimDistance: 32,
   height: 0.34,
   chargeFlatten: 0.55,
   minDuration: 0.28,
@@ -49,9 +49,9 @@ export const BALL = {
   restitution: 0.72,
   holdLag: 8.5,
   holdOffset: 0.85,
-  passSpeed: 22,
-  shootSpeedMin: 18,
-  shootSpeedMax: 38,
+  passSpeed: 44,
+  shootSpeedMin: 36,
+  shootSpeedMax: 76,
   chargeTime: 0.85,
   claimCooldown: 0.12,
 };
@@ -59,7 +59,7 @@ export const BALL = {
 export const WALL = {
   /** Incidence angle (radians from normal) below this = "straight hit" escape chance. */
   escapeAngle: 0.45,
-  escapeSpeed: 26,
+  escapeSpeed: 52,
   escapeRestitution: 0.15,
   bankRestitution: 0.78,
   slideFriction: 0.08,
@@ -67,19 +67,19 @@ export const WALL = {
 
 export const GOAL = {
   /** Distance of goal center from origin along ±Z (goal axis). */
-  distance: 24.5,
-  rimRadius: 2.4,
-  depth: 1.2,
+  distance: 49,
+  rimRadius: 3.6,
+  depth: 2,
 };
 
 export const CAMERA = {
   chaseDistance: 5.2,
   chaseHeight: 1.6,
-  lookAhead: 4.0,
+  lookAhead: 6,
   /** Offset follow rate (1/seconds). High enough that look stays with the mouse. */
   lag: 14,
-  zoomOutDistance: 18,
-  zoomOutHeight: 4.5,
+  zoomOutDistance: 34,
+  zoomOutHeight: 8,
   fov: 62,
   zoomOutFov: 82,
   /**
@@ -102,12 +102,12 @@ export const INPUT = {
 export const MATCH = {
   teamSize: 3,
   resetDelay: 1.4,
-  kickoffSeparation: 6,
+  kickoffSeparation: 12,
 };
 
 /** Practice partner. Offsets are in world units from the human at kickoff. */
 export const PRACTICE = {
-  openSide: 8,
-  openForward: 6,
+  openSide: 14,
+  openForward: 10,
   passDelay: 1.15,
 };

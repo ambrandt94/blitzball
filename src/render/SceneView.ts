@@ -138,7 +138,7 @@ function buildHumanoid(team: 0 | 1, marker: 'you' | 'mate' | 'none'): THREE.Grou
 
 export class SceneView {
   scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(62, 1, 0.1, 200);
+  camera = new THREE.PerspectiveCamera(62, 1, 0.1, ARENA_RADIUS * 8);
   renderer: THREE.WebGLRenderer;
 
   private playerMeshes = new Map<number, THREE.Group>();
@@ -182,7 +182,7 @@ export class SceneView {
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x102030, 1);
-    this.scene.fog = new THREE.FogExp2(0x102030, 0.007);
+    this.scene.fog = new THREE.FogExp2(0x102030, 0.2 / ARENA_RADIUS);
 
     this.trailPositions = new Float32Array(TRAIL_MAX * 3);
     this.ghostPositions = new Float32Array(GHOST_MAX * 3);

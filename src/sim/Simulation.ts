@@ -125,14 +125,15 @@ export class Simulation {
     if (full) {
       this.players = [];
       const sep = MATCH.kickoffSeparation;
+      const flank = sep * 0.85;
       // Team 0 (blue): human, one passing teammate, one stub. Attack +Z.
       this.players.push(makePlayer(0, 0, 'human', new THREE.Vector3(0, 0, -sep), true));
-      this.players.push(makePlayer(1, 0, 'ai', new THREE.Vector3(-6, 1.5, -sep - 3), true));
-      this.players.push(makePlayer(2, 0, 'stub', new THREE.Vector3(6, -1, -sep - 3), false));
+      this.players.push(makePlayer(1, 0, 'ai', new THREE.Vector3(-flank, 2, -sep - sep * 0.45), true));
+      this.players.push(makePlayer(2, 0, 'stub', new THREE.Vector3(flank, -1.5, -sep - sep * 0.45), false));
       // Team 1 (orange): one defender who holds unless Defense chases is on, plus stubs.
       this.players.push(makePlayer(3, 1, 'ai', new THREE.Vector3(0, 0, sep), true));
-      this.players.push(makePlayer(4, 1, 'stub', new THREE.Vector3(-6, -1, sep + 3), false));
-      this.players.push(makePlayer(5, 1, 'stub', new THREE.Vector3(6, 1, sep + 3), false));
+      this.players.push(makePlayer(4, 1, 'stub', new THREE.Vector3(-flank, -1.5, sep + sep * 0.4), false));
+      this.players.push(makePlayer(5, 1, 'stub', new THREE.Vector3(flank, 1.5, sep + sep * 0.4), false));
       this.humanId = 0;
       this.match.score = [0, 0];
     } else {
@@ -140,9 +141,9 @@ export class Simulation {
         if (!p.active) continue;
         const zSign = p.team === 0 ? -1 : 1;
         const z = zSign * MATCH.kickoffSeparation;
-        const side = p.id === this.humanId ? 0 : p.team === 0 ? -6 : 0;
+        const side = p.id === this.humanId ? 0 : p.team === 0 ? -MATCH.kickoffSeparation * 0.85 : 0;
         const lift = p.team === 0 && p.id !== this.humanId ? 1.5 : 0;
-        p.position.set(side, lift, z + (p.id === this.humanId ? 0 : zSign * 3));
+        p.position.set(side, lift, z + (p.id === this.humanId ? 0 : zSign * MATCH.kickoffSeparation * 0.4));
         p.velocity.set(0, 0, 0);
         p.facing.set(0, 0, p.team === 0 ? 1 : -1);
         p.up.copy(authoritativeUp(this.tunables.goalAxisUp));
@@ -308,7 +309,7 @@ export class Simulation {
   /** Mouse-wheel aim range. Call once per rendered frame, not per physics step. */
   nudgeAimDistance(delta: number): void {
     if (delta === 0) return;
-    this.aimDistanceBias = THREE.MathUtils.clamp(this.aimDistanceBias + delta, -24, 36);
+    this.aimDistanceBias = THREE.MathUtils.clamp(this.aimDistanceBias + delta, -40, 48);
   }
 
   /** Latch zoom-out when Dev is in toggle mode. Call once per press, not per step. */
