@@ -22,6 +22,7 @@ function withoutEdges(intent: InputIntent): InputIntent {
     ...intent,
     move: intent.move.clone(),
     lookDelta: { x: 0, y: 0 },
+    strafe: false,
     claim: false,
     drop: false,
     pass: false,

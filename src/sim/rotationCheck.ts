@@ -28,6 +28,7 @@ function blankIntent(zoom = false): InputIntent {
     lookDelta: { x: 0, y: 0 },
     up: 0,
     sprint: false,
+    strafe: false,
     claim: false,
     drop: false,
     pass: false,
@@ -177,10 +178,32 @@ function checkWall(): void {
   }
 }
 
+function checkStrafe(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(8, 0, 0);
+  human.facing.set(1, 0, 0);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  const intent = blankIntent();
+  intent.strafe = true;
+  intent.move.set(1, 0, 0);
+  for (let i = 0; i < 40; i++) sim.step(1 / 60, intent);
+  if (human.facing.dot(new THREE.Vector3(0, 0, 1)) < 0.85) {
+    fail(`strafe facing stayed on velocity (${human.facing.toArray().map((n) => n.toFixed(2)).join(',')})`);
+  }
+  const cap = PLAYER.maxSpeed * sim.tunables.strafeSpeedMult * 1.2;
+  if (human.velocity.length() > cap) fail(`strafe speed ${human.velocity.length().toFixed(2)} exceeded ${cap.toFixed(2)}`);
+}
+
 export function runRotationChecks(): void {
   checkRotateToward();
   checkUpPole();
   checkWall();
+  checkStrafe();
   checkCamera(false, false);
   checkCamera(false, true);
   checkCamera(true, false);

@@ -34,6 +34,8 @@ export interface Tunables {
   /** Arm/leg swing in radians at full speed. */
   swimAnimAmount: number;
   swimAnim: boolean;
+  /** Speed multiplier while right-click strafe/aim is held. */
+  strafeSpeedMult: number;
 }
 
 export interface PlayerState {
@@ -85,6 +87,8 @@ export interface InputIntent {
   lookDelta: { x: number; y: number };
   up: number; // -1..1 vertical
   sprint: boolean;
+  /** Right mouse held: body stays on the camera aim and swim speed drops. */
+  strafe: boolean;
   claim: boolean;
   drop: boolean;
   pass: boolean;

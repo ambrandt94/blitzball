@@ -21,6 +21,8 @@ export const PLAYER = {
   swimAnimRate: 1.7,
   /** Paddle / kick swing in radians at full speed. */
   swimAnimAmount: 0.7,
+  /** Swim speed while holding aim/strafe, relative to normal. */
+  strafeSpeedMult: 0.62,
   claimRadius: 1.65,
   claimFacingDot: 0.15,
   reclaimCoyote: 0.18,

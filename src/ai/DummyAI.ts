@@ -67,6 +67,7 @@ function emptyIntent(): InputIntent {
     lookDelta: { x: 0, y: 0 },
     up: 0,
     sprint: false,
+    strafe: false,
     claim: false,
     drop: false,
     pass: false,

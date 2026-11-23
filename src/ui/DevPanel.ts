@@ -23,6 +23,7 @@ export function defaultTunables(): Tunables {
     swimAnimRate: PLAYER.swimAnimRate,
     swimAnimAmount: PLAYER.swimAnimAmount,
     swimAnim: true,
+    strafeSpeedMult: PLAYER.strafeSpeedMult,
   };
 }
 
@@ -72,6 +73,7 @@ export class DevPanel {
     this.bool('Paddle anim', 'swimAnim');
     this.range('Paddle rate', 'swimAnimRate', 0.2, 4, 0.1);
     this.range('Paddle amount', 'swimAnimAmount', 0, 1.4, 0.05);
+    this.range('Strafe speed', 'strafeSpeedMult', 0.25, 1, 0.01);
   }
 
   private bool(label: string, key: keyof Tunables): void {

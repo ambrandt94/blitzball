@@ -28,15 +28,15 @@ npm run preview  # serve the build
 | Sprint | `Shift` | Left stick click |
 | Claim / tackle (along look) | `E` | A |
 | Drop (along look) | `Q` | B |
-| Quick pass | RMB | — |
-| Pass (hold to charge) | `F` | X |
+| Pass (tap, or hold to charge) | `F` | X |
+| Strafe / aim (body stays on look, slower swim) | Hold RMB | Y |
 | Shoot (hold to charge, fires along look) | LMB | RT |
 | Zoom out | `V` (hold or toggle via Dev) | LB |
 | Reset ball | `R` | Select |
 | Dev panel | `` ` `` | — |
 | Release mouse | `Esc` | — |
 
-Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. Shots, passes, claim, and drop use the camera look direction. The body turns to match that look even when you are not thrusting.
+Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. Shots, passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. Right-click does not open the browser menu.
 
 ## What’s playable
 

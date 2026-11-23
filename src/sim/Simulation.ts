@@ -319,11 +319,15 @@ export class Simulation {
     }
     if (wish.lengthSq() > 1) wish.normalize();
 
+    const aimLocked = isHuman && intent.strafe;
     player.sprinting = intent.sprint && !player.hasBall;
     let maxSpeed = PLAYER.maxSpeed;
     const accel = this.tunables.playerAccel;
     if (player.hasBall) maxSpeed *= PLAYER.carrierSpeedMult;
     if (player.sprinting) maxSpeed *= PLAYER.sprintMult;
+    // Strafe keeps the camera basis (already how human wish is built) but
+    // spends speed for a body that stays glued to the aim instead of the swim.
+    if (aimLocked) maxSpeed *= this.tunables.strafeSpeedMult;
 
     if (wish.lengthSq() > 1e-6) {
       const targetVel = wish.multiplyScalar(maxSpeed);
@@ -333,22 +337,25 @@ export class Simulation {
       player.velocity.multiplyScalar(Math.exp(-PLAYER.drag * dt));
     }
 
-    this.steerBody(player, aimDir, dt);
+    this.steerBody(player, aimDir, dt, aimLocked);
 
     clampMagnitude(player.velocity, maxSpeed * 1.15);
     player.position.addScaledVector(player.velocity, dt);
     constrainPlayerToSphere(player.position, player.velocity, PLAYER.radius);
   }
 
-  /** Face velocity while swimming, including pitch. Nearly still, ease back to aim. */
-  private steerBody(player: PlayerState, aim: THREE.Vector3, dt: number): void {
+  /**
+   * Face velocity while swimming, including pitch. Nearly still, ease back to aim.
+   * `aimLocked` (right-click strafe) keeps the nose on the camera aim.
+   */
+  private steerBody(player: PlayerState, aim: THREE.Vector3, dt: number, aimLocked = false): void {
     const speed = player.velocity.length();
     const target = this.tmp.aim;
     target.copy(aim);
     if (target.lengthSq() < 1e-8) target.copy(player.facing);
     else target.normalize();
 
-    if (speed > 1e-4) {
+    if (!aimLocked && speed > 1e-4) {
       const swim = this.tmp.upHint.copy(player.velocity).normalize();
       const follow = THREE.MathUtils.smoothstep(speed, this.tunables.bodyIdleSpeed * 0.35, this.tunables.bodyIdleSpeed);
       target.lerp(swim, follow);
