@@ -30,7 +30,9 @@ npm run preview  # serve the build
 | Drop (along look) | `Q` | B |
 | Pass (tap, or hold to charge) | `F` | X |
 | Strafe / aim (body stays on look, slower swim) | Hold RMB | Y |
-| Aim an arc shot (origin locks on press; release throws) | Hold LMB | RT |
+| Aim an arc (ball stays in the hand; release throws) | Hold LMB | RT |
+| Move the aim marker, while aiming | `WASD` (and `Space` / `C`) | Left stick |
+| Bend the arc, while aiming | Mouse | Right stick |
 | Arc range, while aiming | Mouse wheel | — |
 | Zoom out | `V` (hold or toggle via Dev) | LB |
 | Call for a pass | `G` | — |
@@ -40,11 +42,19 @@ npm run preview  # serve the build
 
 Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. Right-click does not open the browser menu.
 
+While a shot is held, `WASD` does not swim. It slides the aim marker, and the mouse bends the arc instead of looking. Let go of the mouse button to swim and look again.
+
 ## Arc shots
 
-The water sim has drag and no gravity, so a shot is not a falling parabola. Hold shoot to lock the ball's position at that moment. The mouse still looks, and the yellow marker sits on the look ray at **Arc aim distance** (mouse wheel adjusts it, clamped inside the sphere). A dashed curve previews the throw. Release to send the ball along that curve.
+The water sim has drag and no gravity, so a shot is not a falling parabola. Hold shoot and the ball stays in the carry pose, in the hands. The camera locks so the yellow marker does not slide around. It starts on the look ray at **Arc aim distance**. While you hold:
 
-The curve is a quadratic Bezier. The control point is the midpoint of the chord from the locked origin to the marker, pushed out along the camera's up by **Arc height** × chord length. **Arc charge flatten** lowers the lob as the charge meter fills, and charge also shortens the flight by lerping between the min and max shot speeds. The ball is moved along the parameter of the curve, so it arrives on the marker. If the curve meets the sphere wall or another swimmer, the script ends and the ball keeps the curve's tangent speed (banks and catches still apply).
+- `WASD` moves the marker the same way it swims. `W`/`S` push it forward and back along the look, `A`/`D` strafe it, and `Space` / `C` raise and lower it. **Arc aim speed** is how fast that slide is.
+- Mouse (and the right stick) bends the curve. Right bends it to screen-right, up bends it up, through the Bezier control point. **Arc bend speed** is world units of bend per radian. **Arc bend limit** caps that bend as a fraction of the chord.
+- The wheel also pushes the marker in and out along the look, on top of `W`/`S`. That bias is the range the next aim starts at (**Arc aim distance**).
+
+A dashed curve previews the throw and updates as the marker moves and the arc bends. Both the marker and the control point are kept inside the sphere, so the whole quadratic stays in the arena.
+
+The resting lob, before any mouse bend, is still the chord midpoint pushed along camera-up by **Arc height** × chord length. **Arc charge flatten** lowers that resting lob as the charge meter fills. It does not undo the mouse bend. Charge also shortens the flight by lerping between the min and max shot speeds. The ball is moved along the parameter of the curve, so it arrives on the marker. If the curve meets another swimmer, the script ends and the ball keeps the curve's tangent speed (banks and catches still apply).
 
 ## What’s playable
 
