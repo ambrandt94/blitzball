@@ -13,6 +13,7 @@ const KEYS = {
   claim: ['KeyE'],
   drop: ['KeyQ'],
   pass: ['KeyF'],
+  callForPass: ['KeyG'],
   zoom: ['KeyV'],
   reset: ['KeyR'],
   toggleDev: ['Backquote'],
@@ -31,7 +32,8 @@ export class InputManager {
   private pointerLocked = false;
   private lmbDown = false;
   private lmbPressed = false;
-  private rmbPressed = false;
+  private rmbDown = false;
+  private wheel = 0;
   private canvas: HTMLElement;
 
   constructor(canvas: HTMLElement) {
@@ -44,7 +46,11 @@ export class InputManager {
     document.addEventListener('mousemove', this.onMouseMove);
     canvas.addEventListener('mousedown', this.onMouseDown);
     window.addEventListener('mouseup', this.onMouseUp);
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Right-click is strafe/aim. Kill the browser menu on press and on the
+    // contextmenu event, including when the pointer is not yet locked.
+    canvas.addEventListener('contextmenu', this.onContextMenu, { capture: true });
+    document.addEventListener('contextmenu', this.onContextMenu, { capture: true });
+    canvas.addEventListener('wheel', this.onWheel, { passive: false });
   }
 
   dispose(): void {
@@ -56,7 +62,20 @@ export class InputManager {
     document.removeEventListener('mousemove', this.onMouseMove);
     this.canvas.removeEventListener('mousedown', this.onMouseDown);
     window.removeEventListener('mouseup', this.onMouseUp);
+    this.canvas.removeEventListener('contextmenu', this.onContextMenu, { capture: true });
+    document.removeEventListener('contextmenu', this.onContextMenu, { capture: true });
+    this.canvas.removeEventListener('wheel', this.onWheel);
   }
+
+  private onWheel = (e: WheelEvent): void => {
+    if (!this.pointerLocked) return;
+    this.wheel += e.deltaY;
+    e.preventDefault();
+  };
+
+  private onContextMenu = (e: Event): void => {
+    if (e.target === this.canvas || this.pointerLocked) e.preventDefault();
+  };
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (e.repeat) return;
@@ -73,6 +92,7 @@ export class InputManager {
   private onBlur = (): void => {
     this.keys.clear();
     this.lmbDown = false;
+    this.rmbDown = false;
   };
 
   private onClick = (): void => {
@@ -99,11 +119,15 @@ export class InputManager {
       this.lmbDown = true;
       this.lmbPressed = true;
     }
-    if (e.button === 2) this.rmbPressed = true;
+    if (e.button === 2) {
+      this.rmbDown = true;
+      e.preventDefault();
+    }
   };
 
   private onMouseUp = (e: MouseEvent): void => {
     if (e.button === 0) this.lmbDown = false;
+    if (e.button === 2) this.rmbDown = false;
   };
 
   private anyDown(codes: string[]): boolean {
@@ -144,6 +168,7 @@ export class InputManager {
       },
       up: (buttons[5]?.pressed ? 1 : 0) - (lt ? 1 : 0),
       sprint: buttons[10]?.pressed ?? false,
+      strafe: buttons[3]?.pressed ?? false,
       claim: a,
       drop: b,
       pass: x,
@@ -182,9 +207,10 @@ export class InputManager {
       lookDelta,
       up: (this.anyDown(KEYS.up) ? 1 : 0) - (this.anyDown(KEYS.down) ? 1 : 0),
       sprint: this.anyDown(KEYS.sprint),
+      strafe: this.rmbDown,
       claim: this.anyJust(KEYS.claim),
       drop: this.anyJust(KEYS.drop),
-      pass: this.anyJust(KEYS.pass) || this.rmbPressed,
+      pass: this.anyJust(KEYS.pass),
       shoot: this.lmbPressed,
       shootHeld: this.lmbDown,
       passHeld: this.anyDown(KEYS.pass),
@@ -192,7 +218,11 @@ export class InputManager {
       zoomTogglePressed: this.anyJust(KEYS.zoom),
       resetBall: this.anyJust(KEYS.reset),
       toggleDev: this.anyJust(KEYS.toggleDev),
+      // Wheel-up (negative deltaY) lengthens the aim. ~3 units per notch.
+      aimRangeDelta: -this.wheel * 0.03,
+      callForPass: this.anyJust(KEYS.callForPass),
     };
+    this.wheel = 0;
 
     const pad = this.readGamepad();
     if (pad) {
@@ -203,6 +233,7 @@ export class InputManager {
       }
       if (pad.up) intent.up = Math.max(-1, Math.min(1, intent.up + (pad.up ?? 0)));
       intent.sprint = intent.sprint || Boolean(pad.sprint);
+      intent.strafe = intent.strafe || Boolean(pad.strafe);
       intent.claim = intent.claim || Boolean(pad.claim);
       intent.drop = intent.drop || Boolean(pad.drop);
       intent.pass = intent.pass || Boolean(pad.pass);
@@ -216,7 +247,6 @@ export class InputManager {
 
     this.justPressed.clear();
     this.lmbPressed = false;
-    this.rmbPressed = false;
 
     return intent;
   }

@@ -6,6 +6,7 @@ import {
   GOAL,
   MATCH,
   PLAYER,
+  SHOT_ARC,
 } from '../game/constants';
 import type {
   ActionPose,
@@ -17,13 +18,18 @@ import type {
   Tunables,
 } from '../game/types';
 import { DummyAI } from '../ai/DummyAI';
+import { TeammateAI } from '../ai/TeammateAI';
 import {
   authoritativeUp,
+  chaseCameraPosition,
   clampMagnitude,
   damp,
   goalCenter,
+  lookBasis,
   rotateToward,
+  stabilizeUp,
 } from './math';
+import { arcControl, clampEndInside, quadraticPoint, quadraticVelocity } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
 function makePlayer(
@@ -57,8 +63,16 @@ export class Simulation {
   ball: BallState;
   match: MatchState;
   charge: ChargeState = { active: false, kind: null, amount: 0 };
-  /** Ghost trail samples while charging (beginner aid). */
+  /** Ghost trail samples while charging (beginner aid) or aiming an arc. */
   chargeGhost: THREE.Vector3[] = [];
+  /** Locked shot origin and the live aim marker. `active` while shoot is held. */
+  readonly shotAim = {
+    active: false,
+    origin: new THREE.Vector3(),
+    target: new THREE.Vector3(),
+  };
+  /** Added to Arc aim distance by the mouse wheel. */
+  private aimDistanceBias = 0;
   yaw = 0;
   pitch = 0;
   zoomOutLatched = false;
@@ -66,6 +80,7 @@ export class Simulation {
   /** Seconds remaining before play is live (kickoff / after goal). */
   kickoffLock = 0;
   private ai: DummyAI;
+  private teammate: TeammateAI;
   private tmp = {
     moveWorld: new THREE.Vector3(),
     camFwd: new THREE.Vector3(),
@@ -89,6 +104,7 @@ export class Simulation {
       paused: false,
     };
     this.ai = new DummyAI();
+    this.teammate = new TeammateAI();
     this.resetKickoff(true);
   }
 
@@ -101,39 +117,33 @@ export class Simulation {
       lastOwnerId: null,
       claimLock: 0,
       trail: [],
+      arc: null,
     };
   }
 
   resetKickoff(full = false): void {
     if (full) {
       this.players = [];
-      // Team 0 (blue): human + 2 stubs — south of center, attacking +Z
-      this.players.push(
-        makePlayer(0, 0, 'human', new THREE.Vector3(0, 0, -MATCH.kickoffSeparation), true),
-      );
-      this.players.push(
-        makePlayer(1, 0, 'stub', new THREE.Vector3(-4, 1, -MATCH.kickoffSeparation - 2), false),
-      );
-      this.players.push(
-        makePlayer(2, 0, 'stub', new THREE.Vector3(4, -1, -MATCH.kickoffSeparation - 2), false),
-      );
-      // Team 1 (orange): dummy AI + 2 stubs — north of center
-      this.players.push(
-        makePlayer(3, 1, 'ai', new THREE.Vector3(0, 0, MATCH.kickoffSeparation), true),
-      );
-      this.players.push(
-        makePlayer(4, 1, 'stub', new THREE.Vector3(-4, -1, MATCH.kickoffSeparation + 2), false),
-      );
-      this.players.push(
-        makePlayer(5, 1, 'stub', new THREE.Vector3(4, 1, MATCH.kickoffSeparation + 2), false),
-      );
+      const sep = MATCH.kickoffSeparation;
+      const flank = sep * 0.85;
+      // Team 0 (blue): human, one passing teammate, one stub. Attack +Z.
+      this.players.push(makePlayer(0, 0, 'human', new THREE.Vector3(0, 0, -sep), true));
+      this.players.push(makePlayer(1, 0, 'ai', new THREE.Vector3(-flank, 2, -sep - sep * 0.45), true));
+      this.players.push(makePlayer(2, 0, 'stub', new THREE.Vector3(flank, -1.5, -sep - sep * 0.45), false));
+      // Team 1 (orange): one defender who holds unless Defense chases is on, plus stubs.
+      this.players.push(makePlayer(3, 1, 'ai', new THREE.Vector3(0, 0, sep), true));
+      this.players.push(makePlayer(4, 1, 'stub', new THREE.Vector3(-flank, -1.5, sep + sep * 0.4), false));
+      this.players.push(makePlayer(5, 1, 'stub', new THREE.Vector3(flank, 1.5, sep + sep * 0.4), false));
       this.humanId = 0;
       this.match.score = [0, 0];
     } else {
       for (const p of this.players) {
         if (!p.active) continue;
-        const z = p.team === 0 ? -MATCH.kickoffSeparation : MATCH.kickoffSeparation;
-        p.position.set(p.id % 2 === 0 ? 0 : (p.id % 3) - 1, (p.id % 5) * 0.2, z);
+        const zSign = p.team === 0 ? -1 : 1;
+        const z = zSign * MATCH.kickoffSeparation;
+        const side = p.id === this.humanId ? 0 : p.team === 0 ? -MATCH.kickoffSeparation * 0.85 : 0;
+        const lift = p.team === 0 && p.id !== this.humanId ? 1.5 : 0;
+        p.position.set(side, lift, z + (p.id === this.humanId ? 0 : zSign * MATCH.kickoffSeparation * 0.4));
         p.velocity.set(0, 0, 0);
         p.facing.set(0, 0, p.team === 0 ? 1 : -1);
         p.up.copy(authoritativeUp(this.tunables.goalAxisUp));
@@ -152,8 +162,10 @@ export class Simulation {
     this.ball.lastOwnerId = null;
     this.ball.claimLock = 0.55;
     this.ball.trail = [];
+    this.ball.arc = null;
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
+    this.shotAim.active = false;
     this.match.resetTimer = 0;
     this.kickoffLock = 2.2;
     this.match.statusMessage = 'Face-off…';
@@ -218,13 +230,32 @@ export class Simulation {
 
     for (const p of this.players) {
       if (!p.active || p.role !== 'ai') continue;
+      const onDefense = p.team !== human.team;
+      if (onDefense && !this.tunables.defenseActive) {
+        p.velocity.set(0, 0, 0);
+        continue;
+      }
       if (!live) {
         p.velocity.multiplyScalar(0.9);
         continue;
       }
-      const aiIntent = this.ai.think(p, this.ball, this.players, this.tunables);
-      this.movePlayer(p, aiIntent, dt, false);
-      this.resolveAiActions(p, aiIntent, dt);
+      if (onDefense) {
+        const aiIntent = this.ai.think(p, this.ball, this.players, this.tunables);
+        this.movePlayer(p, aiIntent, dt, false);
+        this.resolveAiActions(p, aiIntent, dt);
+      } else {
+        const mateIntent = this.teammate.think(
+          p,
+          this.ball,
+          this.players,
+          this.tunables,
+          human,
+          intent.callForPass,
+          dt,
+        );
+        this.movePlayer(p, mateIntent, dt, false);
+        this.resolveTeammate(p, mateIntent);
+      }
     }
 
     if (live) this.updatePossession(human, intent, dt);
@@ -275,6 +306,12 @@ export class Simulation {
     this.pitch = THREE.MathUtils.clamp(this.pitch, -maxPitch, maxPitch);
   }
 
+  /** Mouse-wheel aim range. Call once per rendered frame, not per physics step. */
+  nudgeAimDistance(delta: number): void {
+    if (delta === 0) return;
+    this.aimDistanceBias = THREE.MathUtils.clamp(this.aimDistanceBias + delta, -40, 48);
+  }
+
   /** Latch zoom-out when Dev is in toggle mode. Call once per press, not per step. */
   noteZoomToggle(intent: InputIntent): void {
     if (!this.tunables.zoomHoldMode && intent.zoomTogglePressed) {
@@ -282,38 +319,8 @@ export class Simulation {
     }
   }
 
-  private cameraBasis(): { forward: THREE.Vector3; right: THREE.Vector3; up: THREE.Vector3 } {
-    const up = authoritativeUp(this.tunables.goalAxisUp);
-    const cy = Math.cos(this.yaw);
-    const sy = Math.sin(this.yaw);
-    const cp = Math.cos(this.pitch);
-    const sp = Math.sin(this.pitch);
-
-    // Build look direction relative to authoritative up.
-    // Base: yaw around up, pitch around right.
-    const worldUp = up.clone().normalize();
-    const worldForward = new THREE.Vector3();
-    // Reference forward perpendicular to up.
-    if (Math.abs(worldUp.z) < 0.9) worldForward.set(0, 0, 1);
-    else worldForward.set(0, 1, 0);
-    worldForward.sub(worldUp.clone().multiplyScalar(worldForward.dot(worldUp))).normalize();
-    // forward × up is screen-right for this chase camera (world -X when
-    // looking along +Z with world-Y up). Positive yaw turns toward it.
-    const worldRight = new THREE.Vector3().crossVectors(worldForward, worldUp).normalize();
-
-    const flatFwd = worldForward
-      .clone()
-      .multiplyScalar(cy)
-      .add(worldRight.clone().multiplyScalar(sy))
-      .normalize();
-    const right = new THREE.Vector3().crossVectors(flatFwd, worldUp).normalize();
-    const forward = flatFwd
-      .clone()
-      .multiplyScalar(cp)
-      .add(worldUp.clone().multiplyScalar(sp))
-      .normalize();
-    const camUp = new THREE.Vector3().crossVectors(right, forward).normalize();
-    return { forward, right, up: camUp };
+  private cameraBasis(): { forward: THREE.Vector3; right: THREE.Vector3; up: THREE.Vector3; worldUp: THREE.Vector3 } {
+    return lookBasis(this.yaw, this.pitch, this.tunables.goalAxisUp);
   }
 
   private movePlayer(
@@ -346,11 +353,15 @@ export class Simulation {
     }
     if (wish.lengthSq() > 1) wish.normalize();
 
+    const aimLocked = isHuman && intent.strafe;
     player.sprinting = intent.sprint && !player.hasBall;
     let maxSpeed = PLAYER.maxSpeed;
     const accel = this.tunables.playerAccel;
     if (player.hasBall) maxSpeed *= PLAYER.carrierSpeedMult;
     if (player.sprinting) maxSpeed *= PLAYER.sprintMult;
+    // Strafe keeps the camera basis (already how human wish is built) but
+    // spends speed for a body that stays glued to the aim instead of the swim.
+    if (aimLocked) maxSpeed *= this.tunables.strafeSpeedMult;
 
     if (wish.lengthSq() > 1e-6) {
       const targetVel = wish.multiplyScalar(maxSpeed);
@@ -360,22 +371,25 @@ export class Simulation {
       player.velocity.multiplyScalar(Math.exp(-PLAYER.drag * dt));
     }
 
-    this.steerBody(player, aimDir, dt);
+    this.steerBody(player, aimDir, dt, aimLocked);
 
     clampMagnitude(player.velocity, maxSpeed * 1.15);
     player.position.addScaledVector(player.velocity, dt);
     constrainPlayerToSphere(player.position, player.velocity, PLAYER.radius);
   }
 
-  /** Face velocity while swimming, including pitch. Nearly still, ease back to aim. */
-  private steerBody(player: PlayerState, aim: THREE.Vector3, dt: number): void {
+  /**
+   * Face velocity while swimming, including pitch. Nearly still, ease back to aim.
+   * `aimLocked` (right-click strafe) keeps the nose on the camera aim.
+   */
+  private steerBody(player: PlayerState, aim: THREE.Vector3, dt: number, aimLocked = false): void {
     const speed = player.velocity.length();
     const target = this.tmp.aim;
     target.copy(aim);
     if (target.lengthSq() < 1e-8) target.copy(player.facing);
     else target.normalize();
 
-    if (speed > 1e-4) {
+    if (!aimLocked && speed > 1e-4) {
       const swim = this.tmp.upHint.copy(player.velocity).normalize();
       const follow = THREE.MathUtils.smoothstep(speed, this.tunables.bodyIdleSpeed * 0.35, this.tunables.bodyIdleSpeed);
       target.lerp(swim, follow);
@@ -389,35 +403,33 @@ export class Simulation {
     this.alignBodyUp(player, dt);
   }
 
-  /** Keep a body-up that pitches with facing and does not roll when looking straight up. */
+  /** Pitch with facing. Twist eases toward world up and freezes near the pole instead of flipping. */
   private alignBodyUp(player: PlayerState, dt: number): void {
-    const facing = player.facing;
-    const world = authoritativeUp(this.tunables.goalAxisUp);
-    const hinted = this.tmp.faceTarget.copy(world).addScaledVector(facing, -world.dot(facing));
-    const up = player.up;
-    up.addScaledVector(facing, -up.dot(facing));
-    if (hinted.lengthSq() > 1e-4) {
-      hinted.normalize();
-      if (up.lengthSq() < 1e-6) up.copy(hinted);
-      else {
-        up.normalize();
-        damp(up, hinted, 5, dt);
-        up.addScaledVector(facing, -up.dot(facing));
-        if (up.lengthSq() < 1e-6) up.copy(hinted);
-        else up.normalize();
-      }
-    } else if (up.lengthSq() < 1e-6) {
-      up.set(1, 0, 0).addScaledVector(facing, -facing.x);
-      if (up.lengthSq() < 1e-6) up.set(0, 0, 1);
-      up.normalize();
-    } else {
-      up.normalize();
-    }
+    stabilizeUp(player.up, player.facing, authoritativeUp(this.tunables.goalAxisUp), 6, dt);
   }
 
   private playPose(player: PlayerState, pose: ActionPose, seconds: number): void {
     player.actionPose = pose;
     player.actionPoseTime = Math.max(player.actionPoseTime, seconds);
+  }
+
+  private resolveTeammate(player: PlayerState, intent: InputIntent): void {
+    if (intent.claim) this.tryClaim(player);
+    if (intent.pass && player.hasBall) this.passToHuman(player);
+  }
+
+  /** Lead the human a little so the return pass is catchable. */
+  private passToHuman(player: PlayerState): void {
+    const human = this.getHuman();
+    const aim = human.position.clone().addScaledVector(human.velocity, 0.28).sub(player.position);
+    if (aim.lengthSq() < 0.25) aim.copy(player.facing);
+    else aim.normalize();
+    this.placeRelease(player, aim);
+    const dist = Math.max(3, player.position.distanceTo(human.position));
+    const speed = Math.min(BALL.passSpeed, Math.max(BALL.passSpeed * 0.45, dist * this.tunables.ballDrag * 1.25));
+    this.releaseBall(aim.multiplyScalar(speed).addScaledVector(player.velocity, 0.15));
+    this.playPose(player, 'pass', 0.28);
+    this.match.statusMessage = 'Pass back';
   }
 
   private resolveAiActions(player: PlayerState, intent: InputIntent, _dt: number): void {
@@ -434,12 +446,25 @@ export class Simulation {
   private updatePossession(human: PlayerState, intent: InputIntent, dt: number): void {
     // Charge shoot / pass for human
     if (human.hasBall) {
-      if (intent.shootHeld) {
+      if (intent.drop) {
+        this.clearShotAim();
+        const toss = this.lookForward(human);
+        this.placeRelease(human, toss);
+        this.releaseBall(toss.multiplyScalar(4).add(human.velocity));
+        human.reclaimGrace = PLAYER.reclaimCoyote;
+        this.match.statusMessage = 'Ball dropped';
+      } else if (intent.shootHeld) {
+        if (!this.shotAim.active) {
+          this.shotAim.active = true;
+          this.shotAim.origin.copy(this.ball.position);
+        }
+        this.updateShotTarget();
         this.charge.active = true;
         this.charge.kind = 'shoot';
         this.charge.amount = Math.min(1, this.charge.amount + dt / BALL.chargeTime);
         this.playPose(human, 'shoot', 0.22);
         this.updateChargeGhost(human);
+        this.match.statusMessage = 'Aiming arc — release to shoot';
       } else if (this.charge.active && this.charge.kind === 'shoot') {
         this.releaseShot(human, this.charge.amount);
         this.charge = { active: false, kind: null, amount: 0 };
@@ -457,17 +482,8 @@ export class Simulation {
       } else if (intent.pass) {
         this.releasePass(human, 0.45);
       }
-
-      if (intent.drop) {
-        const toss = this.lookForward(human);
-        this.placeRelease(human, toss);
-        this.releaseBall(toss.multiplyScalar(4).add(human.velocity));
-        human.reclaimGrace = PLAYER.reclaimCoyote;
-        this.match.statusMessage = 'Ball dropped';
-      }
     } else {
-      this.charge = { active: false, kind: null, amount: 0 };
-      this.chargeGhost = [];
+      if (this.shotAim.active || this.charge.active) this.clearShotAim();
       if (intent.claim) this.tryClaim(human);
     }
 
@@ -522,7 +538,12 @@ export class Simulation {
     if (this.ball.possession === 'held' && this.ball.ownerId !== player.id) return;
     if (!this.canClaim(player)) return;
     this.giveBall(player);
-    this.match.statusMessage = player.role === 'human' ? 'You have the ball' : 'AI claimed the ball';
+    this.match.statusMessage =
+      player.role === 'human'
+        ? 'You have the ball'
+        : player.team === this.getHuman().team
+          ? 'Teammate has the ball'
+          : 'AI claimed the ball';
   }
 
   private giveBall(player: PlayerState): void {
@@ -556,7 +577,42 @@ export class Simulation {
     this.ball.possession = 'free';
     this.ball.ownerId = null;
     this.ball.claimLock = BALL.claimCooldown;
+    this.ball.arc = null;
     if (impulse) this.ball.velocity.copy(impulse);
+  }
+
+  private clearShotAim(): void {
+    this.shotAim.active = false;
+    this.charge = { active: false, kind: null, amount: 0 };
+    this.chargeGhost = [];
+  }
+
+  private aimDistance(): number {
+    return THREE.MathUtils.clamp(
+      this.tunables.arcAimDistance + this.aimDistanceBias,
+      4,
+      ARENA_RADIUS - BALL.radius - 0.5,
+    );
+  }
+
+  private updateShotTarget(): void {
+    const forward = this.cameraBasis().forward;
+    const raw = this.tmp.holdTarget.copy(this.shotAim.origin).addScaledVector(forward, this.aimDistance());
+    const limit = ARENA_RADIUS - BALL.radius - 0.3;
+    clampEndInside(this.shotAim.target, this.shotAim.origin, raw, limit);
+  }
+
+  /** Bezier that would fly if the shot were released at the current charge. */
+  private plannedArc(charge: number): { p0: THREE.Vector3; p1: THREE.Vector3; p2: THREE.Vector3; duration: number } {
+    const p0 = this.shotAim.origin.clone();
+    const p2 = this.shotAim.target.clone();
+    const flatten = 1 - this.tunables.arcChargeFlatten * THREE.MathUtils.clamp(charge, 0, 1);
+    const height = Math.max(0, this.tunables.arcHeight * flatten);
+    const p1 = arcControl(new THREE.Vector3(), p0, p2, this.cameraBasis().up, height);
+    const length = Math.max(0.5, p0.distanceTo(p2));
+    const speed = THREE.MathUtils.lerp(BALL.shootSpeedMin, BALL.shootSpeedMax, charge);
+    const duration = Math.max(SHOT_ARC.minDuration, length / speed);
+    return { p0, p1, p2, duration };
   }
 
   private getAimDirection(player: PlayerState, isHuman: boolean): THREE.Vector3 {
@@ -581,14 +637,44 @@ export class Simulation {
   }
 
   private releaseShot(player: PlayerState, charge: number): void {
-    const isHuman = player.role === 'human';
-    const aim = this.getAimDirection(player, isHuman);
+    if (player.role === 'human') {
+      this.releaseArcShot(player, charge);
+      return;
+    }
+    const aim = this.getAimDirection(player, false);
     this.placeRelease(player, aim);
     const speed = THREE.MathUtils.lerp(BALL.shootSpeedMin, BALL.shootSpeedMax, charge);
     const impulse = aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.35));
     this.releaseBall(impulse);
     this.playPose(player, 'shoot', 0.3);
     this.match.statusMessage = charge > 0.7 ? 'Charged shot!' : 'Shot';
+  }
+
+  /**
+   * Launch the underwater lob. The ball is parameterized on the Bezier, so it
+   * arrives on the marker instead of hoping a dragged impulse gets there.
+   * There is no gravity in the water sim — the curve is the whole flight.
+   */
+  private releaseArcShot(player: PlayerState, charge: number): void {
+    if (!this.shotAim.active) {
+      this.shotAim.active = true;
+      this.shotAim.origin.copy(this.ball.position);
+      this.updateShotTarget();
+    }
+    const arc = this.plannedArc(charge);
+    this.releaseBall();
+    this.ball.position.copy(arc.p0);
+    this.ball.arc = {
+      p0: arc.p0,
+      p1: arc.p1,
+      p2: arc.p2,
+      elapsed: 0,
+      duration: arc.duration,
+    };
+    quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 0, arc.duration);
+    this.shotAim.active = false;
+    this.playPose(player, 'shoot', 0.3);
+    this.match.statusMessage = charge > 0.7 ? 'Charged arc!' : 'Arc shot';
   }
 
   /** Put a released ball just outside the body along `aim` so the carrier doesn't block it. */
@@ -627,6 +713,17 @@ export class Simulation {
       this.chargeGhost = [];
       return;
     }
+    if (this.charge.kind === 'shoot' && this.shotAim.active) {
+      const arc = this.plannedArc(this.charge.amount);
+      const samples: THREE.Vector3[] = [];
+      const point = new THREE.Vector3();
+      for (let i = 0; i <= SHOT_ARC.samples; i++) {
+        quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
+        samples.push(point.clone());
+      }
+      this.chargeGhost = samples;
+      return;
+    }
     const isHuman = player.role === 'human';
     const aim = this.getAimDirection(player, isHuman).clone();
     const speed =
@@ -652,9 +749,19 @@ export class Simulation {
   }
 
   private updateBall(dt: number): void {
+    if (this.ball.arc) {
+      const scripted = this.advanceArc(dt);
+      if (scripted) return;
+    }
+
     if (this.ball.possession === 'held' && this.ball.ownerId !== null) {
       const owner = this.players[this.ball.ownerId];
       if (!owner) return;
+      if (this.shotAim.active && owner.id === this.humanId) {
+        this.ball.position.copy(this.shotAim.origin);
+        this.ball.velocity.set(0, 0, 0);
+        return;
+      }
       const holdTarget = this.tmp.holdTarget
         .copy(owner.position)
         .add(owner.facing.clone().multiplyScalar(BALL.holdOffset))
@@ -698,6 +805,41 @@ export class Simulation {
     }
   }
 
+  /**
+   * Step the lob. Returns true while the ball is still on the curve.
+   * A sphere hit or another swimmer drops it into free physics with the
+   * curve's tangent speed, so banks and catches still work.
+   */
+  private advanceArc(dt: number): boolean {
+    const arc = this.ball.arc;
+    if (!arc) return false;
+    arc.elapsed += dt;
+    const t = arc.elapsed / arc.duration;
+    if (t >= 1) {
+      this.ball.position.copy(arc.p2);
+      quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 1, arc.duration).multiplyScalar(0.35);
+      this.ball.arc = null;
+      return false;
+    }
+    const pos = quadraticPoint(this.tmp.holdTarget, arc.p0, arc.p1, arc.p2, t);
+    const vel = quadraticVelocity(this.tmp.aim, arc.p0, arc.p1, arc.p2, t, arc.duration);
+    const limit = ARENA_RADIUS - BALL.radius;
+    const blocked =
+      pos.length() > limit ||
+      this.players.some((p) => {
+        if (!p.active) return false;
+        if (p.id === this.ball.lastOwnerId && arc.elapsed < 0.22) return false;
+        return p.position.distanceTo(pos) < PLAYER.radius + BALL.radius;
+      });
+    this.ball.position.copy(pos);
+    this.ball.velocity.copy(vel);
+    if (blocked) {
+      this.ball.arc = null;
+      return false;
+    }
+    return true;
+  }
+
   private checkGoals(): void {
     if (this.match.resetTimer > 0) return;
     if (this.ball.possession === 'held') return;
@@ -737,22 +879,25 @@ export class Simulation {
     const zoom = this.isZoomOut(intent);
     const dist = zoom ? CAMERA.zoomOutDistance : CAMERA.chaseDistance;
     const height = zoom ? CAMERA.zoomOutHeight : CAMERA.chaseHeight;
-    const up = authoritativeUp(this.tunables.goalAxisUp);
-    const position = human.position
-      .clone()
-      .addScaledVector(basis.forward, -dist)
-      .addScaledVector(up, height);
-    // Keep camera inside sphere soft
-    const maxCam = ARENA_RADIUS - 1.2;
-    if (position.length() > maxCam) position.setLength(maxCam);
+    const position = chaseCameraPosition(
+      new THREE.Vector3(),
+      human.position,
+      basis.forward,
+      basis.worldUp,
+      dist,
+      height,
+      ARENA_RADIUS - CAMERA.wallClearance,
+    );
     const target = human.position
       .clone()
       .addScaledVector(basis.forward, CAMERA.lookAhead * 0.35)
-      .addScaledVector(up, 0.4);
+      .addScaledVector(basis.worldUp, 0.4);
     return {
       position,
       target,
-      up,
+      // Pitched basis up, not world up. World up is parallel to the look
+      // direction at the pole, and lookAt's cross product flips there.
+      up: basis.up,
       fov: zoom ? CAMERA.zoomOutFov : CAMERA.fov,
     };
   }

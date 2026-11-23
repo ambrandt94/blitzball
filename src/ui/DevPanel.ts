@@ -1,4 +1,4 @@
-import { BALL, PLAYER, WALL } from '../game/constants';
+import { BALL, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
 import type { Tunables } from '../game/types';
 
 export function defaultTunables(): Tunables {
@@ -23,6 +23,12 @@ export function defaultTunables(): Tunables {
     swimAnimRate: PLAYER.swimAnimRate,
     swimAnimAmount: PLAYER.swimAnimAmount,
     swimAnim: true,
+    strafeSpeedMult: PLAYER.strafeSpeedMult,
+    arcAimDistance: SHOT_ARC.aimDistance,
+    arcHeight: SHOT_ARC.height,
+    arcChargeFlatten: SHOT_ARC.chargeFlatten,
+    defenseActive: false,
+    teammatePassDelay: PRACTICE.passDelay,
   };
 }
 
@@ -60,18 +66,24 @@ export class DevPanel {
     this.bool('Invert mouse look Y', 'mouseLookInvertY');
     this.bool('Charge ghost trail', 'showChargeGhost');
     this.bool('Debug stats', 'showDebugStats');
-    this.range('Wall escape speed', 'wallEscapeSpeed', 10, 45, 0.5);
+    this.bool('Defense chases', 'defenseActive');
+    this.range('Wall escape speed', 'wallEscapeSpeed', 20, 110, 0.5);
     this.range('Wall escape angle', 'wallEscapeAngle', 0.1, 1.2, 0.01);
     this.range('Claim radius', 'claimRadius', 0.8, 3.5, 0.05);
     this.range('Hold lag', 'holdLag', 2, 20, 0.1);
-    this.range('Player accel', 'playerAccel', 15, 80, 1);
+    this.range('Player accel', 'playerAccel', 30, 170, 1);
     this.range('Ball drag', 'ballDrag', 0.2, 3, 0.05);
     this.range('Aim assist', 'aimAssist', 0, 1, 0.05);
     this.range('Body turn rate', 'bodyTurnRate', 2, 16, 0.5);
-    this.range('Idle face speed', 'bodyIdleSpeed', 0.2, 6, 0.1);
+    this.range('Idle face speed', 'bodyIdleSpeed', 0.4, 12, 0.1);
     this.bool('Paddle anim', 'swimAnim');
     this.range('Paddle rate', 'swimAnimRate', 0.2, 4, 0.1);
     this.range('Paddle amount', 'swimAnimAmount', 0, 1.4, 0.05);
+    this.range('Strafe speed', 'strafeSpeedMult', 0.25, 1, 0.01);
+    this.range('Arc aim distance', 'arcAimDistance', 8, 90, 0.5);
+    this.range('Arc height', 'arcHeight', 0, 0.8, 0.01);
+    this.range('Arc charge flatten', 'arcChargeFlatten', 0, 1, 0.05);
+    this.range('Teammate pass delay', 'teammatePassDelay', 0.3, 3, 0.05);
   }
 
   private bool(label: string, key: keyof Tunables): void {

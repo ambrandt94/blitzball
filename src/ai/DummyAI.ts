@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GOAL } from '../game/constants';
 import type { BallState, InputIntent, PlayerState, Tunables } from '../game/types';
 import { goalCenter } from '../sim/math';
 
@@ -33,7 +34,7 @@ export class DummyAI {
       intent.move.copy(toGoal);
       intent.up = toGoal.y;
       // Hesitate before shooting so human can contest
-      if (dist < 14 && self.facing.dot(toGoal) > 0.55 && Math.random() < 0.025) {
+      if (dist < GOAL.distance * 0.55 && self.facing.dot(toGoal) > 0.55 && Math.random() < 0.025) {
         intent.shoot = true;
       }
     } else if (ball.possession === 'free') {
@@ -67,6 +68,7 @@ function emptyIntent(): InputIntent {
     lookDelta: { x: 0, y: 0 },
     up: 0,
     sprint: false,
+    strafe: false,
     claim: false,
     drop: false,
     pass: false,
@@ -77,5 +79,7 @@ function emptyIntent(): InputIntent {
     zoomTogglePressed: false,
     resetBall: false,
     toggleDev: false,
+    aimRangeDelta: 0,
+    callForPass: false,
   };
 }
