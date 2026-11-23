@@ -46,6 +46,23 @@ export interface Tunables {
   defenseActive: boolean;
   /** Seconds the teammate holds the ball before passing it back. */
   teammatePassDelay: number;
+  /** World-unit shift of the over-the-shoulder camera while strafing. */
+  shoulderOffset: number;
+  /** Ease rate for that shift (1/seconds). Higher is snappier. */
+  shoulderTransition: number;
+  /** Fallback distance of the right-click aim cursor. */
+  aimCursorDistance: number;
+}
+
+export type AimCursorKind = 'air' | 'wall' | 'player' | 'ball' | 'goal';
+
+/** World-space marker for the right-click look ray. */
+export interface AimCursorState {
+  visible: boolean;
+  kind: AimCursorKind;
+  position: THREE.Vector3;
+  /** Team tint for a player or the goal they score in. Null for air, wall, and ball. */
+  team: TeamId | null;
 }
 
 export interface PlayerState {

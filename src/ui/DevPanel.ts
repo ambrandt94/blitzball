@@ -1,4 +1,4 @@
-import { BALL, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
+import { BALL, CAMERA, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
 import type { Tunables } from '../game/types';
 
 export function defaultTunables(): Tunables {
@@ -29,6 +29,9 @@ export function defaultTunables(): Tunables {
     arcChargeFlatten: SHOT_ARC.chargeFlatten,
     defenseActive: false,
     teammatePassDelay: PRACTICE.passDelay,
+    shoulderOffset: CAMERA.shoulderOffset,
+    shoulderTransition: CAMERA.shoulderTransition,
+    aimCursorDistance: CAMERA.aimCursorDistance,
   };
 }
 
@@ -80,6 +83,9 @@ export class DevPanel {
     this.range('Paddle rate', 'swimAnimRate', 0.2, 4, 0.1);
     this.range('Paddle amount', 'swimAnimAmount', 0, 1.4, 0.05);
     this.range('Strafe speed', 'strafeSpeedMult', 0.25, 1, 0.01);
+    this.range('Shoulder offset', 'shoulderOffset', 0, 3.2, 0.05);
+    this.range('Shoulder transition', 'shoulderTransition', 1, 18, 0.1);
+    this.range('Aim cursor distance', 'aimCursorDistance', 6, 48, 0.5);
     this.range('Arc aim distance', 'arcAimDistance', 8, 90, 0.5);
     this.range('Arc height', 'arcHeight', 0, 0.8, 0.01);
     this.range('Arc charge flatten', 'arcChargeFlatten', 0, 1, 0.05);

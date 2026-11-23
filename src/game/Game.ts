@@ -119,6 +119,7 @@ export class Game {
     }
     this.pendingEdge = steps > 0 ? null : intent;
 
+    this.sim.updateAimPresentation(fresh, dt);
     this.lastZoom = this.sim.isZoomOut(fresh);
     this.view.sync(this.sim, this.lastZoom, dt);
     this.view.render();
@@ -175,6 +176,8 @@ export class Game {
         this.sim.shotAim.active
           ? `arc ${this.sim.shotAim.origin.distanceTo(this.sim.shotAim.target).toFixed(1)}u`
           : 'arc idle',
+        `shoulder ${this.sim.shoulderLateral.toFixed(2)}`,
+        this.sim.aimCursor.visible ? `cursor ${this.sim.aimCursor.kind}` : 'cursor off',
         `mate + ${this.tunables.defenseActive ? 'defense chases' : 'defense holds'}`,
       ].join('\n');
     }

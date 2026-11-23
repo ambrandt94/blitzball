@@ -41,6 +41,10 @@ export const SHOT_ARC = {
   chargeFlatten: 0.55,
   minDuration: 0.28,
   samples: 22,
+  /** How fast A/D and W/S slide the marker while a shot is held. */
+  nudgeSpeed: 12,
+  /** Clamp on the combined left/right and up/down marker offset. */
+  nudgeMax: 22,
 };
 
 export const BALL = {
@@ -88,6 +92,15 @@ export const CAMERA = {
    * and the chase ray can stay behind them.
    */
   wallClearance: 0.35,
+  /** Lateral shift while right-click aim is held. Positive is the aim's right shoulder. */
+  shoulderOffset: 1.55,
+  /** How fast the shoulder shift eases in and out, in 1/seconds. */
+  shoulderTransition: 6.5,
+  /**
+   * Strafe cursor distance along the look ray when it does not hit a player,
+   * the ball, a goal, or the shell first.
+   */
+  aimCursorDistance: 18,
 };
 
 export const INPUT = {

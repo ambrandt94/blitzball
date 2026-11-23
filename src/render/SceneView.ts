@@ -151,6 +151,9 @@ export class SceneView {
   private ghostPositions: Float32Array;
   private shotMarker!: THREE.Mesh;
   private shotMarkerRing!: THREE.Mesh;
+  private aimCursor!: THREE.Group;
+  private aimCursorMat!: THREE.MeshBasicMaterial;
+  private aimCursorCore!: THREE.MeshBasicMaterial;
   private pip!: THREE.Sprite;
   private pipFree: THREE.CanvasTexture;
   private pipYou: THREE.CanvasTexture;
@@ -197,6 +200,7 @@ export class SceneView {
     this.buildGoals();
     this.buildBall();
     this.buildGhosts();
+    this.buildAimCursor();
   }
 
   private buildLights(): void {
@@ -376,6 +380,40 @@ export class SceneView {
     this.scene.add(this.shotMarkerRing);
   }
 
+  /** World-space reticle for the right-click look ray. Faces the camera each frame. */
+  private buildAimCursor(): void {
+    this.aimCursorMat = new THREE.MeshBasicMaterial({
+      color: 0x9af3ff,
+      transparent: true,
+      opacity: 1,
+      depthTest: false,
+      depthWrite: false,
+      fog: false,
+    });
+    this.aimCursorCore = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      depthTest: false,
+      depthWrite: false,
+      fog: false,
+    });
+    const group = new THREE.Group();
+    group.renderOrder = 5;
+    group.add(new THREE.Mesh(new THREE.TorusGeometry(0.82, 0.09, 8, 32), this.aimCursorMat));
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 8), this.aimCursorCore);
+    core.renderOrder = 6;
+    group.add(core);
+    for (let i = 0; i < 4; i++) {
+      const tick = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.1, 0.1), this.aimCursorMat);
+      const a = (i / 4) * Math.PI * 2;
+      tick.position.set(Math.cos(a) * 1.18, Math.sin(a) * 1.18, 0);
+      tick.rotation.z = a;
+      group.add(tick);
+    }
+    group.visible = false;
+    this.aimCursor = group;
+    this.scene.add(group);
+  }
+
   ensurePlayers(sim: Simulation): void {
     for (const p of sim.players) {
       if (this.playerMeshes.has(p.id)) continue;
@@ -547,6 +585,35 @@ export class SceneView {
       this.shotMarkerRing.position.copy(sim.shotAim.target);
       this.shotMarkerRing.lookAt(this.camera.position);
     }
+
+    this.syncAimCursor(sim);
+  }
+
+  private syncAimCursor(sim: Simulation): void {
+    const cursor = sim.aimCursor;
+    this.aimCursor.visible = cursor.visible;
+    if (!cursor.visible) return;
+
+    this.aimCursor.position.copy(cursor.position);
+    const toCam = this.camScratch.view.copy(this.camera.position).sub(cursor.position);
+    if (toCam.lengthSq() > 1e-4) {
+      this.aimCursor.position.addScaledVector(toCam.normalize(), 0.28);
+    }
+    this.aimCursor.quaternion.copy(this.camera.quaternion);
+
+    const dist = Math.max(1, this.camera.position.distanceTo(this.aimCursor.position));
+    const acquired = cursor.kind === 'player' || cursor.kind === 'ball' || cursor.kind === 'goal';
+    const pulse = acquired ? 1 + Math.sin(this.pulse * 7) * 0.07 : 1;
+    const scale = THREE.MathUtils.clamp(dist * 0.055, 1.05, 3.2) * pulse;
+    this.aimCursor.scale.setScalar(scale);
+
+    let color = 0x9af3ff;
+    if (cursor.kind === 'wall') color = 0xd5e6f2;
+    else if (cursor.kind === 'ball') color = 0xffe066;
+    else if (cursor.kind === 'goal') color = 0xc8ff9a;
+    else if (cursor.kind === 'player') color = TEAM_COLORS[cursor.team ?? 0] ?? 0x9af3ff;
+    this.aimCursorMat.color.setHex(color);
+    this.aimCursorMat.opacity = acquired ? 1 : 0.95;
   }
 
   /** Point local +Z along facing and local +Y along up, with no lookAt branch. */

@@ -10,11 +10,14 @@ import {
 } from '../game/constants';
 import type {
   ActionPose,
+  AimCursorKind,
+  AimCursorState,
   BallState,
   ChargeState,
   InputIntent,
   MatchState,
   PlayerState,
+  TeamId,
   Tunables,
 } from '../game/types';
 import { DummyAI } from '../ai/DummyAI';
@@ -71,8 +74,24 @@ export class Simulation {
     origin: new THREE.Vector3(),
     target: new THREE.Vector3(),
   };
+  /**
+   * Marker offset while a shot is held, in camera axes.
+   * X is aim-right (A/D). Y is aim-up (W/S). The wheel owns distance.
+   */
+  private aimOffsetRight = 0;
+  private aimOffsetUp = 0;
   /** Added to Arc aim distance by the mouse wheel. */
   private aimDistanceBias = 0;
+  /** Smoothed lateral camera shift. Positive sits on the aim's right shoulder. */
+  shoulderLateral = 0;
+  /** Right-click aim cursor. Hidden unless strafe is held. */
+  readonly aimCursor: AimCursorState = {
+    visible: false,
+    kind: 'air',
+    position: new THREE.Vector3(),
+    team: null,
+  };
+  private strafing = false;
   yaw = 0;
   pitch = 0;
   zoomOutLatched = false;
@@ -90,6 +109,7 @@ export class Simulation {
     aim: new THREE.Vector3(),
     faceTarget: new THREE.Vector3(),
     upHint: new THREE.Vector3(),
+    side: new THREE.Vector3(),
   };
 
   tunables: Tunables;
@@ -333,6 +353,13 @@ export class Simulation {
 
     const moveLocal = intent.move.clone();
     if (moveLocal.lengthSq() > 1) moveLocal.normalize();
+    // While a shot is held, WASD slides the marker instead of swimming.
+    // Space/C (intent.up) still move the body along camera up.
+    const steeringArc = isHuman && player.hasBall && intent.shootHeld;
+    if (steeringArc) {
+      moveLocal.x = 0;
+      moveLocal.z = 0;
+    }
 
     // Human: camera-relative stick. AI: intent.move is already a world-space wish (xyz).
     // Idle fallback: camera look for the human, the move wish for AI.
@@ -457,14 +484,16 @@ export class Simulation {
         if (!this.shotAim.active) {
           this.shotAim.active = true;
           this.shotAim.origin.copy(this.ball.position);
+          this.resetAimOffsets();
         }
+        this.nudgeShotMarker(intent, dt);
         this.updateShotTarget();
         this.charge.active = true;
         this.charge.kind = 'shoot';
         this.charge.amount = Math.min(1, this.charge.amount + dt / BALL.chargeTime);
         this.playPose(human, 'shoot', 0.22);
         this.updateChargeGhost(human);
-        this.match.statusMessage = 'Aiming arc — release to shoot';
+        this.match.statusMessage = 'Aiming — W/S up/down, A/D left/right, wheel range';
       } else if (this.charge.active && this.charge.kind === 'shoot') {
         this.releaseShot(human, this.charge.amount);
         this.charge = { active: false, kind: null, amount: 0 };
@@ -581,10 +610,30 @@ export class Simulation {
     if (impulse) this.ball.velocity.copy(impulse);
   }
 
+  private resetAimOffsets(): void {
+    this.aimOffsetRight = 0;
+    this.aimOffsetUp = 0;
+  }
+
   private clearShotAim(): void {
     this.shotAim.active = false;
+    this.resetAimOffsets();
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
+  }
+
+  /** A/D slide the marker on aim-right. W/S raise and lower it. Wheel owns range. */
+  private nudgeShotMarker(intent: InputIntent, dt: number): void {
+    const speed = SHOT_ARC.nudgeSpeed;
+    this.aimOffsetRight += intent.move.x * speed * dt;
+    this.aimOffsetUp += intent.move.z * speed * dt;
+    const mag = Math.hypot(this.aimOffsetRight, this.aimOffsetUp);
+    const max = SHOT_ARC.nudgeMax;
+    if (mag > max && mag > 1e-6) {
+      const scale = max / mag;
+      this.aimOffsetRight *= scale;
+      this.aimOffsetUp *= scale;
+    }
   }
 
   private aimDistance(): number {
@@ -596,8 +645,12 @@ export class Simulation {
   }
 
   private updateShotTarget(): void {
-    const forward = this.cameraBasis().forward;
-    const raw = this.tmp.holdTarget.copy(this.shotAim.origin).addScaledVector(forward, this.aimDistance());
+    const basis = this.cameraBasis();
+    const raw = this.tmp.holdTarget
+      .copy(this.shotAim.origin)
+      .addScaledVector(basis.forward, this.aimDistance())
+      .addScaledVector(basis.right, this.aimOffsetRight)
+      .addScaledVector(basis.up, this.aimOffsetUp);
     const limit = ARENA_RADIUS - BALL.radius - 0.3;
     clampEndInside(this.shotAim.target, this.shotAim.origin, raw, limit);
   }
@@ -673,6 +726,7 @@ export class Simulation {
     };
     quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 0, arc.duration);
     this.shotAim.active = false;
+    this.resetAimOffsets();
     this.playPose(player, 'shoot', 0.3);
     this.match.statusMessage = charge > 0.7 ? 'Charged arc!' : 'Arc shot';
   }
@@ -877,8 +931,11 @@ export class Simulation {
     const human = this.getHuman();
     const basis = this.cameraBasis();
     const zoom = this.isZoomOut(intent);
+    const span = Math.max(0.25, this.tunables.shoulderOffset);
+    const shoulder01 = THREE.MathUtils.clamp(Math.abs(this.shoulderLateral) / span, 0, 1);
     const dist = zoom ? CAMERA.zoomOutDistance : CAMERA.chaseDistance;
-    const height = zoom ? CAMERA.zoomOutHeight : CAMERA.chaseHeight;
+    // A little extra height as the camera slides onto the shoulder.
+    const height = (zoom ? CAMERA.zoomOutHeight : CAMERA.chaseHeight) + 0.3 * shoulder01;
     const position = chaseCameraPosition(
       new THREE.Vector3(),
       human.position,
@@ -887,11 +944,16 @@ export class Simulation {
       dist,
       height,
       ARENA_RADIUS - CAMERA.wallClearance,
+      basis.right,
+      this.shoulderLateral,
     );
+    // Look further down the aim ray once the camera is off to the side, so the
+    // swimmer sits on the opposite edge and the look ray stays near center.
+    const ahead = THREE.MathUtils.lerp(CAMERA.lookAhead * 0.35, CAMERA.lookAhead * 2.4, shoulder01);
     const target = human.position
       .clone()
-      .addScaledVector(basis.forward, CAMERA.lookAhead * 0.35)
-      .addScaledVector(basis.worldUp, 0.4);
+      .addScaledVector(basis.forward, ahead)
+      .addScaledVector(basis.worldUp, 0.4 * (1 - shoulder01 * 0.65));
     return {
       position,
       target,
@@ -900,5 +962,163 @@ export class Simulation {
       up: basis.up,
       fov: zoom ? CAMERA.zoomOutFov : CAMERA.fov,
     };
+  }
+
+  /**
+   * Ease the shoulder camera and place the strafe cursor. Call once per
+   * rendered frame, after look and physics, so the marker matches this picture.
+   */
+  updateAimPresentation(intent: InputIntent, dt: number): void {
+    this.strafing = intent.strafe;
+    this.updateShoulder(Math.max(0, dt));
+    this.updateAimCursor();
+  }
+
+  /**
+   * +1 is the aim's right shoulder. A held ball clearly on the other side of
+   * the look ray flips the camera so you sight over that hand. Empty hands,
+   * and a ball sitting on the center line, stay on the right.
+   */
+  private shoulderSign(player: PlayerState): number {
+    if (!player.hasBall || this.ball.ownerId !== player.id) return 1;
+    const right = this.cameraBasis().right;
+    const lateral = this.tmp.side.copy(this.ball.position).sub(player.position).dot(right);
+    if (Math.abs(lateral) < 0.45) return 1;
+    return Math.sign(lateral);
+  }
+
+  private updateShoulder(dt: number): void {
+    const desired = this.strafing ? this.shoulderSign(this.getHuman()) * this.tunables.shoulderOffset : 0;
+    const rate = Math.max(0, this.tunables.shoulderTransition);
+    const alpha = 1 - Math.exp(-rate * dt);
+    this.shoulderLateral += (desired - this.shoulderLateral) * alpha;
+    if (!this.strafing && Math.abs(this.shoulderLateral) < 0.01) this.shoulderLateral = 0;
+  }
+
+  /** Nearest t past `minT` on a sphere. The far root is used when the ray starts inside. */
+  private raySphereT(
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    cx: number,
+    cy: number,
+    cz: number,
+    radius: number,
+    minT: number,
+  ): number | null {
+    const lx = ox - cx;
+    const ly = oy - cy;
+    const lz = oz - cz;
+    const b = lx * dx + ly * dy + lz * dz;
+    const c = lx * lx + ly * ly + lz * lz - radius * radius;
+    const disc = b * b - c;
+    if (disc < 0) return null;
+    const s = Math.sqrt(disc);
+    const near = -b - s;
+    if (near > minT) return near;
+    const far = -b + s;
+    if (far > minT) return far;
+    return null;
+  }
+
+  private updateAimCursor(): void {
+    if (!this.strafing) {
+      this.aimCursor.visible = false;
+      return;
+    }
+
+    const human = this.getHuman();
+    const origin = this.tmp.side.copy(human.position);
+    const dir = this.tmp.aim.copy(this.cameraBasis().forward);
+    if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1);
+    else dir.normalize();
+
+    const ox = origin.x;
+    const oy = origin.y;
+    const oz = origin.z;
+    const dx = dir.x;
+    const dy = dir.y;
+    const dz = dir.z;
+
+    let bestT = Infinity;
+    let kind: AimCursorKind = 'air';
+    let team: TeamId | null = null;
+    const consider = (t: number | null, nextKind: AimCursorKind, nextTeam: TeamId | null): void => {
+      if (t === null || t >= bestT) return;
+      bestT = t;
+      kind = nextKind;
+      team = nextTeam;
+    };
+
+    for (const p of this.players) {
+      if (!p.active || p.role === 'stub' || p.id === human.id) continue;
+      consider(
+        this.raySphereT(ox, oy, oz, dx, dy, dz, p.position.x, p.position.y, p.position.z, PLAYER.radius + 0.12, 0.45),
+        'player',
+        p.team,
+      );
+    }
+
+    const holding = this.ball.possession === 'held' && this.ball.ownerId === human.id;
+    if (!holding) {
+      consider(
+        this.raySphereT(
+          ox,
+          oy,
+          oz,
+          dx,
+          dy,
+          dz,
+          this.ball.position.x,
+          this.ball.position.y,
+          this.ball.position.z,
+          BALL.radius + 0.1,
+          0.45,
+        ),
+        'ball',
+        null,
+      );
+    }
+
+    const mouth = GOAL.rimRadius + 0.35;
+    for (const scoringTeam of [0, 1] as const) {
+      const goalZ = scoringTeam === 0 ? GOAL.distance : -GOAL.distance;
+      if (Math.abs(dz) < 1e-5) continue;
+      const t = (goalZ - oz) / dz;
+      if (t <= 0.45) continue;
+      const x = ox + dx * t;
+      const y = oy + dy * t;
+      if (x * x + y * y <= mouth * mouth) consider(t, 'goal', scoringTeam);
+    }
+
+    // Shell sits just inside the glass so the marker is not buried in the wall.
+    const wallT = this.raySphereT(ox, oy, oz, dx, dy, dz, 0, 0, 0, ARENA_RADIUS - 0.45, 0.02);
+    const cursorDist = THREE.MathUtils.clamp(this.tunables.aimCursorDistance, 4, ARENA_RADIUS - 1);
+
+    let t: number;
+    if (Number.isFinite(bestT) && (wallT === null || bestT <= wallT + 0.02)) {
+      t = bestT;
+    } else if (wallT !== null && wallT <= cursorDist) {
+      t = wallT;
+      kind = 'wall';
+      team = null;
+    } else {
+      t = wallT !== null ? Math.min(cursorDist, wallT) : cursorDist;
+      kind = 'air';
+      team = null;
+    }
+
+    const point = this.aimCursor.position.copy(origin).addScaledVector(dir, t);
+    const limit = ARENA_RADIUS - 0.4;
+    if (point.length() > limit) {
+      point.setLength(limit);
+      if (kind === 'air') kind = 'wall';
+    }
+    this.aimCursor.visible = true;
+    this.aimCursor.kind = kind;
+    this.aimCursor.team = team;
   }
 }
