@@ -29,6 +29,20 @@ export const PLAYER = {
   tackleCooldown: 0.55,
 };
 
+/**
+ * Underwater shots are not gravity arcs. The ball only feels drag once it is
+ * free, so a shot is a quadratic Bezier from the locked press-point to the
+ * aim marker. `height` is the lob as a fraction of the chord, pushed along
+ * camera up. `chargeFlatten` scales that lob down as the charge fills.
+ */
+export const SHOT_ARC = {
+  aimDistance: 16,
+  height: 0.34,
+  chargeFlatten: 0.55,
+  minDuration: 0.28,
+  samples: 22,
+};
+
 export const BALL = {
   radius: 0.42,
   drag: 1.1,

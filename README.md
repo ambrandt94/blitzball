@@ -30,13 +30,20 @@ npm run preview  # serve the build
 | Drop (along look) | `Q` | B |
 | Pass (tap, or hold to charge) | `F` | X |
 | Strafe / aim (body stays on look, slower swim) | Hold RMB | Y |
-| Shoot (hold to charge, fires along look) | LMB | RT |
+| Aim an arc shot (origin locks on press; release throws) | Hold LMB | RT |
+| Arc range, while aiming | Mouse wheel | — |
 | Zoom out | `V` (hold or toggle via Dev) | LB |
 | Reset ball | `R` | Select |
 | Dev panel | `` ` `` | — |
 | Release mouse | `Esc` | — |
 
-Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. Shots, passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. Right-click does not open the browser menu.
+Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. Right-click does not open the browser menu.
+
+## Arc shots
+
+The water sim has drag and no gravity, so a shot is not a falling parabola. Hold shoot to lock the ball's position at that moment. The mouse still looks, and the yellow marker sits on the look ray at **Arc aim distance** (mouse wheel adjusts it, clamped inside the sphere). A dashed curve previews the throw. Release to send the ball along that curve.
+
+The curve is a quadratic Bezier. The control point is the midpoint of the chord from the locked origin to the marker, pushed out along the camera's up by **Arc height** × chord length. **Arc charge flatten** lowers the lob as the charge meter fills, and charge also shortens the flight by lerping between the min and max shot speeds. The ball is moved along the parameter of the curve, so it arrives on the marker. If the curve meets the sphere wall or another swimmer, the script ends and the ball keeps the curve's tangent speed (banks and catches still apply).
 
 ## What’s playable
 

@@ -22,7 +22,6 @@ function withoutEdges(intent: InputIntent): InputIntent {
     ...intent,
     move: intent.move.clone(),
     lookDelta: { x: 0, y: 0 },
-    strafe: false,
     claim: false,
     drop: false,
     pass: false,
@@ -30,6 +29,7 @@ function withoutEdges(intent: InputIntent): InputIntent {
     resetBall: false,
     zoomTogglePressed: false,
     toggleDev: false,
+    aimRangeDelta: 0,
   };
 }
 
@@ -104,6 +104,7 @@ export class Game {
     // Mouse look is a per-frame distance, not a per-tick rate. Apply it even
     // when this frame does not run a physics step, and never more than once.
     this.sim.applyFrameLook(fresh);
+    this.sim.nudgeAimDistance(fresh.aimRangeDelta);
     this.sim.noteZoomToggle(fresh);
 
     const intent = this.pendingEdge ? orEdges(this.pendingEdge, fresh) : fresh;
@@ -164,6 +165,9 @@ export class Game {
         `ball spd ${b.velocity.length().toFixed(1)} dist ${ballDist.toFixed(1)} (${owner})`,
         `up ${this.tunables.goalAxisUp ? 'goal-axis' : 'world-Y'}`,
         `zoom ${this.lastZoom ? 'out' : 'chase'} (${this.tunables.zoomHoldMode ? 'hold' : 'toggle'})`,
+        this.sim.shotAim.active
+          ? `arc ${this.sim.shotAim.origin.distanceTo(this.sim.shotAim.target).toFixed(1)}u`
+          : 'arc idle',
         `3v3 stubs: 4 inactive  AI:1`,
       ].join('\n');
     }

@@ -78,5 +78,6 @@ function emptyIntent(): InputIntent {
     zoomTogglePressed: false,
     resetBall: false,
     toggleDev: false,
+    aimRangeDelta: 0,
   };
 }

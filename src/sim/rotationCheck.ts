@@ -39,6 +39,7 @@ function blankIntent(zoom = false): InputIntent {
     zoomTogglePressed: false,
     resetBall: false,
     toggleDev: false,
+    aimRangeDelta: 0,
   };
 }
 
@@ -178,6 +179,46 @@ function checkWall(): void {
   }
 }
 
+function checkArc(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  const human = sim.getHuman();
+  human.position.set(0, 1, -6);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.lastOwnerId = human.id;
+  sim.ball.position.set(0, 1, -5.2);
+  sim.yaw = 1.2;
+  sim.pitch = 0.2;
+  const hold = blankIntent();
+  hold.shootHeld = true;
+  sim.step(1 / 60, hold);
+  if (!sim.shotAim.active) fail('shot aim did not lock');
+  const origin = sim.shotAim.origin.clone();
+  if (sim.chargeGhost.length < 4) fail('arc preview missing');
+  sim.yaw = 0.8;
+  sim.nudgeAimDistance(4);
+  sim.step(1 / 60, hold);
+  if (sim.shotAim.origin.distanceTo(origin) > 0.02) fail('shot origin moved while aiming');
+  const target = sim.shotAim.target.clone();
+  const last = sim.chargeGhost[sim.chargeGhost.length - 1];
+  if (!last || last.distanceTo(target) > 0.05) fail('preview does not end on the marker');
+  const release = blankIntent();
+  sim.step(1 / 60, release);
+  if (!sim.ball.arc) fail('release did not start the arc');
+  const steps = Math.ceil(sim.ball.arc.duration * 60) + 3;
+  for (let i = 0; i < steps; i++) sim.step(1 / 60, release);
+  const miss = sim.ball.position.distanceTo(target);
+  if (miss > 1.5) fail(`arc missed the marker by ${miss.toFixed(2)}`);
+}
+
 function checkStrafe(): void {
   const sim = new Simulation(defaultTunables());
   sim.kickoffLock = 0;
@@ -204,6 +245,7 @@ export function runRotationChecks(): void {
   checkUpPole();
   checkWall();
   checkStrafe();
+  checkArc();
   checkCamera(false, false);
   checkCamera(false, true);
   checkCamera(true, false);

@@ -8,7 +8,7 @@ import { rotateToward, stabilizeUp } from '../sim/math';
 const TEAM_COLORS = [0x2b9fff, 0xff6a3d];
 const TEAM_ACCENT = [0xd0ecff, 0xffd0c0];
 const TRAIL_MAX = 36;
-const GHOST_MAX = 24;
+const GHOST_MAX = 36;
 
 function makePipTexture(fill: string, stroke: string, mark?: string): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
@@ -149,6 +149,8 @@ export class SceneView {
   private trailPositions: Float32Array;
   private chargeGhost!: THREE.Line;
   private ghostPositions: Float32Array;
+  private shotMarker!: THREE.Mesh;
+  private shotMarkerRing!: THREE.Mesh;
   private pip!: THREE.Sprite;
   private pipFree: THREE.CanvasTexture;
   private pipYou: THREE.CanvasTexture;
@@ -359,6 +361,19 @@ export class SceneView {
       }),
     );
     this.scene.add(this.chargeGhost);
+
+    this.shotMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.32, 12, 10),
+      new THREE.MeshBasicMaterial({ color: 0xffe066 }),
+    );
+    this.shotMarkerRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.85, 0.055, 8, 28),
+      new THREE.MeshBasicMaterial({ color: 0xfff4cc }),
+    );
+    this.shotMarker.visible = false;
+    this.shotMarkerRing.visible = false;
+    this.scene.add(this.shotMarker);
+    this.scene.add(this.shotMarkerRing);
   }
 
   ensurePlayers(sim: Simulation): void {
@@ -418,6 +433,7 @@ export class SceneView {
       zoomTogglePressed: false,
       resetBall: false,
       toggleDev: false,
+      aimRangeDelta: 0,
     });
 
     const humanPos = sim.getHuman().position;
@@ -521,6 +537,14 @@ export class SceneView {
     this.pip.scale.set(pipPulse, pipPulse, pipPulse);
 
     this.writeLine(this.chargeGhost, this.ghostPositions, sim.chargeGhost, GHOST_MAX);
+    const aiming = sim.shotAim.active;
+    this.shotMarker.visible = aiming;
+    this.shotMarkerRing.visible = aiming;
+    if (aiming) {
+      this.shotMarker.position.copy(sim.shotAim.target);
+      this.shotMarkerRing.position.copy(sim.shotAim.target);
+      this.shotMarkerRing.lookAt(this.camera.position);
+    }
   }
 
   /** Point local +Z along facing and local +Y along up, with no lookAt branch. */

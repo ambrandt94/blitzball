@@ -32,6 +32,7 @@ export class InputManager {
   private lmbDown = false;
   private lmbPressed = false;
   private rmbDown = false;
+  private wheel = 0;
   private canvas: HTMLElement;
 
   constructor(canvas: HTMLElement) {
@@ -48,6 +49,7 @@ export class InputManager {
     // contextmenu event, including when the pointer is not yet locked.
     canvas.addEventListener('contextmenu', this.onContextMenu, { capture: true });
     document.addEventListener('contextmenu', this.onContextMenu, { capture: true });
+    canvas.addEventListener('wheel', this.onWheel, { passive: false });
   }
 
   dispose(): void {
@@ -61,7 +63,14 @@ export class InputManager {
     window.removeEventListener('mouseup', this.onMouseUp);
     this.canvas.removeEventListener('contextmenu', this.onContextMenu, { capture: true });
     document.removeEventListener('contextmenu', this.onContextMenu, { capture: true });
+    this.canvas.removeEventListener('wheel', this.onWheel);
   }
+
+  private onWheel = (e: WheelEvent): void => {
+    if (!this.pointerLocked) return;
+    this.wheel += e.deltaY;
+    e.preventDefault();
+  };
 
   private onContextMenu = (e: Event): void => {
     if (e.target === this.canvas || this.pointerLocked) e.preventDefault();
@@ -208,7 +217,10 @@ export class InputManager {
       zoomTogglePressed: this.anyJust(KEYS.zoom),
       resetBall: this.anyJust(KEYS.reset),
       toggleDev: this.anyJust(KEYS.toggleDev),
+      // Wheel-up (negative deltaY) lengthens the aim. ~3 units per notch.
+      aimRangeDelta: -this.wheel * 0.03,
     };
+    this.wheel = 0;
 
     const pad = this.readGamepad();
     if (pad) {

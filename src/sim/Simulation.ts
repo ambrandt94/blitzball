@@ -6,6 +6,7 @@ import {
   GOAL,
   MATCH,
   PLAYER,
+  SHOT_ARC,
 } from '../game/constants';
 import type {
   ActionPose,
@@ -27,6 +28,7 @@ import {
   rotateToward,
   stabilizeUp,
 } from './math';
+import { arcControl, clampEndInside, quadraticPoint, quadraticVelocity } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
 function makePlayer(
@@ -60,8 +62,16 @@ export class Simulation {
   ball: BallState;
   match: MatchState;
   charge: ChargeState = { active: false, kind: null, amount: 0 };
-  /** Ghost trail samples while charging (beginner aid). */
+  /** Ghost trail samples while charging (beginner aid) or aiming an arc. */
   chargeGhost: THREE.Vector3[] = [];
+  /** Locked shot origin and the live aim marker. `active` while shoot is held. */
+  readonly shotAim = {
+    active: false,
+    origin: new THREE.Vector3(),
+    target: new THREE.Vector3(),
+  };
+  /** Added to Arc aim distance by the mouse wheel. */
+  private aimDistanceBias = 0;
   yaw = 0;
   pitch = 0;
   zoomOutLatched = false;
@@ -104,6 +114,7 @@ export class Simulation {
       lastOwnerId: null,
       claimLock: 0,
       trail: [],
+      arc: null,
     };
   }
 
@@ -155,8 +166,10 @@ export class Simulation {
     this.ball.lastOwnerId = null;
     this.ball.claimLock = 0.55;
     this.ball.trail = [];
+    this.ball.arc = null;
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
+    this.shotAim.active = false;
     this.match.resetTimer = 0;
     this.kickoffLock = 2.2;
     this.match.statusMessage = 'Face-off…';
@@ -278,6 +291,12 @@ export class Simulation {
     this.pitch = THREE.MathUtils.clamp(this.pitch, -maxPitch, maxPitch);
   }
 
+  /** Mouse-wheel aim range. Call once per rendered frame, not per physics step. */
+  nudgeAimDistance(delta: number): void {
+    if (delta === 0) return;
+    this.aimDistanceBias = THREE.MathUtils.clamp(this.aimDistanceBias + delta, -24, 36);
+  }
+
   /** Latch zoom-out when Dev is in toggle mode. Call once per press, not per step. */
   noteZoomToggle(intent: InputIntent): void {
     if (!this.tunables.zoomHoldMode && intent.zoomTogglePressed) {
@@ -393,12 +412,25 @@ export class Simulation {
   private updatePossession(human: PlayerState, intent: InputIntent, dt: number): void {
     // Charge shoot / pass for human
     if (human.hasBall) {
-      if (intent.shootHeld) {
+      if (intent.drop) {
+        this.clearShotAim();
+        const toss = this.lookForward(human);
+        this.placeRelease(human, toss);
+        this.releaseBall(toss.multiplyScalar(4).add(human.velocity));
+        human.reclaimGrace = PLAYER.reclaimCoyote;
+        this.match.statusMessage = 'Ball dropped';
+      } else if (intent.shootHeld) {
+        if (!this.shotAim.active) {
+          this.shotAim.active = true;
+          this.shotAim.origin.copy(this.ball.position);
+        }
+        this.updateShotTarget();
         this.charge.active = true;
         this.charge.kind = 'shoot';
         this.charge.amount = Math.min(1, this.charge.amount + dt / BALL.chargeTime);
         this.playPose(human, 'shoot', 0.22);
         this.updateChargeGhost(human);
+        this.match.statusMessage = 'Aiming arc — release to shoot';
       } else if (this.charge.active && this.charge.kind === 'shoot') {
         this.releaseShot(human, this.charge.amount);
         this.charge = { active: false, kind: null, amount: 0 };
@@ -416,17 +448,8 @@ export class Simulation {
       } else if (intent.pass) {
         this.releasePass(human, 0.45);
       }
-
-      if (intent.drop) {
-        const toss = this.lookForward(human);
-        this.placeRelease(human, toss);
-        this.releaseBall(toss.multiplyScalar(4).add(human.velocity));
-        human.reclaimGrace = PLAYER.reclaimCoyote;
-        this.match.statusMessage = 'Ball dropped';
-      }
     } else {
-      this.charge = { active: false, kind: null, amount: 0 };
-      this.chargeGhost = [];
+      if (this.shotAim.active || this.charge.active) this.clearShotAim();
       if (intent.claim) this.tryClaim(human);
     }
 
@@ -515,7 +538,42 @@ export class Simulation {
     this.ball.possession = 'free';
     this.ball.ownerId = null;
     this.ball.claimLock = BALL.claimCooldown;
+    this.ball.arc = null;
     if (impulse) this.ball.velocity.copy(impulse);
+  }
+
+  private clearShotAim(): void {
+    this.shotAim.active = false;
+    this.charge = { active: false, kind: null, amount: 0 };
+    this.chargeGhost = [];
+  }
+
+  private aimDistance(): number {
+    return THREE.MathUtils.clamp(
+      this.tunables.arcAimDistance + this.aimDistanceBias,
+      4,
+      ARENA_RADIUS - BALL.radius - 0.5,
+    );
+  }
+
+  private updateShotTarget(): void {
+    const forward = this.cameraBasis().forward;
+    const raw = this.tmp.holdTarget.copy(this.shotAim.origin).addScaledVector(forward, this.aimDistance());
+    const limit = ARENA_RADIUS - BALL.radius - 0.3;
+    clampEndInside(this.shotAim.target, this.shotAim.origin, raw, limit);
+  }
+
+  /** Bezier that would fly if the shot were released at the current charge. */
+  private plannedArc(charge: number): { p0: THREE.Vector3; p1: THREE.Vector3; p2: THREE.Vector3; duration: number } {
+    const p0 = this.shotAim.origin.clone();
+    const p2 = this.shotAim.target.clone();
+    const flatten = 1 - this.tunables.arcChargeFlatten * THREE.MathUtils.clamp(charge, 0, 1);
+    const height = Math.max(0, this.tunables.arcHeight * flatten);
+    const p1 = arcControl(new THREE.Vector3(), p0, p2, this.cameraBasis().up, height);
+    const length = Math.max(0.5, p0.distanceTo(p2));
+    const speed = THREE.MathUtils.lerp(BALL.shootSpeedMin, BALL.shootSpeedMax, charge);
+    const duration = Math.max(SHOT_ARC.minDuration, length / speed);
+    return { p0, p1, p2, duration };
   }
 
   private getAimDirection(player: PlayerState, isHuman: boolean): THREE.Vector3 {
@@ -540,14 +598,44 @@ export class Simulation {
   }
 
   private releaseShot(player: PlayerState, charge: number): void {
-    const isHuman = player.role === 'human';
-    const aim = this.getAimDirection(player, isHuman);
+    if (player.role === 'human') {
+      this.releaseArcShot(player, charge);
+      return;
+    }
+    const aim = this.getAimDirection(player, false);
     this.placeRelease(player, aim);
     const speed = THREE.MathUtils.lerp(BALL.shootSpeedMin, BALL.shootSpeedMax, charge);
     const impulse = aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.35));
     this.releaseBall(impulse);
     this.playPose(player, 'shoot', 0.3);
     this.match.statusMessage = charge > 0.7 ? 'Charged shot!' : 'Shot';
+  }
+
+  /**
+   * Launch the underwater lob. The ball is parameterized on the Bezier, so it
+   * arrives on the marker instead of hoping a dragged impulse gets there.
+   * There is no gravity in the water sim — the curve is the whole flight.
+   */
+  private releaseArcShot(player: PlayerState, charge: number): void {
+    if (!this.shotAim.active) {
+      this.shotAim.active = true;
+      this.shotAim.origin.copy(this.ball.position);
+      this.updateShotTarget();
+    }
+    const arc = this.plannedArc(charge);
+    this.releaseBall();
+    this.ball.position.copy(arc.p0);
+    this.ball.arc = {
+      p0: arc.p0,
+      p1: arc.p1,
+      p2: arc.p2,
+      elapsed: 0,
+      duration: arc.duration,
+    };
+    quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 0, arc.duration);
+    this.shotAim.active = false;
+    this.playPose(player, 'shoot', 0.3);
+    this.match.statusMessage = charge > 0.7 ? 'Charged arc!' : 'Arc shot';
   }
 
   /** Put a released ball just outside the body along `aim` so the carrier doesn't block it. */
@@ -586,6 +674,17 @@ export class Simulation {
       this.chargeGhost = [];
       return;
     }
+    if (this.charge.kind === 'shoot' && this.shotAim.active) {
+      const arc = this.plannedArc(this.charge.amount);
+      const samples: THREE.Vector3[] = [];
+      const point = new THREE.Vector3();
+      for (let i = 0; i <= SHOT_ARC.samples; i++) {
+        quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
+        samples.push(point.clone());
+      }
+      this.chargeGhost = samples;
+      return;
+    }
     const isHuman = player.role === 'human';
     const aim = this.getAimDirection(player, isHuman).clone();
     const speed =
@@ -611,9 +710,19 @@ export class Simulation {
   }
 
   private updateBall(dt: number): void {
+    if (this.ball.arc) {
+      const scripted = this.advanceArc(dt);
+      if (scripted) return;
+    }
+
     if (this.ball.possession === 'held' && this.ball.ownerId !== null) {
       const owner = this.players[this.ball.ownerId];
       if (!owner) return;
+      if (this.shotAim.active && owner.id === this.humanId) {
+        this.ball.position.copy(this.shotAim.origin);
+        this.ball.velocity.set(0, 0, 0);
+        return;
+      }
       const holdTarget = this.tmp.holdTarget
         .copy(owner.position)
         .add(owner.facing.clone().multiplyScalar(BALL.holdOffset))
@@ -655,6 +764,41 @@ export class Simulation {
         }
       }
     }
+  }
+
+  /**
+   * Step the lob. Returns true while the ball is still on the curve.
+   * A sphere hit or another swimmer drops it into free physics with the
+   * curve's tangent speed, so banks and catches still work.
+   */
+  private advanceArc(dt: number): boolean {
+    const arc = this.ball.arc;
+    if (!arc) return false;
+    arc.elapsed += dt;
+    const t = arc.elapsed / arc.duration;
+    if (t >= 1) {
+      this.ball.position.copy(arc.p2);
+      quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 1, arc.duration).multiplyScalar(0.35);
+      this.ball.arc = null;
+      return false;
+    }
+    const pos = quadraticPoint(this.tmp.holdTarget, arc.p0, arc.p1, arc.p2, t);
+    const vel = quadraticVelocity(this.tmp.aim, arc.p0, arc.p1, arc.p2, t, arc.duration);
+    const limit = ARENA_RADIUS - BALL.radius;
+    const blocked =
+      pos.length() > limit ||
+      this.players.some((p) => {
+        if (!p.active) return false;
+        if (p.id === this.ball.lastOwnerId && arc.elapsed < 0.22) return false;
+        return p.position.distanceTo(pos) < PLAYER.radius + BALL.radius;
+      });
+    this.ball.position.copy(pos);
+    this.ball.velocity.copy(vel);
+    if (blocked) {
+      this.ball.arc = null;
+      return false;
+    }
+    return true;
   }
 
   private checkGoals(): void {

@@ -36,6 +36,12 @@ export interface Tunables {
   swimAnim: boolean;
   /** Speed multiplier while right-click strafe/aim is held. */
   strafeSpeedMult: number;
+  /** Look-ray distance from the locked shot origin to the aim marker. */
+  arcAimDistance: number;
+  /** Lob height as a fraction of the origin→target chord. */
+  arcHeight: number;
+  /** How much a full charge flattens the lob (0 = no flatten, 1 = flat). */
+  arcChargeFlatten: number;
 }
 
 export interface PlayerState {
@@ -67,6 +73,17 @@ export interface BallState {
   lastOwnerId: number | null;
   claimLock: number;
   trail: THREE.Vector3[];
+  /** Scripted underwater lob. Null when the ball is free or held. */
+  arc: BallArc | null;
+}
+
+/** Quadratic Bezier flight. `elapsed / duration` is the curve parameter. */
+export interface BallArc {
+  p0: THREE.Vector3;
+  p1: THREE.Vector3;
+  p2: THREE.Vector3;
+  elapsed: number;
+  duration: number;
 }
 
 export interface MatchState {
@@ -97,6 +114,8 @@ export interface InputIntent {
   passHeld: boolean;
   zoomOut: boolean;
   zoomTogglePressed: boolean;
+  /** Wheel notches, in world units. Positive lengthens the arc aim. */
+  aimRangeDelta: number;
   resetBall: boolean;
   toggleDev: boolean;
 }
