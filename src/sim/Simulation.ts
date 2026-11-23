@@ -79,7 +79,13 @@ export class Simulation {
     bendRight: 0,
     /** Control-point offset along camera up, world units. */
     bendUp: 0,
+    /** Teammate the marker is stuck to, or null for a free aim. */
+    lockId: null as number | null,
   };
+  /** Triangle-wave phase for shot power. 0..1 fills, 1..2 empties. */
+  private powerPhase = 0;
+  /** Marker was steered after the hold began, so do not snap back onto a teammate. */
+  private shotAimManual = false;
   /** Added to Arc aim distance by the mouse wheel. */
   private aimDistanceBias = 0;
   /** Smoothed lateral camera shift. Positive sits on the aim's right shoulder. */
@@ -188,6 +194,9 @@ export class Simulation {
     this.shotAim.active = false;
     this.shotAim.bendRight = 0;
     this.shotAim.bendUp = 0;
+    this.shotAim.lockId = null;
+    this.shotAimManual = false;
+    this.powerPhase = 0;
     this.match.resetTimer = 0;
     this.kickoffLock = 2.2;
     this.match.statusMessage = 'Face-off…';
@@ -319,6 +328,18 @@ export class Simulation {
    * which is the inversion. Pitch stays `pitch -= dy` because +movementY is
    * mouse-down. Each invert toggle multiplies one axis, once.
    */
+  /**
+   * Start the shot hold before mouse look is consumed. The press and the
+   * drag land in the same sample; applying look first turns the camera and
+   * the arc never sees that delta.
+   */
+  armShotAim(intent: InputIntent): void {
+    if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
+    const human = this.getHuman();
+    if (!human.hasBall || !intent.shootHeld) return;
+    if (!this.shotAim.active) this.beginShotAim();
+  }
+
   applyFrameLook(intent: InputIntent): void {
     const sx = this.tunables.mouseLookInvertX ? -1 : 1;
     const sy = this.tunables.mouseLookInvertY ? -1 : 1;
@@ -344,6 +365,7 @@ export class Simulation {
     this.aimDistanceBias = THREE.MathUtils.clamp(this.aimDistanceBias + delta, -40, 48);
     const applied = this.aimDistanceBias - before;
     if (applied === 0 || !this.shotAim.active) return;
+    this.breakShotLock();
     this.shotAim.target.addScaledVector(this.cameraBasis().forward, applied);
     this.clampShotTarget();
     if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
@@ -498,17 +520,20 @@ export class Simulation {
         this.match.statusMessage = 'Ball dropped';
       } else if (intent.shootHeld) {
         // Snap before placing the marker or the preview, so both start in the hand.
-        this.stickBallToHand(human);
         if (!this.shotAim.active) this.beginShotAim();
+        this.stickBallToHand(human);
         this.slideShotTarget(intent, dt);
+        this.acquireTeammate();
         this.charge.active = true;
         this.charge.kind = 'shoot';
-        this.charge.amount = Math.min(1, this.charge.amount + dt / BALL.chargeTime);
+        this.advanceShotPower(dt);
         // Stay in the carry pose. A shoot windup pulls the arms off the ball.
         human.actionPose = 'hold';
         human.actionPoseTime = 0;
         this.updateChargeGhost(human);
-        this.match.statusMessage = 'Aiming — W/S up/down, A/D left/right, mouse bends, wheel range';
+        this.match.statusMessage = this.shotAim.lockId !== null
+          ? 'Teammate locked — mouse bends the arc, release throws'
+          : 'Aiming — power cycles, WASD moves the marker, mouse bends the arc';
       } else if (this.charge.active && this.charge.kind === 'shoot') {
         this.releaseShot(human, this.charge.amount);
         this.charge = { active: false, kind: null, amount: 0 };
@@ -629,8 +654,18 @@ export class Simulation {
     this.shotAim.active = false;
     this.shotAim.bendRight = 0;
     this.shotAim.bendUp = 0;
+    this.shotAim.lockId = null;
+    this.shotAimManual = false;
+    this.powerPhase = 0;
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
+  }
+
+  /** Empty → full → empty while the shot button is held. Release keeps the current value. */
+  private advanceShotPower(dt: number): void {
+    const rate = Math.max(0, this.tunables.shotPowerRate);
+    this.powerPhase = (this.powerPhase + dt * rate) % 2;
+    this.charge.amount = this.powerPhase <= 1 ? this.powerPhase : 2 - this.powerPhase;
   }
 
   private aimDistance(): number {
@@ -645,14 +680,32 @@ export class Simulation {
     return ARENA_RADIUS - BALL.radius - 0.3;
   }
 
-  /** Place the marker straight down the look, at the current range. */
+  /**
+   * Place the marker and the default hand-side curve on this frame.
+   * The body snaps to the camera so the ball does not swing into the pose.
+   */
   private beginShotAim(): void {
+    const human = this.getHuman();
+    const basis = this.cameraBasis();
+    human.facing.copy(basis.forward);
+    human.up.copy(basis.up);
+    this.stickBallToHand(human);
     this.shotAim.active = true;
     this.shotAim.bendRight = 0;
     this.shotAim.bendUp = 0;
-    const forward = this.cameraBasis().forward;
-    const raw = this.tmp.holdTarget.copy(this.ball.position).addScaledVector(forward, this.aimDistance());
+    this.shotAim.lockId = null;
+    this.shotAimManual = false;
+    this.powerPhase = 0;
+    this.charge.active = true;
+    this.charge.kind = 'shoot';
+    this.charge.amount = 0;
+    const raw = this.tmp.holdTarget.copy(this.ball.position).addScaledVector(basis.forward, this.aimDistance());
     this.clampShotTarget(raw);
+  }
+
+  private breakShotLock(): void {
+    this.shotAimManual = true;
+    this.shotAim.lockId = null;
   }
 
   /**
@@ -667,9 +720,58 @@ export class Simulation {
       .addScaledVector(basis.up, intent.move.z + intent.up);
     if (wish.lengthSq() > 1) wish.normalize();
     if (wish.lengthSq() > 1e-8) {
+      this.breakShotLock();
       this.shotAim.target.addScaledVector(wish, Math.max(0, this.tunables.arcAimSpeed) * dt);
     }
-    this.clampShotTarget();
+    if (this.shotAim.lockId === null) this.clampShotTarget();
+  }
+
+  /** Snap the marker onto a teammate standing on the look ray. Steering the marker lets go. */
+  private acquireTeammate(): void {
+    if (!this.shotAim.active || this.shotAimManual) return;
+    const hit = this.teammateOnLook();
+    if (hit) this.shotAim.lockId = hit.id;
+    const id = this.shotAim.lockId;
+    if (id === null) return;
+    const mate = this.players[id];
+    if (!mate || !mate.active || mate.team !== this.getHuman().team) {
+      this.shotAim.lockId = null;
+      return;
+    }
+    const limit = this.markerLimit();
+    this.shotAim.target.copy(mate.position).addScaledVector(mate.up, 0.15);
+    if (this.shotAim.target.length() > limit) this.shotAim.target.setLength(limit);
+  }
+
+  private teammateOnLook(): PlayerState | null {
+    const human = this.getHuman();
+    const origin = human.position;
+    const dir = this.cameraBasis().forward;
+    if (dir.lengthSq() < 1e-8) return null;
+    const pad = PLAYER.radius + Math.max(0, this.tunables.teammateLockRadius);
+    let best: PlayerState | null = null;
+    let bestT = Infinity;
+    for (const p of this.players) {
+      if (!p.active || p.id === human.id || p.team !== human.team || p.role === 'stub') continue;
+      const t = this.raySphereT(
+        origin.x,
+        origin.y,
+        origin.z,
+        dir.x,
+        dir.y,
+        dir.z,
+        p.position.x,
+        p.position.y,
+        p.position.z,
+        pad,
+        0.4,
+      );
+      if (t !== null && t < bestT) {
+        bestT = t;
+        best = p;
+      }
+    }
+    return best;
   }
 
   private clampShotTarget(from?: THREE.Vector3): void {
@@ -698,8 +800,10 @@ export class Simulation {
     const p0 = this.ball.position.clone();
     if (p0.length() > limit) p0.setLength(limit);
     const p2 = this.shotAim.target.clone();
-    const flatten = 1 - this.tunables.arcChargeFlatten * THREE.MathUtils.clamp(charge, 0, 1);
-    const height = Math.max(0, this.tunables.arcHeight * flatten);
+    const power = THREE.MathUtils.clamp(charge, 0, 1);
+    // Hand curve and resting height are full on the first frame. Power only
+    // adds a small loft on top, so the preview does not ease in from a tall lob.
+    const height = Math.max(0, this.tunables.arcHeight + this.tunables.shotPowerAngle * power);
     const basis = this.cameraBasis();
     const p1 = shapedControl(
       new THREE.Vector3(),
@@ -712,6 +816,7 @@ export class Simulation {
       this.shotAim.bendUp,
       this.tunables.arcBendLimit,
       limit,
+      this.tunables.arcHandCurve,
     );
     const straight = Math.max(0.5, p0.distanceTo(p2));
     const via = p0.distanceTo(p1) + p1.distanceTo(p2);
@@ -773,13 +878,18 @@ export class Simulation {
       p2: arc.p2,
       elapsed: 0,
       duration: arc.duration,
+      receiverId: this.shotAim.lockId,
     };
     quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 0, arc.duration);
+    const thrownToMate = this.shotAim.lockId !== null;
     this.shotAim.active = false;
     this.shotAim.bendRight = 0;
     this.shotAim.bendUp = 0;
+    this.shotAim.lockId = null;
+    this.shotAimManual = false;
+    this.powerPhase = 0;
     this.playPose(player, 'shoot', 0.3);
-    this.match.statusMessage = charge > 0.7 ? 'Charged arc!' : 'Arc shot';
+    this.match.statusMessage = thrownToMate ? 'Throw to teammate' : charge > 0.7 ? 'High power!' : 'Arc shot';
   }
 
   /** Carry point: in front of the chest, along facing. No lag. */
@@ -928,22 +1038,44 @@ export class Simulation {
   private advanceArc(dt: number): boolean {
     const arc = this.ball.arc;
     if (!arc) return false;
+    // A catch already took the ball. Leave it in their hands instead of riding the rest of the curve.
+    if (this.ball.possession === 'held') {
+      this.ball.arc = null;
+      return false;
+    }
     arc.elapsed += dt;
     const t = arc.elapsed / arc.duration;
+    const receiver = arc.receiverId !== null ? this.players[arc.receiverId] : undefined;
+    if (receiver?.active) {
+      const dest = this.tmp.moveWorld.copy(receiver.position).addScaledVector(receiver.up, 0.15);
+      const delta = dest.sub(arc.p2);
+      const follow = 1 - Math.exp(-8 * dt);
+      arc.p2.addScaledVector(delta, follow);
+      arc.p1.addScaledVector(delta, follow);
+    }
     if (t >= 1) {
       this.ball.position.copy(arc.p2);
       quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 1, arc.duration).multiplyScalar(0.35);
       this.ball.arc = null;
+      if (receiver?.active && this.ball.position.distanceTo(receiver.position) < 6) {
+        this.deliverToTeammate(receiver);
+      }
       return false;
     }
     const pos = quadraticPoint(this.tmp.holdTarget, arc.p0, arc.p1, arc.p2, t);
     const vel = quadraticVelocity(this.tmp.aim, arc.p0, arc.p1, arc.p2, t, arc.duration);
+    if (receiver?.active && pos.distanceTo(receiver.position) < PLAYER.radius + BALL.radius + 0.55) {
+      this.ball.position.copy(pos);
+      this.deliverToTeammate(receiver);
+      return false;
+    }
     const limit = ARENA_RADIUS - BALL.radius;
     const blocked =
       pos.length() > limit ||
       this.players.some((p) => {
         if (!p.active) return false;
         if (p.id === this.ball.lastOwnerId && arc.elapsed < 0.22) return false;
+        if (p.id === arc.receiverId) return false;
         return p.position.distanceTo(pos) < PLAYER.radius + BALL.radius;
       });
     this.ball.position.copy(pos);
@@ -953,6 +1085,14 @@ export class Simulation {
       return false;
     }
     return true;
+  }
+
+  private deliverToTeammate(player: PlayerState): void {
+    this.ball.arc = null;
+    this.ball.velocity.set(0, 0, 0);
+    this.giveBall(player);
+    this.stickBallToHand(player);
+    this.match.statusMessage = 'Teammate caught it';
   }
 
   private checkGoals(): void {
@@ -1086,7 +1226,8 @@ export class Simulation {
   }
 
   private updateAimCursor(): void {
-    if (!this.strafing) {
+    // The reticle stays up through a shot hold so a teammate under it reads as locked.
+    if (!this.strafing && !this.shotAim.active) {
       this.aimCursor.visible = false;
       return;
     }

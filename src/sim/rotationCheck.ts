@@ -653,6 +653,125 @@ function checkAimCursor(): void {
   if (sim.aimCursor.visible) fail('aim cursor stayed up after releasing strafe');
 }
 
+function arcRightOffset(sim: Simulation): number {
+  const g = sim.chargeGhost;
+  const a = g[0];
+  const b = g[g.length - 1];
+  const mid = g[Math.floor(g.length / 2)];
+  if (!a || !b || !mid) fail('arc preview missing');
+  const chordMid = a.clone().lerp(b, 0.5);
+  const right = lookBasis(sim.yaw, sim.pitch, sim.tunables.goalAxisUp).right;
+  return mid.clone().sub(chordMid).dot(right);
+}
+
+function checkArcDefault(): void {
+  const { sim, human, hold } = aimingSim();
+  human.facing.set(1, 0, 0);
+  sim.tunables.shotPowerRate = 0;
+  sim.tunables.shotPowerAngle = 0;
+  const yaw = sim.yaw;
+  sim.step(1 / 60, hold);
+  if (human.facing.dot(lookBasis(yaw, sim.pitch, false).forward) < 0.99) {
+    fail('body kept turning into the aim instead of starting there');
+  }
+  const side = arcRightOffset(sim);
+  const chord = sim.ball.position.distanceTo(sim.shotAim.target);
+  // Quadratic midpoint sits halfway out toward the control point.
+  if (side < sim.tunables.arcHandCurve * chord * 0.35) {
+    fail(`default arc offset ${side.toFixed(2)} is not toward the throwing hand`);
+  }
+  const frozen = sim.chargeGhost.map((p) => p.clone());
+  sim.step(1 / 60, hold);
+  let drift = 0;
+  sim.chargeGhost.forEach((p, i) => {
+    drift = Math.max(drift, p.distanceTo(frozen[i]!));
+  });
+  if (drift > 0.08) fail(`arc settled ${drift.toFixed(2)} after it appeared`);
+}
+
+function checkHoldLookOrder(): void {
+  const { sim, hold } = aimingSim();
+  const yaw = sim.yaw;
+  hold.lookDelta.x = 0.25;
+  hold.lookDelta.y = -0.1;
+  sim.armShotAim(hold);
+  sim.applyFrameLook(hold);
+  if (!sim.shotAim.active) fail('shot aim was not armed before look');
+  if (Math.abs(sim.yaw - yaw) > 1e-6) fail('the press-drag turned the camera');
+  const expect = 0.25 * sim.tunables.arcBendSpeed;
+  if (Math.abs(sim.shotAim.bendRight - expect) > 0.05) {
+    fail(`press-drag bend ${sim.shotAim.bendRight.toFixed(2)} != ${expect.toFixed(2)}`);
+  }
+}
+
+function checkPowerMeter(): void {
+  const { sim, hold } = aimingSim();
+  sim.tunables.shotPowerRate = 1;
+  sim.tunables.shotPowerAngle = 0.2;
+  const amounts: number[] = [];
+  for (let i = 0; i < 90; i++) {
+    sim.step(1 / 60, hold);
+    amounts.push(sim.charge.amount);
+  }
+  if ((amounts[30] ?? 0) < 0.45 || (amounts[30] ?? 1) > 0.55) {
+    fail(`power at 0.5s was ${amounts[30]?.toFixed(2)}`);
+  }
+  if ((amounts[59] ?? 0) < 0.95) fail(`power did not fill (${amounts[59]?.toFixed(2)})`);
+  if ((amounts[89] ?? 1) > 0.55) fail(`power did not empty (${amounts[89]?.toFixed(2)})`);
+  const low = arcRightOffset(sim);
+  // Vertical component: rebuild a zero-power arc by stepping a fresh sim.
+  const calm = aimingSim();
+  calm.sim.tunables.shotPowerRate = 0;
+  calm.sim.tunables.shotPowerAngle = 0.2;
+  calm.sim.step(1 / 60, calm.hold);
+  const highLift = sim.chargeGhost[Math.floor(sim.chargeGhost.length / 2)]!.y;
+  const lowLift = calm.sim.chargeGhost[Math.floor(calm.sim.chargeGhost.length / 2)]!.y;
+  if (highLift < lowLift + 0.4) fail('full power did not raise the arc');
+  if (low < 0.2) fail('power removed the throwing-hand curve');
+
+  const releaseAt = (steps: number): number => {
+    const shot = aimingSim();
+    shot.sim.tunables.shotPowerRate = 1;
+    for (let i = 0; i < steps; i++) shot.sim.step(1 / 60, shot.hold);
+    const locked = shot.sim.charge.amount;
+    shot.sim.step(1 / 60, blankIntent());
+    if (!shot.sim.ball.arc) fail('release did not throw');
+    if (Math.abs(shot.sim.charge.amount) > 0.001) fail('meter kept running after release');
+    if (Math.abs(locked - steps / 60) > 0.04) fail(`release did not lock power ${locked.toFixed(2)}`);
+    return shot.sim.ball.arc.duration;
+  };
+  // Higher locked power is a faster shot, so the same chord takes less time.
+  const early = releaseAt(8);
+  const late = releaseAt(50);
+  if (!(late < early)) fail(`power did not speed the shot (${early.toFixed(3)} vs ${late.toFixed(3)})`);
+}
+
+function checkTeammateLock(): void {
+  const { sim, human, hold } = aimingSim();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai');
+  if (!mate) fail('no teammate');
+  mate.active = true;
+  mate.velocity.set(0, 0, 0);
+  mate.position.set(human.position.x, human.position.y, human.position.z + 18);
+  sim.step(1 / 60, hold);
+  if (sim.shotAim.lockId !== mate.id) fail('look ray did not lock the teammate');
+  if (sim.shotAim.target.distanceTo(mate.position) > 1.2) fail('marker did not snap to the teammate');
+  const look = blankIntent();
+  look.lookDelta.x = 0.2;
+  sim.applyFrameLook(look);
+  if (sim.shotAim.bendRight < 0.15 * sim.tunables.arcBendSpeed) fail('lock ate the mouse bend');
+  sim.step(1 / 60, blankIntent());
+  if (sim.ball.arc?.receiverId !== mate.id) fail('release did not throw to the teammate');
+  let guard = 0;
+  const fly = blankIntent();
+  while (sim.ball.ownerId !== mate.id && guard < 400) {
+    sim.step(1 / 60, fly);
+    guard++;
+  }
+  if (sim.ball.ownerId !== mate.id) fail('teammate did not receive the arc');
+  if (mate.hasBall !== true) fail('catch did not give them the ball');
+}
+
 function checkShotSteer(): void {
   const sim = new Simulation(defaultTunables());
   sim.kickoffLock = 0;
@@ -768,6 +887,10 @@ export function runRotationChecks(): void {
   checkArcFlight();
   checkArcClamp();
   checkShapeMath();
+  checkArcDefault();
+  checkHoldLookOrder();
+  checkPowerMeter();
+  checkTeammateLock();
   checkPractice();
   checkShoulder();
   checkAimCursor();

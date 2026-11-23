@@ -46,8 +46,14 @@ export interface Tunables {
   arcBendLimit: number;
   /** Resting lob height as a fraction of the hand→marker chord. */
   arcHeight: number;
-  /** How much a full charge flattens the resting lob (0 = no flatten, 1 = flat). */
-  arcChargeFlatten: number;
+  /** Side curve toward the throwing hand, as a fraction of the chord. Applied as soon as the hold starts. */
+  arcHandCurve: number;
+  /** How fast the shot power meter sweeps from empty to full, in full-scales per second. */
+  shotPowerRate: number;
+  /** Extra loft at full power, as a fraction of the chord. Mouse bend stays the larger shape control. */
+  shotPowerAngle: number;
+  /** Extra radius on the look ray for snapping a shot onto a teammate. */
+  teammateLockRadius: number;
   /** When false, the opposing team holds its spots and does not chase or tackle. */
   defenseActive: boolean;
   /** Seconds the teammate holds the ball before passing it back. */
@@ -111,6 +117,8 @@ export interface BallArc {
   p2: THREE.Vector3;
   elapsed: number;
   duration: number;
+  /** Teammate the arc is delivering to, or null for a free shot. */
+  receiverId: number | null;
 }
 
 export interface MatchState {

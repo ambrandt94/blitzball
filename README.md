@@ -30,11 +30,12 @@ npm run preview  # serve the build
 | Drop (along look) | `Q` | B |
 | Pass (tap, or hold to charge) | `F` | X |
 | Strafe / aim (3D cursor, over-shoulder camera, slower swim) | Hold RMB | Y |
-| Aim an arc (ball stays in the hand; release throws) | Hold LMB | RT |
+| Aim an arc (ball stays in the hand; release throws at the power on the meter) | Hold LMB | RT |
 | While aiming: marker left / right | `A` / `D` | Left stick X |
 | While aiming: marker up / down | `W` / `S` and `Space` / `C` | Left stick Y, RB / LT |
 | Bend the arc, while aiming | Mouse | Right stick |
 | Arc range, while aiming | Mouse wheel | — |
+| Throw the arc to a teammate | Put the RMB reticle on them, then hold LMB and release | — |
 | Zoom out | `V` (hold or toggle via Dev) | LB |
 | Call for a pass | `G` | — |
 | Reset ball | `R` | Select |
@@ -43,7 +44,7 @@ npm run preview  # serve the build
 
 Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. A world-space cursor rides the look ray. It sticks to a player, the ball, a goal mouth, or the arena shell, and otherwise sits at **Aim cursor distance**. The camera eases onto the shoulder on the side of a held ball (the right shoulder when your hands are empty or the ball is centered in front). **Shoulder offset** is how far it slides, **Shoulder transition** is how quickly, and both ease in and out without a snap. The rig stays inside the sphere. Right-click does not open the browser menu.
 
-While a shot is held, you coast: `WASD` and `Space` / `C` do not swim. `A`/`D` slide the marker left and right, `W`/`S` (and `Space` / `C`) raise and lower it, the wheel sets range, and the mouse bends the arc instead of looking. Let go of the mouse button to swim and look again.
+While a shot is held, you coast: `WASD` and `Space` / `C` do not swim. `A`/`D` slide the marker left and right, `W`/`S` (and `Space` / `C`) raise and lower it, the wheel sets range, and the mouse bends the arc instead of looking. That still works while right-click aim is held. Let go of the mouse button to swim and look again. The dev panel can stay open; pointer lock takes the keys back from its sliders.
 
 ## Arc shots
 
@@ -55,7 +56,9 @@ The water sim has drag and no gravity, so a shot is not a falling parabola. Hold
 
 A dashed curve previews the throw and updates as the marker moves and the arc bends. Both the marker and the control point are kept inside the sphere, so the whole quadratic stays in the arena.
 
-The resting lob, before any mouse bend, is still the chord midpoint pushed along camera-up by **Arc height** × chord length. **Arc charge flatten** lowers that resting lob as the charge meter fills. It does not undo the mouse bend. Charge also shortens the flight by lerping between the min and max shot speeds. The ball is moved along the parameter of the curve, so it arrives on the marker. If the curve meets another swimmer, the script ends and the ball keeps the curve's tangent speed (banks and catches still apply).
+The hold starts on the default curve immediately: a slight bend toward the throwing hand (screen-right, **Arc hand curve** × chord) plus a small lob (**Arc height** × chord). The body snaps to the camera on that frame, so the arc does not drop or ease in. Mouse bend is added on top and still dominates the shape. **Power fill rate** runs the meter empty-to-full-to-empty while the button is held; release locks the value. That value lerps shot speed from min to max and adds up to **Power angle** × chord of extra loft. It does not replace the mouse bend.
+
+The ball is moved along the parameter of the curve, so it arrives on the marker. If the reticle is on a teammate when you hold the shot, the marker snaps to them and they light up green. Steering the marker or the wheel lets go of the lock. Release throws that arc; the ball tracks them and they catch it. If the curve meets another swimmer, the script ends and the ball keeps the curve's tangent speed (banks and catches still apply).
 
 ## What’s playable
 
@@ -69,7 +72,7 @@ The resting lob, before any mouse bend, is still the chord midpoint pushed along
 - Strict goal rims; continuous play with score + kickoff reset
 - Practice: one green-ring teammate who gets open, receives a pass, and passes back after **Teammate pass delay** or when you press `G`. The orange defender holds position unless **Defense chases** is on.
 - **3v3 scaffolding**: six roster slots (human + teammate + one defender active; three stubs inactive)
-- Dev toggles: goal-axis vs world-up, zoom mode, invert look X/Y, shoulder offset / transition, aim cursor distance, wall/claim/hold/accel/drag/assist knobs
+- Dev toggles: goal-axis vs world-up, zoom mode, invert look X/Y, shoulder offset / transition, aim cursor distance, arc hand curve, power fill rate / angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs
 
 ## Not in Phase 0
 
