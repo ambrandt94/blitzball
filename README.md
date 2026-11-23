@@ -22,17 +22,21 @@ npm run preview  # serve the build
 
 | Action | Keyboard | Gamepad (sketch) |
 |--------|----------|------------------|
-| Thrust | `WASD` | Left stick |
-| Up / down | `Space` / `C` | RB / LT |
-| Look | Mouse | Right stick |
+| Swim (camera-relative, including when pitched) | `WASD` | Left stick |
+| Up / down along the camera | `Space` / `C` | RB / LT |
+| Look (right looks right, up looks up) | Mouse | Right stick |
 | Sprint | `Shift` | Left stick click |
-| Claim / tackle | `E` | A |
-| Drop | `Q` | B |
+| Claim / tackle (along look) | `E` | A |
+| Drop (along look) | `Q` | B |
+| Quick pass | RMB | — |
 | Pass (hold to charge) | `F` | X |
-| Shoot (hold to charge) | LMB | RT |
+| Shoot (hold to charge, fires along look) | LMB | RT |
 | Zoom out | `V` (hold or toggle via Dev) | LB |
 | Reset ball | `R` | Select |
 | Dev panel | `` ` `` | — |
+| Release mouse | `Esc` | — |
+
+Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. Shots, passes, claim, and drop use the camera look direction. The body turns to match that look even when you are not thrusting.
 
 ## What’s playable
 
@@ -45,7 +49,7 @@ npm run preview  # serve the build
 - Strict goal rims; continuous play with score + kickoff reset
 - 1vAI dummy opponent
 - **3v3 scaffolding**: six roster slots (human + AI active; four stubs inactive)
-- Dev toggles: goal-axis vs world-up, zoom mode, wall/claim/hold/accel/drag/assist knobs
+- Dev toggles: goal-axis vs world-up, zoom mode, invert look X/Y, wall/claim/hold/accel/drag/assist knobs
 
 ## Not in Phase 0
 

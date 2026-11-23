@@ -75,7 +75,9 @@ export class DevPanel {
     input.checked = Boolean(this.tunables[key]);
     input.addEventListener('change', () => {
       (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
-      this.onChange();
+      // Only the up-axis change rebuilds the chase basis. Invert toggles and
+      // other checkboxes must not snap yaw/pitch back to kickoff.
+      if (key === 'goalAxisUp') this.onChange();
     });
     row.appendChild(lab);
     row.appendChild(input);
@@ -105,7 +107,6 @@ export class DevPanel {
       const n = parseFloat(input.value);
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
       value.textContent = n.toFixed(2);
-      this.onChange();
     });
     wrap.appendChild(name);
     wrap.appendChild(input);

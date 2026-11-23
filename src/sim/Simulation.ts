@@ -175,7 +175,6 @@ export class Simulation {
 
   isZoomOut(intent: InputIntent): boolean {
     if (this.tunables.zoomHoldMode) return intent.zoomOut;
-    if (intent.zoomTogglePressed) this.zoomOutLatched = !this.zoomOutLatched;
     return this.zoomOutLatched || intent.zoomOut;
   }
 
@@ -201,8 +200,10 @@ export class Simulation {
     }
 
     const human = this.getHuman();
-    this.applyLook(intent);
-    // Human may always look + move; ball actions gated during kickoff lock.
+    // Look is applied once per rendered frame via applyFrameLook. Mouse deltas
+    // are not per physics tick — applying them here doubled look on long frames
+    // and dropped it on frames that did not step.
+    // Human may always move; ball actions gated during kickoff lock.
     this.movePlayer(human, intent, dt, true);
 
     const live = this.kickoffLock <= 0 && this.match.resetTimer <= 0;
@@ -232,15 +233,34 @@ export class Simulation {
     this.ball.trail.push(this.ball.position.clone());
   }
 
-  private applyLook(intent: InputIntent): void {
-    // Standard FPS: mouse-right / stick-right → yaw+, look right;
-    // mouse-up (negative movementY) → pitch+, look up (via subtracting lookDelta.y).
+  /**
+   * Apply pointer and right-stick look once per rendered frame.
+   *
+   * Mouse-right is +movementX and must turn the view to screen-right.
+   * Do not port Three.js PointerLockControls (`euler.y -= movementX`) here.
+   * That line looks right only because a positive camera euler yaw turns left.
+   * This sim never writes `camera.rotation`. Positive yaw rotates toward
+   * `forward × up`, which is already screen-right: with the chase cam looking
+   * along +Z, that vector is world -X, the swimmer's right and the right edge
+   * of the picture (world +X sits on the left edge). `yaw += dx` aims the
+   * camera, the body, and W-swim that way. `yaw -= dx` aimed all three left,
+   * which is the inversion. Pitch stays `pitch -= dy` because +movementY is
+   * mouse-down. Each invert toggle multiplies one axis, once.
+   */
+  applyFrameLook(intent: InputIntent): void {
     const sx = this.tunables.mouseLookInvertX ? -1 : 1;
     const sy = this.tunables.mouseLookInvertY ? -1 : 1;
     this.yaw += intent.lookDelta.x * sx;
     this.pitch -= intent.lookDelta.y * sy;
     const maxPitch = Math.PI / 2 - 0.08;
     this.pitch = THREE.MathUtils.clamp(this.pitch, -maxPitch, maxPitch);
+  }
+
+  /** Latch zoom-out when Dev is in toggle mode. Call once per press, not per step. */
+  noteZoomToggle(intent: InputIntent): void {
+    if (!this.tunables.zoomHoldMode && intent.zoomTogglePressed) {
+      this.zoomOutLatched = !this.zoomOutLatched;
+    }
   }
 
   private cameraBasis(): { forward: THREE.Vector3; right: THREE.Vector3; up: THREE.Vector3 } {
@@ -258,6 +278,8 @@ export class Simulation {
     if (Math.abs(worldUp.z) < 0.9) worldForward.set(0, 0, 1);
     else worldForward.set(0, 1, 0);
     worldForward.sub(worldUp.clone().multiplyScalar(worldForward.dot(worldUp))).normalize();
+    // forward × up is screen-right for this chase camera (world -X when
+    // looking along +Z with world-Y up). Positive yaw turns toward it.
     const worldRight = new THREE.Vector3().crossVectors(worldForward, worldUp).normalize();
 
     const flatFwd = worldForward
@@ -316,13 +338,23 @@ export class Simulation {
     if (wish.lengthSq() > 1e-6) {
       const targetVel = wish.multiplyScalar(maxSpeed);
       player.velocity.lerp(targetVel, 1 - Math.exp(-accel * dt / maxSpeed));
-      // Snappy facing toward wish / camera forward for human
-      const faceTarget = isHuman ? basis.forward : wish;
-      damp(player.facing, faceTarget, turn, dt);
-      player.facing.normalize();
+      if (!isHuman) {
+        damp(player.facing, wish, turn, dt);
+        if (player.facing.lengthSq() < 1e-8) player.facing.set(0, 0, 1);
+        else player.facing.normalize();
+      }
     } else {
       // Water drag when coasting
       player.velocity.multiplyScalar(Math.exp(-PLAYER.drag * dt));
+    }
+
+    // The chase view is the aim. Snap the body to it so mouse-right turns the
+    // swimmer right on the same step as the camera, and the held ball stays
+    // in front of that heading instead of lagging on the old facing.
+    if (isHuman) {
+      player.facing.copy(basis.forward);
+      if (player.facing.lengthSq() < 1e-8) player.facing.set(0, 0, 1);
+      else player.facing.normalize();
     }
 
     clampMagnitude(player.velocity, maxSpeed * 1.15);
@@ -368,7 +400,9 @@ export class Simulation {
       }
 
       if (intent.drop) {
-        this.releaseBall(human.facing.clone().multiplyScalar(4).add(human.velocity));
+        const toss = this.lookForward(human);
+        this.placeRelease(human, toss);
+        this.releaseBall(toss.multiplyScalar(4).add(human.velocity));
         human.reclaimGrace = PLAYER.reclaimCoyote;
         this.match.statusMessage = 'Ball dropped';
       }
@@ -399,7 +433,7 @@ export class Simulation {
         const dist = human.position.distanceTo(owner.position);
         if (dist < PLAYER.claimRadius * 1.1 && intent.claim) {
           const toOwner = owner.position.clone().sub(human.position).normalize();
-          if (human.facing.dot(toOwner) > 0.2) {
+          if (this.lookForward(human).dot(toOwner) > 0.2) {
             this.stripBall(human, owner);
             human.tackleCooldown = PLAYER.tackleCooldown;
           }
@@ -416,7 +450,13 @@ export class Simulation {
     const toBall = this.ball.position.clone().sub(player.position);
     if (toBall.lengthSq() < 1e-6) return true;
     toBall.normalize();
-    return player.facing.dot(toBall) >= PLAYER.claimFacingDot;
+    return this.lookForward(player).dot(toBall) >= PLAYER.claimFacingDot;
+  }
+
+  /** Where this player is aiming. Humans aim with the camera, even before the body catches up. */
+  private lookForward(player: PlayerState): THREE.Vector3 {
+    if (player.role === 'human') return this.cameraBasis().forward.clone();
+    return player.facing.clone();
   }
 
   private tryClaim(player: PlayerState): void {
@@ -479,15 +519,22 @@ export class Simulation {
   private releaseShot(player: PlayerState, charge: number): void {
     const isHuman = player.role === 'human';
     const aim = this.getAimDirection(player, isHuman);
+    this.placeRelease(player, aim);
     const speed = THREE.MathUtils.lerp(BALL.shootSpeedMin, BALL.shootSpeedMax, charge);
-    const impulse = aim.multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.35));
+    const impulse = aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.35));
     this.releaseBall(impulse);
     this.match.statusMessage = charge > 0.7 ? 'Charged shot!' : 'Shot';
   }
 
+  /** Put a released ball just outside the body along `aim` so the carrier doesn't block it. */
+  private placeRelease(player: PlayerState, aim: THREE.Vector3): void {
+    const gap = PLAYER.radius + BALL.radius + 0.2;
+    this.ball.position.copy(player.position).addScaledVector(aim, gap);
+  }
+
   private releasePass(player: PlayerState, charge: number): void {
     const isHuman = player.role === 'human';
-    let aim = this.getAimDirection(player, isHuman);
+    let aim = this.getAimDirection(player, isHuman).clone();
     // Prefer teammate in cone
     let best: PlayerState | null = null;
     let bestDot = 0.55;
@@ -503,8 +550,9 @@ export class Simulation {
       }
     }
     if (best) aim = best.position.clone().sub(player.position).normalize();
+    this.placeRelease(player, aim);
     const speed = BALL.passSpeed * (0.65 + 0.35 * charge);
-    this.releaseBall(aim.multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.25)));
+    this.releaseBall(aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.25)));
     this.match.statusMessage = best ? 'Pass' : 'Pass (no target)';
   }
 
