@@ -47,8 +47,6 @@ export const WALL = {
   escapeRestitution: 0.15,
   bankRestitution: 0.78,
   slideFriction: 0.08,
-  /** Soft push-back when player penetrates wall. */
-  playerRestitution: 0.35,
 };
 
 export const GOAL = {
@@ -62,11 +60,18 @@ export const CAMERA = {
   chaseDistance: 5.2,
   chaseHeight: 1.6,
   lookAhead: 4.0,
-  lag: 8,
+  /** Offset follow rate (1/seconds). High enough that look stays with the mouse. */
+  lag: 14,
   zoomOutDistance: 18,
   zoomOutHeight: 4.5,
   fov: 62,
   zoomOutFov: 82,
+  /**
+   * Camera may sit this far inside the shell. Must be smaller than the player
+   * radius so a swimmer pressed to the wall is still inside the camera volume
+   * and the chase ray can stay behind them.
+   */
+  wallClearance: 0.35,
 };
 
 export const INPUT = {

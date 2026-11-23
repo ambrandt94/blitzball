@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { ARENA_RADIUS, BALL, GOAL, PLAYER } from '../game/constants';
+import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER } from '../game/constants';
 import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
+import { rotateToward, stabilizeUp } from '../sim/math';
 
 /** High-contrast team colors for greybox readability. */
 const TEAM_COLORS = [0x2b9fff, 0xff6a3d];
@@ -153,11 +154,21 @@ export class SceneView {
   private pipYou: THREE.CanvasTexture;
   private pipOrange: THREE.CanvasTexture;
   private pipBlue: THREE.CanvasTexture;
-  private camPos = new THREE.Vector3();
+  private camOffsetDir = new THREE.Vector3(0, 0.15, 1);
+  private camOffsetLen = CAMERA.chaseDistance;
   private camTarget = new THREE.Vector3();
   private camUp = new THREE.Vector3(0, 1, 0);
   private worldUp = new THREE.Vector3(0, 1, 0);
   private camInitialized = false;
+  private camScratch = {
+    offset: new THREE.Vector3(),
+    pos: new THREE.Vector3(),
+    view: new THREE.Vector3(),
+  };
+  private bodyX = new THREE.Vector3();
+  private bodyY = new THREE.Vector3();
+  private bodyZ = new THREE.Vector3();
+  private bodyBasis = new THREE.Matrix4();
   private pulse = 0;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -408,17 +419,28 @@ export class SceneView {
       toggleDev: false,
     });
 
+    const humanPos = sim.getHuman().position;
+    const desiredOffset = this.camScratch.offset.copy(pose.position).sub(humanPos);
     if (!this.camInitialized) {
-      this.camPos.copy(pose.position);
+      this.camOffsetLen = Math.max(0.25, desiredOffset.length());
+      if (desiredOffset.lengthSq() > 1e-8) this.camOffsetDir.copy(desiredOffset).normalize();
       this.camTarget.copy(pose.target);
       this.camUp.copy(pose.up);
       this.camInitialized = true;
     } else {
-      this.camPos.lerp(pose.position, 0.28);
-      this.camTarget.lerp(pose.target, 0.32);
-      this.camUp.lerp(pose.up, 0.15).normalize();
+      // Orbit the offset around the swimmer. A world-position lerp cuts a
+      // chord through the body on a fast turn, and lookAt then rolls.
+      if (desiredOffset.lengthSq() > 1e-8) rotateToward(this.camOffsetDir, desiredOffset, CAMERA.lag, dt);
+      const desiredLen = Math.max(0.25, desiredOffset.length());
+      this.camOffsetLen = THREE.MathUtils.damp(this.camOffsetLen, desiredLen, CAMERA.lag, dt);
+      this.camTarget.lerp(pose.target, 1 - Math.exp(-CAMERA.lag * dt));
     }
-    this.camera.position.copy(this.camPos);
+    const camPos = this.camScratch.pos.copy(humanPos).addScaledVector(this.camOffsetDir, this.camOffsetLen);
+    this.camera.position.copy(camPos);
+    const view = this.camScratch.view.copy(this.camTarget).sub(camPos);
+    if (view.lengthSq() < 1e-8) view.copy(this.camOffsetDir).negate();
+    else view.normalize();
+    stabilizeUp(this.camUp, view, pose.up, CAMERA.lag, dt);
     this.camera.up.copy(this.camUp);
     this.camera.lookAt(this.camTarget);
     if (Math.abs(this.camera.fov - pose.fov) > 0.01) {
@@ -431,9 +453,9 @@ export class SceneView {
       if (!mesh) continue;
       mesh.visible = p.active && p.role !== 'stub';
       mesh.position.copy(p.position);
-      const lookTarget = p.position.clone().add(p.facing);
-      mesh.up.copy(p.up);
-      mesh.lookAt(lookTarget);
+      // Basis, not Object3D.lookAt. lookAt nudges the aim axis when up is
+      // parallel to facing, and that nudge flips the roll by a half turn.
+      this.faceBody(mesh, p.facing, p.up);
       this.poseLimbs(mesh, p, sim, dt);
       const ring = mesh.getObjectByName('carrierRing');
       if (ring) {
@@ -498,6 +520,23 @@ export class SceneView {
     this.pip.scale.set(pipPulse, pipPulse, pipPulse);
 
     this.writeLine(this.chargeGhost, this.ghostPositions, sim.chargeGhost, GHOST_MAX);
+  }
+
+  /** Point local +Z along facing and local +Y along up, with no lookAt branch. */
+  private faceBody(mesh: THREE.Object3D, facing: THREE.Vector3, up: THREE.Vector3): void {
+    const z = this.bodyZ.copy(facing);
+    if (z.lengthSq() < 1e-8) z.set(0, 0, 1);
+    else z.normalize();
+    const y = this.bodyY.copy(up).addScaledVector(z, -up.dot(z));
+    if (y.lengthSq() < 1e-6) {
+      y.set(0, 1, 0).addScaledVector(z, -z.y);
+      if (y.lengthSq() < 1e-6) y.set(1, 0, 0);
+    }
+    y.normalize();
+    const x = this.bodyX.crossVectors(y, z).normalize();
+    y.crossVectors(z, x).normalize();
+    this.bodyBasis.makeBasis(x, y, z);
+    mesh.quaternion.setFromRotationMatrix(this.bodyBasis);
   }
 
   /** Paddle/kick plus a few stiff poses. Rotations are set absolutely each frame. */

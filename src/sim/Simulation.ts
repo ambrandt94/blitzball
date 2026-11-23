@@ -19,10 +19,13 @@ import type {
 import { DummyAI } from '../ai/DummyAI';
 import {
   authoritativeUp,
+  chaseCameraPosition,
   clampMagnitude,
   damp,
   goalCenter,
+  lookBasis,
   rotateToward,
+  stabilizeUp,
 } from './math';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
@@ -282,38 +285,8 @@ export class Simulation {
     }
   }
 
-  private cameraBasis(): { forward: THREE.Vector3; right: THREE.Vector3; up: THREE.Vector3 } {
-    const up = authoritativeUp(this.tunables.goalAxisUp);
-    const cy = Math.cos(this.yaw);
-    const sy = Math.sin(this.yaw);
-    const cp = Math.cos(this.pitch);
-    const sp = Math.sin(this.pitch);
-
-    // Build look direction relative to authoritative up.
-    // Base: yaw around up, pitch around right.
-    const worldUp = up.clone().normalize();
-    const worldForward = new THREE.Vector3();
-    // Reference forward perpendicular to up.
-    if (Math.abs(worldUp.z) < 0.9) worldForward.set(0, 0, 1);
-    else worldForward.set(0, 1, 0);
-    worldForward.sub(worldUp.clone().multiplyScalar(worldForward.dot(worldUp))).normalize();
-    // forward × up is screen-right for this chase camera (world -X when
-    // looking along +Z with world-Y up). Positive yaw turns toward it.
-    const worldRight = new THREE.Vector3().crossVectors(worldForward, worldUp).normalize();
-
-    const flatFwd = worldForward
-      .clone()
-      .multiplyScalar(cy)
-      .add(worldRight.clone().multiplyScalar(sy))
-      .normalize();
-    const right = new THREE.Vector3().crossVectors(flatFwd, worldUp).normalize();
-    const forward = flatFwd
-      .clone()
-      .multiplyScalar(cp)
-      .add(worldUp.clone().multiplyScalar(sp))
-      .normalize();
-    const camUp = new THREE.Vector3().crossVectors(right, forward).normalize();
-    return { forward, right, up: camUp };
+  private cameraBasis(): { forward: THREE.Vector3; right: THREE.Vector3; up: THREE.Vector3; worldUp: THREE.Vector3 } {
+    return lookBasis(this.yaw, this.pitch, this.tunables.goalAxisUp);
   }
 
   private movePlayer(
@@ -389,30 +362,9 @@ export class Simulation {
     this.alignBodyUp(player, dt);
   }
 
-  /** Keep a body-up that pitches with facing and does not roll when looking straight up. */
+  /** Pitch with facing. Twist eases toward world up and freezes near the pole instead of flipping. */
   private alignBodyUp(player: PlayerState, dt: number): void {
-    const facing = player.facing;
-    const world = authoritativeUp(this.tunables.goalAxisUp);
-    const hinted = this.tmp.faceTarget.copy(world).addScaledVector(facing, -world.dot(facing));
-    const up = player.up;
-    up.addScaledVector(facing, -up.dot(facing));
-    if (hinted.lengthSq() > 1e-4) {
-      hinted.normalize();
-      if (up.lengthSq() < 1e-6) up.copy(hinted);
-      else {
-        up.normalize();
-        damp(up, hinted, 5, dt);
-        up.addScaledVector(facing, -up.dot(facing));
-        if (up.lengthSq() < 1e-6) up.copy(hinted);
-        else up.normalize();
-      }
-    } else if (up.lengthSq() < 1e-6) {
-      up.set(1, 0, 0).addScaledVector(facing, -facing.x);
-      if (up.lengthSq() < 1e-6) up.set(0, 0, 1);
-      up.normalize();
-    } else {
-      up.normalize();
-    }
+    stabilizeUp(player.up, player.facing, authoritativeUp(this.tunables.goalAxisUp), 6, dt);
   }
 
   private playPose(player: PlayerState, pose: ActionPose, seconds: number): void {
@@ -737,22 +689,25 @@ export class Simulation {
     const zoom = this.isZoomOut(intent);
     const dist = zoom ? CAMERA.zoomOutDistance : CAMERA.chaseDistance;
     const height = zoom ? CAMERA.zoomOutHeight : CAMERA.chaseHeight;
-    const up = authoritativeUp(this.tunables.goalAxisUp);
-    const position = human.position
-      .clone()
-      .addScaledVector(basis.forward, -dist)
-      .addScaledVector(up, height);
-    // Keep camera inside sphere soft
-    const maxCam = ARENA_RADIUS - 1.2;
-    if (position.length() > maxCam) position.setLength(maxCam);
+    const position = chaseCameraPosition(
+      new THREE.Vector3(),
+      human.position,
+      basis.forward,
+      basis.worldUp,
+      dist,
+      height,
+      ARENA_RADIUS - CAMERA.wallClearance,
+    );
     const target = human.position
       .clone()
       .addScaledVector(basis.forward, CAMERA.lookAhead * 0.35)
-      .addScaledVector(up, 0.4);
+      .addScaledVector(basis.worldUp, 0.4);
     return {
       position,
       target,
-      up,
+      // Pitched basis up, not world up. World up is parallel to the look
+      // direction at the pole, and lookAt's cross product flips there.
+      up: basis.up,
       fov: zoom ? CAMERA.zoomOutFov : CAMERA.fov,
     };
   }

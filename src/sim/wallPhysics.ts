@@ -73,6 +73,9 @@ export function constrainPlayerToSphere(
   position.copy(normal).multiplyScalar(limit);
   const vn = velocity.dot(normal);
   if (vn > 0) {
-    velocity.sub(normal.multiplyScalar(vn * (1 + WALL.playerRestitution)));
+    // Cancel the outward part only. Reflecting it (the old restitution push)
+    // reversed swim direction on contact. Bodies slerp toward velocity, so
+    // that reversal whipped facing around every time you met the wall.
+    velocity.addScaledVector(normal, -vn);
   }
 }
