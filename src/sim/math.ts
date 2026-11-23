@@ -140,10 +140,18 @@ export function chaseCameraPosition(
   distance: number,
   height: number,
   limit: number,
+  right?: THREE.Vector3,
+  lateral = 0,
 ): THREE.Vector3 {
   const place = (d: number): THREE.Vector3 => {
-    const h = distance > 1e-6 ? height * (d / distance) : 0;
-    return _aimed.copy(player).addScaledVector(forward, -d).addScaledVector(worldUp, h);
+    const scale = distance > 1e-6 ? d / distance : 0;
+    const h = height * scale;
+    const lat = lateral * scale;
+    _aimed.copy(player).addScaledVector(forward, -d).addScaledVector(worldUp, h);
+    // Side offset shrinks with the pull-in, so the camera stays on the ray
+    // from the swimmer and cannot pop through the shell.
+    if (right && lat !== 0) _aimed.addScaledVector(right, lat);
+    return _aimed;
   };
   const inside = (d: number): boolean => place(d).lengthSq() <= limit * limit;
   if (inside(distance)) return out.copy(place(distance));

@@ -39,7 +39,7 @@ export const PLAYER = {
 export const SHOT_ARC = {
   /** Look-ray distance to the marker when the aim starts. */
   aimDistance: 32,
-  /** How fast WASD slides the marker, world units per second. */
+  /** How fast A/D, W/S, and Space/C slide the marker, world units per second. */
   aimSpeed: 22,
   /** World units of control-point bend per radian of mouse. */
   bendSpeed: 42,
@@ -98,6 +98,15 @@ export const CAMERA = {
    * and the chase ray can stay behind them.
    */
   wallClearance: 0.35,
+  /** Lateral shift while right-click aim is held. Positive is the aim's right shoulder. */
+  shoulderOffset: 1.55,
+  /** How fast the shoulder shift eases in and out, in 1/seconds. */
+  shoulderTransition: 6.5,
+  /**
+   * Strafe cursor distance along the look ray when it does not hit a player,
+   * the ball, a goal, or the shell first.
+   */
+  aimCursorDistance: 18,
 };
 
 export const INPUT = {

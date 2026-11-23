@@ -3,7 +3,7 @@
  *   npx tsx src/sim/rotationCheck.ts
  */
 import * as THREE from 'three';
-import { ARENA_RADIUS, BALL, CAMERA, PLAYER, SHOT_ARC } from '../game/constants';
+import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, SHOT_ARC } from '../game/constants';
 import type { InputIntent } from '../game/types';
 import { defaultTunables } from '../ui/DevPanel';
 import { Simulation } from './Simulation';
@@ -462,6 +462,301 @@ function checkStrafe(): void {
   if (human.velocity.length() > cap) fail(`strafe speed ${human.velocity.length().toFixed(2)} exceeded ${cap.toFixed(2)}`);
 }
 
+function shoulderMeasure(sim: Simulation): number {
+  const human = sim.getHuman();
+  const basis = lookBasis(sim.yaw, sim.pitch, sim.tunables.goalAxisUp);
+  const pose = sim.getCameraPose(blankIntent());
+  return pose.position.clone().sub(human.position).dot(basis.right);
+}
+
+function checkShoulder(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  const strafe = blankIntent();
+  strafe.strafe = true;
+  const full = sim.tunables.shoulderOffset;
+
+  sim.updateAimPresentation(strafe, 1 / 60);
+  let lat = shoulderMeasure(sim);
+  if (Math.abs(lat - sim.shoulderLateral) > 0.08) fail('chase pose ignored the shoulder offset');
+  if (lat > full * 0.35) fail(`shoulder snapped in to ${lat.toFixed(2)}`);
+  if (lat < full * 0.02) fail(`shoulder did not start (${lat.toFixed(2)})`);
+
+  for (let i = 0; i < 120; i++) sim.updateAimPresentation(strafe, 1 / 60);
+  lat = shoulderMeasure(sim);
+  if (lat < full * 0.85) fail(`shoulder did not settle on the right (${lat.toFixed(2)})`);
+
+  let prev: THREE.Vector3 | null = null;
+  for (let i = 0; i <= 72; i++) {
+    sim.yaw = (i * 5 * Math.PI) / 180;
+    const pose = sim.getCameraPose(blankIntent());
+    if (pose.position.length() > ARENA_RADIUS - CAMERA.wallClearance + 1e-3) {
+      fail('settled shoulder camera left the arena');
+    }
+    const axes = viewAxes(pose.position, pose.target, pose.up);
+    if (prev) {
+      const step = angle(prev, axes.forward);
+      if (step > (12 * Math.PI) / 180) fail(`shoulder view jumped ${deg(step).toFixed(1)}°`);
+    }
+    prev = axes.forward;
+  }
+  sim.yaw = 0;
+
+  sim.updateAimPresentation(blankIntent(), 1 / 60);
+  const eased = shoulderMeasure(sim);
+  if (eased < full * 0.6) fail(`shoulder popped out to ${eased.toFixed(2)}`);
+  if (eased > full * 0.995) fail('shoulder did not ease out');
+
+  const left = new Simulation(defaultTunables());
+  left.kickoffLock = 0;
+  const leftHuman = left.getHuman();
+  leftHuman.position.set(0, 0, 0);
+  leftHuman.facing.set(0, 0, 1);
+  leftHuman.up.set(0, 1, 0);
+  leftHuman.hasBall = true;
+  left.ball.possession = 'held';
+  left.ball.ownerId = leftHuman.id;
+  left.yaw = 0;
+  left.pitch = 0;
+  const right = lookBasis(0, 0, false).right;
+  left.ball.position.copy(right).multiplyScalar(-3);
+  for (let i = 0; i < 120; i++) left.updateAimPresentation(strafe, 1 / 60);
+  if (shoulderMeasure(left) > -full * 0.8) {
+    fail(`camera stayed off the ball's side (${shoulderMeasure(left).toFixed(2)})`);
+  }
+
+  const empty = new Simulation(defaultTunables());
+  empty.kickoffLock = 0;
+  empty.getHuman().position.set(0, 0, 0);
+  empty.getHuman().facing.set(0, 0, 1);
+  empty.getHuman().up.set(0, 1, 0);
+  empty.ball.position.copy(right).multiplyScalar(-3);
+  empty.yaw = 0;
+  empty.pitch = 0;
+  for (let i = 0; i < 120; i++) empty.updateAimPresentation(strafe, 1 / 60);
+  if (shoulderMeasure(empty) < full * 0.8) {
+    fail(`empty hands did not keep the default shoulder (${shoulderMeasure(empty).toFixed(2)})`);
+  }
+
+  const cradled = new Simulation(defaultTunables());
+  cradled.kickoffLock = 0;
+  const cradle = cradled.getHuman();
+  cradle.position.set(0, 0, 0);
+  cradle.facing.set(0, 0, 1);
+  cradle.up.set(0, 1, 0);
+  cradle.hasBall = true;
+  cradled.ball.possession = 'held';
+  cradled.ball.ownerId = cradle.id;
+  cradled.ball.position.set(0, 0.15, 0.8);
+  cradled.yaw = 0;
+  cradled.pitch = 0;
+  for (let i = 0; i < 120; i++) cradled.updateAimPresentation(strafe, 1 / 60);
+  if (shoulderMeasure(cradled) < full * 0.8) fail('centered hold left the default shoulder');
+
+  const pinned = new Simulation(defaultTunables());
+  pinned.kickoffLock = 0;
+  const swimmer = pinned.getHuman();
+  swimmer.position.set(0, 0, ARENA_RADIUS - PLAYER.radius - 0.05);
+  swimmer.facing.set(0, 0, -1);
+  swimmer.up.set(0, 1, 0);
+  pinned.yaw = Math.PI;
+  pinned.pitch = 0.15;
+  for (let i = 0; i < 120; i++) pinned.updateAimPresentation(strafe, 1 / 60);
+  const pose = pinned.getCameraPose(blankIntent());
+  if (pose.position.length() > ARENA_RADIUS - CAMERA.wallClearance + 1e-2) {
+    fail(`shoulder camera left the arena near the wall (${pose.position.length().toFixed(2)})`);
+  }
+  const look = pose.target.clone().sub(pose.position).normalize();
+  const into = pose.position.clone().sub(swimmer.position).dot(look);
+  if (into > 0.25) fail(`shoulder camera crossed in front of the swimmer (${into.toFixed(2)})`);
+}
+
+function parkOthers(sim: Simulation): void {
+  for (const p of sim.players) {
+    if (p.id === sim.humanId) continue;
+    p.position.set(24, 18, -20);
+  }
+  sim.ball.position.set(0, 22, -16);
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+}
+
+function cursorKind(sim: Simulation): string {
+  return sim.aimCursor.kind;
+}
+
+function checkAimCursor(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  parkOthers(sim);
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  if (!mate) fail('missing teammate for the aim cursor');
+  mate.position.set(0, 0, 12);
+  const strafe = blankIntent();
+  strafe.strafe = true;
+  sim.updateAimPresentation(strafe, 1 / 60);
+  if (!sim.aimCursor.visible) fail('aim cursor hidden while strafing');
+  if (cursorKind(sim) !== 'player') fail(`cursor missed the teammate (${cursorKind(sim)})`);
+  if (sim.aimCursor.position.distanceTo(mate.position) > PLAYER.radius + 0.5) {
+    fail('cursor was not on the teammate');
+  }
+
+  mate.position.set(24, 18, -20);
+  sim.ball.position.set(0, 0, 9);
+  sim.updateAimPresentation(strafe, 1 / 60);
+  if (cursorKind(sim) !== 'ball') fail(`cursor missed the ball (${cursorKind(sim)})`);
+  if (sim.aimCursor.position.distanceTo(sim.ball.position) > 1.2) fail('cursor was not on the ball');
+
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  // The held ball sits on the look ray. The cursor must ignore it and keep the goal.
+  sim.ball.position.set(0, 0, 1.2);
+  sim.updateAimPresentation(strafe, 1 / 60);
+  if (cursorKind(sim) !== 'goal') fail(`held ball stole the cursor (${cursorKind(sim)})`);
+  if (Math.abs(sim.aimCursor.position.z - GOAL.distance) > 0.6) fail('cursor was not on the goal mouth');
+
+  human.hasBall = false;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.position.set(0, 22, -16);
+  sim.yaw = 1.1;
+  sim.pitch = 0.35;
+  sim.updateAimPresentation(strafe, 1 / 60);
+  if (cursorKind(sim) !== 'air') fail(`open water cursor was ${cursorKind(sim)}`);
+  const reach = sim.aimCursor.position.distanceTo(human.position);
+  if (Math.abs(reach - sim.tunables.aimCursorDistance) > 0.75) {
+    fail(`cursor distance ${reach.toFixed(2)} was not the fallback`);
+  }
+
+  human.position.set(0, 0, 50);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.updateAimPresentation(strafe, 1 / 60);
+  if (cursorKind(sim) !== 'wall') fail(`near-wall cursor was ${cursorKind(sim)}`);
+  if (sim.aimCursor.position.length() > ARENA_RADIUS - 0.2) fail('wall cursor left the arena');
+
+  sim.updateAimPresentation(blankIntent(), 1 / 60);
+  if (sim.aimCursor.visible) fail('aim cursor stayed up after releasing strafe');
+}
+
+function checkShotSteer(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  const human = sim.getHuman();
+  human.position.set(0, 1, -6);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.lastOwnerId = human.id;
+  sim.ball.position.set(0, 1, -5.2);
+  sim.yaw = 0.4;
+  sim.pitch = 1;
+
+  const upAim = blankIntent();
+  upAim.shootHeld = true;
+  upAim.move.set(0, 0, 1);
+  sim.step(1 / 60, upAim);
+  const lockedAt = human.position.clone();
+  const before = sim.shotAim.target.clone();
+  for (let i = 0; i < 30; i++) sim.step(1 / 60, upAim);
+  const delta = sim.shotAim.target.clone().sub(before);
+  const basis = lookBasis(sim.yaw, sim.pitch, false);
+  const up = delta.dot(basis.up);
+  const fwd = delta.dot(basis.forward);
+  const side = delta.dot(basis.right);
+  if (up < 4) fail(`W did not raise the marker (up ${up.toFixed(2)})`);
+  if (Math.abs(fwd) > 1.2) fail(`W moved the marker along the look (${fwd.toFixed(2)})`);
+  if (Math.abs(side) > 1.2) fail(`W slid the marker sideways (${side.toFixed(2)})`);
+  if (human.position.distanceTo(lockedAt) > 0.35) {
+    fail(`WASD still swam while aiming (${human.position.distanceTo(lockedAt).toFixed(2)})`);
+  }
+
+  const riseBefore = sim.shotAim.target.clone();
+  const riseAt = human.position.clone();
+  const climb = blankIntent();
+  climb.shootHeld = true;
+  climb.up = 1;
+  for (let i = 0; i < 30; i++) sim.step(1 / 60, climb);
+  const rise = sim.shotAim.target.clone().sub(riseBefore);
+  if (rise.dot(basis.up) < 4) fail(`Space did not raise the marker (up ${rise.dot(basis.up).toFixed(2)})`);
+  if (Math.abs(rise.dot(basis.forward)) > 1.2) fail('Space moved the marker along the look');
+  if (human.position.distanceTo(riseAt) > 0.35) fail('Space swam while aiming');
+
+  const lateral = new Simulation(defaultTunables());
+  lateral.kickoffLock = 0;
+  for (const p of lateral.players) {
+    if (p.id !== lateral.humanId) p.active = false;
+  }
+  const carrier = lateral.getHuman();
+  carrier.position.set(0, 1, -6);
+  carrier.velocity.set(0, 0, 0);
+  carrier.facing.set(0, 0, 1);
+  carrier.up.set(0, 1, 0);
+  carrier.hasBall = true;
+  lateral.ball.possession = 'held';
+  lateral.ball.ownerId = carrier.id;
+  lateral.ball.position.set(0, 1, -5.2);
+  lateral.yaw = 0.3;
+  lateral.pitch = 0.2;
+  const sideAim = blankIntent();
+  sideAim.shootHeld = true;
+  sideAim.move.set(1, 0, 0);
+  lateral.step(1 / 60, sideAim);
+  const sideBefore = lateral.shotAim.target.clone();
+  for (let i = 0; i < 30; i++) lateral.step(1 / 60, sideAim);
+  const sideDelta = lateral.shotAim.target.clone().sub(sideBefore);
+  const sideBasis = lookBasis(lateral.yaw, lateral.pitch, false);
+  const rightDot = sideDelta.dot(sideBasis.right);
+  if (rightDot < 4) fail(`A/D did not slide the marker (${rightDot.toFixed(2)})`);
+  if (Math.abs(sideDelta.dot(sideBasis.up)) > 1.2) fail('A/D raised the marker');
+  if (Math.abs(sideDelta.dot(sideBasis.forward)) > 1.2) fail('A/D changed the range');
+
+  const ranged = new Simulation(defaultTunables());
+  ranged.kickoffLock = 0;
+  for (const p of ranged.players) {
+    if (p.id !== ranged.humanId) p.active = false;
+  }
+  const shooter = ranged.getHuman();
+  shooter.position.set(0, 0, 0);
+  shooter.velocity.set(0, 0, 0);
+  shooter.hasBall = true;
+  ranged.ball.possession = 'held';
+  ranged.ball.ownerId = shooter.id;
+  ranged.ball.position.set(0, 0, 0.8);
+  ranged.yaw = 0.2;
+  ranged.pitch = -0.1;
+  const hold = blankIntent();
+  hold.shootHeld = true;
+  ranged.step(1 / 60, hold);
+  const forward = lookBasis(ranged.yaw, ranged.pitch, false).forward;
+  const rangedBefore = ranged.shotAim.target.clone();
+  ranged.nudgeAimDistance(6);
+  const wheelDelta = ranged.shotAim.target.clone().sub(rangedBefore);
+  const along = wheelDelta.dot(forward);
+  if (Math.abs(along - 6) > 0.05) fail(`wheel range slid ${along.toFixed(2)} instead of 6`);
+  if (wheelDelta.addScaledVector(forward, -along).length() > 0.05) fail('wheel moved the marker off the look axis');
+}
+
 export function runRotationChecks(): void {
   checkRotateToward();
   checkUpPole();
@@ -474,6 +769,9 @@ export function runRotationChecks(): void {
   checkArcClamp();
   checkShapeMath();
   checkPractice();
+  checkShoulder();
+  checkAimCursor();
+  checkShotSteer();
   checkCamera(false, false);
   checkCamera(false, true);
   checkCamera(true, false);
