@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GOAL } from '../game/constants';
 import type { BallState, InputIntent, PlayerState, Tunables } from '../game/types';
+import { goalMouthZ } from '../sim/goal';
 import { goalCenter } from '../sim/math';
 
 /**
@@ -15,7 +15,7 @@ export class DummyAI {
     self: PlayerState,
     ball: BallState,
     _players: PlayerState[],
-    _tunables: Tunables,
+    tunables: Tunables,
   ): InputIntent {
     this.reaction -= 1 / 60;
     if (this.cached && this.reaction > 0) return this.cached;
@@ -34,7 +34,7 @@ export class DummyAI {
       intent.move.copy(toGoal);
       intent.up = toGoal.y;
       // Hesitate before shooting so human can contest
-      if (dist < GOAL.distance * 0.55 && self.facing.dot(toGoal) > 0.55 && Math.random() < 0.025) {
+      if (dist < goalMouthZ() * 0.55 && self.facing.dot(toGoal) > 0.55 && Math.random() < 0.025) {
         intent.shoot = true;
       }
     } else if (ball.possession === 'free') {
@@ -45,7 +45,7 @@ export class DummyAI {
       intent.move.copy(toBall).multiplyScalar(0.72);
       intent.up = toBall.y * 0.72;
       intent.sprint = false;
-      if (dist < 1.45) intent.claim = true;
+      if (dist < tunables.catchReach + tunables.claimRadius) intent.claim = true;
     } else if (ball.ownerId !== null && ball.ownerId !== self.id) {
       const toBall = ball.position.clone().sub(self.position);
       const dist = toBall.length();

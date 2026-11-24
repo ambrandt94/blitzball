@@ -2,12 +2,14 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { ARENA_RADIUS, BALL, CAMERA, GOAL } from '../game/constants';
 import type { PlayerState } from '../game/types';
+import { goalPlaneZ } from '../sim/goal';
 import type { Simulation } from '../sim/Simulation';
 import { authoritativeUp, rotateToward, stabilizeUp } from '../sim/math';
 import { buildArenaDressing, type WaterRig } from './arenaDressing';
 import { createBlitzball } from './blitzball';
 import { BubblePool } from './bubbles';
 import { createCatchBeacon } from './catchBeacon';
+import { blendLimbPose, swimLimbPose } from './limbs';
 import { createSwimmer } from './swimmer';
 
 /** High-contrast team colors for greybox readability. */
@@ -167,44 +169,61 @@ export class SceneView {
     this.scene.add(new THREE.AmbientLight(0x1a4e68, 0.38));
   }
 
+  /** Round hoop on the shell, with a domed net recessed out through the wall. */
   private buildGoals(): void {
     for (const team of [0, 1] as const) {
-      const z = team === 0 ? GOAL.distance : -GOAL.distance;
+      const outward = team === 0 ? 1 : -1;
       const rimColor = team === 0 ? TEAM_COLORS[1]! : TEAM_COLORS[0]!;
       const group = new THREE.Group();
-      group.position.set(0, 0, z);
+      group.position.set(0, 0, goalPlaneZ(team));
 
       group.add(
         new THREE.Mesh(
-          new THREE.TorusGeometry(GOAL.rimRadius, 0.3, 12, 48),
+          new THREE.TorusGeometry(GOAL.rimRadius, GOAL.rimTube, 12, 56),
           new THREE.MeshBasicMaterial({ color: rimColor }),
         ),
       );
-
       group.add(
         new THREE.Mesh(
-          new THREE.CircleGeometry(GOAL.rimRadius * 0.95, 32),
-          new THREE.MeshBasicMaterial({
-            color: rimColor,
-            transparent: true,
-            opacity: 0.25,
-            side: THREE.DoubleSide,
-          }),
+          new THREE.TorusGeometry(GOAL.rimRadius - GOAL.rimTube * 0.2, GOAL.rimTube * 0.38, 8, 48),
+          new THREE.MeshBasicMaterial({ color: 0xfff4cc }),
         ),
       );
 
-      const tube = new THREE.Mesh(
-        new THREE.CylinderGeometry(GOAL.rimRadius * 0.92, GOAL.rimRadius * 0.7, GOAL.depth, 24, 1, true),
+      const domeMat = new THREE.MeshBasicMaterial({
+        color: rimColor,
+        transparent: true,
+        opacity: 0.16,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(GOAL.rimRadius, 22, 14, 0, Math.PI * 2, 0, Math.PI / 2),
+        domeMat,
+      );
+      dome.rotation.x = outward > 0 ? -Math.PI / 2 : Math.PI / 2;
+      group.add(dome);
+
+      const net = new THREE.Mesh(
+        new THREE.SphereGeometry(GOAL.rimRadius * 0.985, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2),
         new THREE.MeshBasicMaterial({
-          color: rimColor,
+          color: 0xf7fbff,
+          wireframe: true,
           transparent: true,
-          opacity: 0.2,
-          side: THREE.DoubleSide,
+          opacity: 0.9,
         }),
       );
-      tube.rotation.x = Math.PI / 2;
-      tube.position.z = team === 0 ? GOAL.depth * 0.35 : -GOAL.depth * 0.35;
-      group.add(tube);
+      net.rotation.x = dome.rotation.x;
+      group.add(net);
+
+      const ringMat = new THREE.MeshBasicMaterial({ color: 0xf4fbff, transparent: true, opacity: 0.8 });
+      for (const frac of [0.34, 0.62]) {
+        const depth = GOAL.rimRadius * frac;
+        const ringR = Math.sqrt(Math.max(0.2, GOAL.rimRadius * GOAL.rimRadius - depth * depth));
+        const hoop = new THREE.Mesh(new THREE.TorusGeometry(ringR, 0.05, 6, 40), ringMat);
+        hoop.position.z = outward * depth;
+        group.add(hoop);
+      }
 
       this.scene.add(group);
     }
@@ -665,22 +684,11 @@ export class SceneView {
 
     const tun = sim.tunables;
     const speed01 = Math.min(1, player.velocity.length() / Math.max(4, tun.playerMaxSpeed * tun.sprintMult));
-    const ud = mesh.userData as { swimPhase?: number };
+    const ud = mesh.userData as { swimPhase?: number; catchBlend?: number; holdBlend?: number };
     if (ud.swimPhase === undefined) ud.swimPhase = player.id * 0.37;
     const hz = tun.swimAnimRate * (0.3 + 0.7 * speed01);
     ud.swimPhase += dt * hz;
     const wave = Math.sin(ud.swimPhase * Math.PI * 2);
-    const amp = tun.swimAnim ? tun.swimAnimAmount * speed01 : 0;
-
-    // Arms stick out along local X. Yaw swings them forward (+Z) and back.
-    // The base angle keeps a paddle pose so a slow swim is not a T-pose.
-    const stroke = 0.5 + amp * 1.1;
-    let yL = 1.0 + wave * stroke;
-    let yR = -1.0 - wave * stroke;
-    let zL = 0.5;
-    let zR = -0.5;
-    let xLegL = -wave * amp * 0.9;
-    let xLegR = wave * amp * 0.9;
 
     const humanCharge =
       player.role === 'human' && player.id === sim.humanId && sim.charge.active ? sim.charge : null;
@@ -688,15 +696,36 @@ export class SceneView {
     // Aiming keeps the carry pose. The shoot charge would pull both arms back
     // and leave the ball floating in front of an empty chest.
     const aimingShot = sim.shotAim.active && player.id === sim.humanId;
+    const ready =
+      pose === 'claim' ||
+      (player.id === sim.humanId &&
+        sim.catchStance &&
+        !player.hasBall &&
+        pose !== 'pass' &&
+        pose !== 'shoot' &&
+        pose !== 'burst');
+    const catchTarget = ready ? 1 : 0;
+    const holdTarget = pose === 'hold' || aimingShot ? 1 : 0;
+    const ease = (current: number, target: number, rate: number) =>
+      current + (target - current) * (1 - Math.exp(-rate * dt));
+    ud.catchBlend = ease(ud.catchBlend ?? 0, catchTarget, 8.5);
+    ud.holdBlend = ease(ud.holdBlend ?? 0, holdTarget, 11);
 
-    if (pose === 'hold' || aimingShot) {
-      yL = 1.05;
-      yR = -1.05;
-      zL = 0.55;
-      zR = -0.55;
-      xLegL *= 0.35;
-      xLegR *= 0.35;
-    } else if (pose === 'burst') {
+    const poseWeight = Math.max(ud.catchBlend, ud.holdBlend);
+    const amp = (tun.swimAnim ? tun.swimAnimAmount * speed01 : 0) * (1 - 0.82 * poseWeight);
+    const swim = swimLimbPose(wave, amp);
+    // A little extra forward paddle so a slow swim is not a T-pose. Catch and hold still ease over it.
+    swim.yL += 0.35;
+    swim.yR -= 0.35;
+    const blended = blendLimbPose(swim, ud.catchBlend, ud.holdBlend);
+    let yL = blended.yL;
+    let yR = blended.yR;
+    let zL = blended.zL;
+    let zR = blended.zR;
+    let xLegL = blended.xLegL;
+    let xLegR = blended.xLegR;
+
+    if (pose === 'burst') {
       const follow = THREE.MathUtils.clamp(player.actionPoseTime / 0.08, 0, 1);
       yL = THREE.MathUtils.lerp(yL, -1.05, follow);
       yR = THREE.MathUtils.lerp(yR, 1.05, follow);
@@ -704,24 +733,12 @@ export class SceneView {
       zR = -0.12;
       xLegL = THREE.MathUtils.lerp(xLegL, 1.2, follow);
       xLegR = THREE.MathUtils.lerp(xLegR, -0.4, follow);
-    } else if (player.catchStance) {
-      yL = 1.35;
-      yR = -1.35;
-      zL = 0.08;
-      zR = -0.08;
-      xLegL *= 0.4;
-      xLegR *= 0.4;
-    } else if (pose === 'claim') {
-      yL = 1.4;
-      yR = -1.4;
-      zL = -0.2;
-      zR = 0.2;
-    } else if (pose === 'pass' || humanCharge?.kind === 'pass') {
+    } else if (!aimingShot && (pose === 'pass' || humanCharge?.kind === 'pass')) {
       const ext = humanCharge?.kind === 'pass' ? 0.3 + 0.7 * humanCharge.amount : Math.min(1, player.actionPoseTime / 0.22);
       yR = THREE.MathUtils.lerp(yR, -1.5, ext);
       zR = THREE.MathUtils.lerp(zR, -0.05, ext);
       yL = THREE.MathUtils.lerp(yL, 0.15, ext);
-    } else if (pose === 'shoot' || humanCharge?.kind === 'shoot') {
+    } else if (!aimingShot && (pose === 'shoot' || humanCharge?.kind === 'shoot')) {
       if (humanCharge?.kind === 'shoot') {
         const c = humanCharge.amount;
         yL = THREE.MathUtils.lerp(0.15, -0.9, c);

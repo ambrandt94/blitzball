@@ -157,7 +157,7 @@ export class Game {
         }
       }
     } else {
-      this.possessionEl.textContent = 'Ball free — press E near it';
+      this.possessionEl.textContent = 'Ball free — swim into it or hold RMB to reach';
       this.possessionEl.classList.add('free');
     }
 
@@ -190,6 +190,7 @@ export class Game {
         this.sim.catchBeacon.visible ? 'catch beacon on' : 'catch beacon off',
         `shoulder ${this.sim.shoulderLateral.toFixed(2)}`,
         this.sim.aimCursor.visible ? `cursor ${this.sim.aimCursor.kind}` : 'cursor off',
+        this.sim.catchStance ? 'catch reach' : 'catch off',
         `mate + ${this.tunables.defenseActive ? 'defense chases' : 'defense holds'}`,
       ].join('\n');
     }

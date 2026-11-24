@@ -29,7 +29,7 @@ npm run preview  # serve the build
 | Claim / tackle (along look) | `E` | A |
 | Drop (along look) | `Q` | B |
 | Pass (tap, or hold to charge) | `F` | X |
-| Strafe / aim (3D cursor, over-shoulder camera, slower swim) | Hold RMB | Y |
+| Reach to catch (no reticle; wider mitt). With the ball: strafe / aim | Hold RMB | Y |
 | Lunge toward your swim, or your look if you are not steering (only when you do not have the ball) | LMB | — |
 | Aim an arc (ball stays in the hand; release throws at the power on the meter) | Hold LMB while carrying | RT |
 | While aiming: marker left / right | `A` / `D` | Left stick X |
@@ -43,11 +43,11 @@ npm run preview  # serve the build
 | Dev panel | `` ` `` | — |
 | Release mouse | `Esc` | — |
 
-Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. The click that captures the pointer does not shoot and does not lunge. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, the arms reach when your hands are empty, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. A world-space cursor rides the look ray. It sticks to a player, the ball, a goal mouth, or the arena shell, and otherwise sits at **Aim cursor distance**. The camera eases onto the shoulder on the side of a held ball (the right shoulder when your hands are empty or the ball is centered in front). **Shoulder offset** is how far it slides, **Shoulder transition** is how quickly, and both ease in and out without a snap. The rig stays inside the sphere. Right-click does not open the browser menu.
+Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. The click that captures the pointer does not shoot and does not lunge. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. With the ball, a world-space cursor rides the look ray. It sticks to a player, a goal mouth, or the arena shell, and otherwise sits at **Aim cursor distance**. The camera eases onto the shoulder on the side of a held ball (the right shoulder when the ball is centered in front). **Shoulder offset** is how far it slides, **Shoulder transition** is how quickly, and both ease in and out without a snap. Without the ball, the same hold reaches both arms forward to catch, hides the reticle, and eases the camera back onto the center line so the hands and the ball in front of them stay in frame. The rig stays inside the sphere. Right-click does not open the browser menu.
 
 Cruise and sprint are slower than the first greybox so a trip across the sphere stays readable. Acceleration, turn rate, and the off-ball lunge stay snappy. Passes and shots are a little slower too. **Cruise speed**, **Sprint mult**, **Pass speed**, **Shot speed min / max**, **Burst speed**, **Burst length**, and **Burst cooldown** are on the dev panel.
 
-While the ball is loose or in flight, an aqua ring and beam mark where it will settle, or the end of a curved shot. The marker hides while someone is holding the ball. Bubbles trail swimmers (thicker in a sprint or a lunge) and the ball (thicker on a fast or bending flight).
+While the ball is loose or in flight, an aqua ring and beam mark where it will settle, or the end of a curved shot, including a carry into the net. The marker hides while someone is holding the ball. Bubbles trail swimmers (thicker in a sprint or a lunge) and the ball (thicker on a fast or bending flight).
 
 Drop a `public/models/blitzball.glb` in place to replace the built-in ball. The procedural ball stays if that file is missing. Do not commit a ripped game asset.
 
@@ -69,11 +69,11 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 
 ## What’s playable
 
-- Sphere arena, radius 56, with a translucent shell, caustic shimmer, sunbeams, and a stadium bowl outside the water. Latitude rings mark the sphere without a wireframe cage.
+- Sphere arena, radius 56, with a translucent shell, caustic shimmer, sunbeams, and a stadium bowl outside the water. Each end has a round hoop and a domed net set into the shell. Latitude rings mark the sphere without a wireframe cage.
 - Human 6DOF swim with sprint and an off-ball lunge; carrier speed/turn damp
-- Chase camera that eases to an over-the-shoulder view while you hold aim, on the side of the hand with the ball, and stays inside the sphere
-- World-space aim cursor on the look ray while strafing (player, ball, goal, wall, or a set distance)
-- Ball claim (facing + radius), laggy hold, pass, charged shoot
+- Chase camera that eases to an over-the-shoulder view while you aim with the ball, and eases back and centers while you reach to catch
+- World-space aim cursor on the look ray while strafing with the ball (player, goal, wall, or a set distance). Hidden while reaching off-ball
+- Ball claim (forward mitt; wider while reaching), laggy hold, pass, charged shoot. Shots aimed or bent into a hoop carry through the mouth.
 - Beginner charge ghost trail
 - Sphere wall banks; hard straight hits can fly out → possession reset
 - Strict goal rims; continuous play with score + kickoff reset
