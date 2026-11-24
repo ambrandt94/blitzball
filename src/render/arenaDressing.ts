@@ -2,7 +2,15 @@ import * as THREE from 'three';
 import { ARENA_RADIUS, ARENA_REFERENCE } from '../game/constants';
 
 export interface WaterRig {
-  update(time: number, cameraPosition: THREE.Vector3, sunbeams: boolean, intensity: number): void;
+  update(
+    time: number,
+    cameraPosition: THREE.Vector3,
+    sunbeams: boolean,
+    intensity: number,
+    ballPosition: THREE.Vector3,
+    nearShell: number,
+    impact: number,
+  ): void;
 }
 
 const shellVertex = /* glsl */ `
@@ -21,6 +29,10 @@ const shellFragment = /* glsl */ `
   varying vec3 vNormal;
   uniform float uTime;
   uniform vec3 uCameraPos;
+  uniform vec3 uBallPos;
+  uniform float uRadius;
+  uniform float uNear;
+  uniform float uImpact;
   void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(uCameraPos - vWorld);
@@ -33,6 +45,16 @@ const shellFragment = /* glsl */ `
     vec3 col = mix(deep, rim, fres);
     col += vec3(0.45, 0.9, 0.95) * caustic * (0.28 + fres * 0.45);
     float alpha = 0.1 + fres * 0.42 + caustic * 0.1;
+    float ballLen = length(uBallPos);
+    if (uNear > 0.001 && ballLen > 0.5) {
+      vec3 contact = uBallPos * (uRadius / ballLen);
+      float ring = distance(vWorld, contact);
+      float wave = 0.5 + 0.5 * sin(ring * 2.6 - uTime * 7.5);
+      float band = exp(-ring * ring * 0.045);
+      float glow = uNear * band * (0.45 + 0.85 * uImpact) * (0.35 + 0.65 * wave);
+      col += vec3(0.78, 0.96, 1.0) * glow;
+      alpha += glow * 0.7;
+    }
     gl_FragColor = vec4(col, alpha);
   }
 `;
@@ -46,6 +68,10 @@ export function buildArenaDressing(scene: THREE.Scene): WaterRig {
     uniforms: {
       uTime: { value: 0 },
       uCameraPos: { value: new THREE.Vector3() },
+      uBallPos: { value: new THREE.Vector3() },
+      uRadius: { value: ARENA_RADIUS },
+      uNear: { value: 0 },
+      uImpact: { value: 0 },
     },
     vertexShader: shellVertex,
     fragmentShader: shellFragment,
@@ -98,9 +124,21 @@ export function buildArenaDressing(scene: THREE.Scene): WaterRig {
   scene.add(root);
 
   return {
-    update(time: number, cameraPosition: THREE.Vector3, sunbeams: boolean, intensity: number) {
+    update(
+      time: number,
+      cameraPosition: THREE.Vector3,
+      sunbeams: boolean,
+      intensity: number,
+      ballPosition: THREE.Vector3,
+      nearShell: number,
+      impact: number,
+    ) {
       shellMat.uniforms.uTime!.value = time;
+      shellMat.uniforms.uRadius!.value = ARENA_RADIUS;
+      shellMat.uniforms.uNear!.value = nearShell;
+      shellMat.uniforms.uImpact!.value = impact;
       (shellMat.uniforms.uCameraPos!.value as THREE.Vector3).copy(cameraPosition);
+      (shellMat.uniforms.uBallPos!.value as THREE.Vector3).copy(ballPosition);
       const strength = sunbeams ? Math.max(0, intensity) : 0;
       beams.group.visible = strength > 0.001;
       beams.material.uniforms.uIntensity!.value = strength;

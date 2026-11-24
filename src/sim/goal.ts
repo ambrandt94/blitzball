@@ -145,41 +145,6 @@ function bezierPoint(index: 0 | 1 | 2, t: number): { x: number; y: number } {
   };
 }
 
-function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const abx = bx - ax;
-  const aby = by - ay;
-  const ab2 = abx * abx + aby * aby || 1;
-  let t = ((px - ax) * abx + (py - ay) * aby) / ab2;
-  if (t < 0) t = 0;
-  else if (t > 1) t = 1;
-  const dx = px - (ax + abx * t);
-  const dy = py - (ay + aby * t);
-  return Math.hypot(dx, dy);
-}
-
-/** Distance from a mouth-plane point to the bowed frame centerline. */
-function distToFrame(x: number, y: number): number {
-  let best = Infinity;
-  for (let edge = 0; edge < 3; edge++) {
-    let prev = bezierPoint(edge as 0 | 1 | 2, 0);
-    for (let step = 1; step <= 8; step++) {
-      const next = bezierPoint(edge as 0 | 1 | 2, step / 8);
-      best = Math.min(best, distToSegment(x, y, prev.x, prev.y, next.x, next.y));
-      prev = next;
-    }
-  }
-  return best;
-}
-
-function distToCorner(x: number, y: number): number {
-  let best = Infinity;
-  for (let i = 0; i < 3; i++) {
-    const c = goalCornerXY(i as 0 | 1 | 2);
-    best = Math.min(best, Math.hypot(x - c.x, y - c.y));
-  }
-  return best;
-}
-
 /**
  * First mouth the ray enters. `dir` need not be normalized.
  * `t` is world units along `dir`.
@@ -248,25 +213,87 @@ export function containInNet(position: THREE.Vector3, velocity: THREE.Vector3): 
   }
 }
 
-/**
- * Bank off the frame. The triangular opening is not solid.
- * Returns true when the ball was pushed off a post or a corner.
- */
-export function resolveGoalRim(position: THREE.Vector3, velocity: THREE.Vector3): boolean {
-  const tube = GOAL.rimTube + BALL.radius;
-  for (const team of [0, 1] as const) {
-    const depth = pocketDepthOf(position, team);
-    if (depth < -(tube + 0.35) || depth > GOAL.pocketDepth + 0.2) continue;
-    if (pointInScaled(position.x, position.y, scoreScaleAt(Math.max(0, depth)) * 0.96)) continue;
-    const onFrame = distToFrame(position.x, position.y) <= tube + 0.06;
-    const onCorner = distToCorner(position.x, position.y) <= 1.2 + BALL.radius;
-    if (!onFrame && !onCorner) continue;
+export interface RimHit {
+  point: THREE.Vector3;
+  normal: THREE.Vector3;
+}
 
-    const outward = goalOutward(team);
+const RIM_REST = 0.7;
+const CORNER_RADIUS = 1.15;
+
+/**
+ * Solid triangular frame. The opening is not solid. A hit reflects off the
+ * post or corner normal, so a clip and an outside strike both leave the net.
+ */
+export function resolveGoalRim(position: THREE.Vector3, velocity: THREE.Vector3): RimHit | null {
+  let bestPen = 0;
+  let bx = 0;
+  let by = 0;
+  let bz = 0;
+  let nx = 0;
+  let ny = 0;
+  let nz = 1;
+
+  const consider = (cx: number, cy: number, cz: number, limit: number): void => {
+    const dx = position.x - cx;
+    const dy = position.y - cy;
+    const dz = position.z - cz;
+    const dist = Math.hypot(dx, dy, dz);
+    const pen = limit - dist;
+    if (pen <= bestPen) return;
+    bestPen = pen;
+    bx = cx;
+    by = cy;
+    bz = cz;
+    if (dist > 1e-5) {
+      const inv = 1 / dist;
+      nx = dx * inv;
+      ny = dy * inv;
+      nz = dz * inv;
+    } else {
+      nx = 0;
+      ny = 0;
+      nz = position.z >= cz ? 1 : -1;
+    }
+  };
+
+  for (const team of [0, 1] as const) {
     const plane = goalPlaneZ(team);
-    position.z = plane - outward * (BALL.radius * 0.45);
-    if (velocity.z * outward > 0) velocity.z *= -0.42;
-    return true;
+    const depth = pocketDepthOf(position, team);
+    if (depth < -1.6 || depth > GOAL.pocketDepth + 0.45) continue;
+    if (pointInGoalMouth(position.x, position.y) && depth > -0.35) continue;
+
+    const tube = GOAL.rimTube + BALL.radius;
+    for (let edge = 0; edge < 3; edge++) {
+      let prev = bezierPoint(edge as 0 | 1 | 2, 0);
+      for (let step = 1; step <= 12; step++) {
+        const next = bezierPoint(edge as 0 | 1 | 2, step / 12);
+        const abx = next.x - prev.x;
+        const aby = next.y - prev.y;
+        const ab2 = abx * abx + aby * aby || 1;
+        let t = ((position.x - prev.x) * abx + (position.y - prev.y) * aby) / ab2;
+        if (t < 0) t = 0;
+        else if (t > 1) t = 1;
+        consider(prev.x + abx * t, prev.y + aby * t, plane, tube);
+        prev = next;
+      }
+    }
+    const cornerLimit = CORNER_RADIUS + BALL.radius;
+    for (let i = 0; i < 3; i++) {
+      const c = goalCornerXY(i as 0 | 1 | 2);
+      consider(c.x, c.y, plane, cornerLimit);
+    }
   }
-  return false;
+
+  if (bestPen <= 0) return null;
+  const normal = new THREE.Vector3(nx, ny, nz);
+  if (normal.lengthSq() < 1e-8) normal.set(0, 0, 1);
+  else normal.normalize();
+  position.addScaledVector(normal, bestPen + 0.03);
+  const vn = velocity.dot(normal);
+  if (vn < 0) {
+    velocity.addScaledVector(normal, -(1 + RIM_REST) * vn);
+    velocity.multiplyScalar(0.95);
+  }
+  return { point: new THREE.Vector3(bx, by, bz), normal };
 }

@@ -3,15 +3,17 @@ import { ARENA_RADIUS, WALL } from '../game/constants';
 
 export interface WallHitResult {
   escaped: boolean;
+  /** True when this call reflected an outward velocity off the shell. */
+  bounced: boolean;
   position: THREE.Vector3;
   velocity: THREE.Vector3;
 }
 
 /**
- * Sphere wall model:
- * - Hard straight hits (near-normal incidence + high speed) can "fly out" (treated as escape → reset later)
- *   or get a weak rebound.
- * - Angled contact banks / rides the edge with higher restitution along the tangent.
+ * Sphere wall. A hit reflects off the outward normal. Grazes keep their
+ * tangent (the curve); every bounce gives a little speed back to the water.
+ * A hard straight shot is allowed to leave so the breach can play out.
+ * The ball is not pulled back inside on that path.
  */
 export function resolveSphereWall(
   position: THREE.Vector3,
@@ -25,40 +27,29 @@ export function resolveSphereWall(
 ): WallHitResult {
   const limit = ARENA_RADIUS - radius;
   const dist = position.length();
-  if (dist <= limit) {
-    return { escaped: false, position, velocity };
+  if (dist <= limit || dist < 1e-6) {
+    return { escaped: false, bounced: false, position, velocity };
   }
 
-  const normal = position.clone().normalize();
-  // Push back inside.
-  position.copy(normal).multiplyScalar(limit);
-
+  const normal = position.clone().multiplyScalar(1 / dist);
   const vn = velocity.dot(normal);
-  if (vn >= 0) {
-    // Moving outward or sliding — apply bank/slide.
-  }
-
   const speed = velocity.length();
-  // Angle from normal: 0 = straight into wall, π/2 = grazing.
-  const into = Math.max(0, -vn);
-  const angleFromNormal = speed > 1e-4 ? Math.acos(THREE.MathUtils.clamp(into / speed, 0, 1)) : Math.PI / 2;
+  const outward = Math.max(0, vn);
+  const angleFromNormal = speed > 1e-4 ? Math.acos(THREE.MathUtils.clamp(outward / speed, 0, 1)) : Math.PI / 2;
 
-  if (opts.allowEscape && into >= opts.escapeSpeed * 0.55 && angleFromNormal < opts.escapeAngle) {
-    // Hard straight hit — escape (ball flies "out" of play).
-    return { escaped: true, position, velocity };
+  if (opts.allowEscape && outward >= opts.escapeSpeed * 0.55 && angleFromNormal < opts.escapeAngle) {
+    return { escaped: true, bounced: false, position, velocity };
   }
 
-  // Reflect with energy based on angle: steeper = more loss; graze = bank.
-  const t = THREE.MathUtils.clamp(angleFromNormal / (Math.PI / 2), 0, 1);
-  const restitution = THREE.MathUtils.lerp(WALL.escapeRestitution, WALL.bankRestitution, t);
-  const reflected = velocity.clone().sub(normal.clone().multiplyScalar(2 * vn));
-  // Kill a bit of tangential energy on hard hits; preserve on banks.
-  const tangent = reflected.clone().sub(normal.clone().multiplyScalar(reflected.dot(normal)));
-  const normalComp = normal.clone().multiplyScalar(-Math.abs(vn) * restitution);
-  const slideKeep = THREE.MathUtils.lerp(1 - WALL.slideFriction, 1, t);
-  velocity.copy(normalComp).add(tangent.multiplyScalar(slideKeep));
-
-  return { escaped: false, position, velocity };
+  position.copy(normal).multiplyScalar(limit);
+  if (vn > 0.02) {
+    const graze = THREE.MathUtils.clamp(angleFromNormal / (Math.PI / 2), 0, 1);
+    const restitution = THREE.MathUtils.lerp(0.74, WALL.bankRestitution, graze);
+    velocity.addScaledVector(normal, -(1 + restitution) * vn);
+    // A small loss on the whole vector. The tangent, and the spin it reads as, stays.
+    velocity.multiplyScalar(THREE.MathUtils.lerp(0.96, 0.99, graze));
+  }
+  return { escaped: false, bounced: vn > 0.02, position, velocity };
 }
 
 export function constrainPlayerToSphere(

@@ -77,8 +77,8 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 - World-space aim cursor on the look ray while strafing with the ball (player, goal, wall, or a set distance). Hidden while reaching off-ball
 - Ball claim (forward mitt; wider while reaching), laggy hold, pass, charged shoot. Shots aimed or bent into a triangle carry through the opening.
 - Beginner charge ghost trail
-- Sphere wall banks; hard straight hits can fly out → possession reset
-- Strict triangular frames; continuous play with score + kickoff reset
+- Sphere wall banks. A hit reflects off the glass with a little speed lost and the curve kept. Close to the shell the water ripples, glows, and throws bubbles and a splash ring. A hard straight shot breaches: the ball arcs out through a spray, then a throw-in brings it back from that spot. It does not vanish.
+- The triangular frame is solid. A clip or an outside hit bounces off the post; only the opening scores. A goal lights the frame, bursts bubbles, holds a GOAL banner, and leaves the ball settling in the net before kickoff.
 - **Test opponent** (on by default): one orange swimmer slowly chases the ball, well under cruise speed. With the ball they wander and never pass or shoot, so a shoulder check can pop it loose. The teammate and any other enemy stay parked. Turn the toggle off to restore practice.
 - Practice, with the test opponent off: one green-ring teammate who gets open, receives a pass, and passes back after **Teammate pass delay** or when you press `G`. The orange defender holds position unless **Defense chases** is on.
 - **3v3 scaffolding**: six roster slots (human + teammate + one defender active; three stubs inactive)

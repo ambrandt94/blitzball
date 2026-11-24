@@ -10,10 +10,10 @@ import { fitBallModel } from '../render/blitzball';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { defaultTunables } from '../ui/DevPanel';
 import { Simulation } from './Simulation';
-import { goalCornerWorld, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, segmentScores } from './goal';
+import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
 import { lookBasis, rotateToward, stabilizeUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
-import { constrainPlayerToSphere } from './wallPhysics';
+import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
 function fail(message: string): never {
   throw new Error(message);
@@ -1835,6 +1835,111 @@ function checkDrillOpponent(): void {
   }
 }
 
+function checkWallRicochet(): void {
+  const noEscape = { escapeSpeed: 500, escapeAngle: 0.01, allowEscape: false };
+  const pos = new THREE.Vector3(ARENA_RADIUS - BALL.radius + 0.35, 0, 0);
+  const vel = new THREE.Vector3(40, 0, 0);
+  const before = vel.length();
+  const hit = resolveSphereWall(pos, vel, BALL.radius, noEscape);
+  if (hit.escaped) fail('head-on bounce was treated as an escape');
+  if (vel.x >= 0) fail('bounce did not reflect off the surface normal');
+  const speed = vel.length();
+  if (speed >= before - 0.05) fail(`bounce did not drop speed (${speed.toFixed(2)})`);
+  if (speed < before * 0.55) fail(`bounce killed the shot (${speed.toFixed(2)})`);
+
+  const angled = new THREE.Vector3(24, 18, 0);
+  const angledBefore = angled.length();
+  resolveSphereWall(new THREE.Vector3(ARENA_RADIUS - BALL.radius + 0.3, 0, 0), angled, BALL.radius, noEscape);
+  if (angled.x >= 0) fail('angled bounce stayed outward');
+  if (angled.y < 18 * 0.7) fail('angled bounce lost the curve');
+  if (angled.length() >= angledBefore - 0.05) fail('angled bounce did not drop speed');
+
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 5;
+  sim.ball.arc = null;
+  const shell = ARENA_RADIUS - BALL.radius;
+  sim.ball.position.set(shell - 0.05, 0, 0);
+  sim.ball.velocity.set(90, 4, 0);
+  let breached = false;
+  let thrownIn = false;
+  for (let i = 0; i < 120; i++) {
+    sim.step(1 / 60, blankIntent());
+    if (sim.ball.position.length() < 0.5) fail('ball vanished on the shell');
+    if (sim.ball.position.x > ARENA_RADIUS + 0.3) breached = true;
+    if (breached && sim.ball.position.x > shell * 0.5 && sim.ball.velocity.x < -6) thrownIn = true;
+  }
+  if (!breached) fail('a strong shot did not leave the shell');
+  if (!thrownIn) fail('throw-in did not bring the ball back from the breach');
+}
+
+function checkRimDeflection(): void {
+  const curve = goalFrameCurve(0);
+  const onFrame = curve.getPoint(0.5);
+  const z = goalPlaneZ(0);
+  const away = new THREE.Vector3(onFrame.x, onFrame.y, 0);
+  if (away.lengthSq() < 1e-6) fail('frame sample collapsed');
+  away.normalize();
+  const pos = new THREE.Vector3(onFrame.x, onFrame.y, z - 0.15).addScaledVector(away, GOAL.rimTube * 0.65);
+  const vel = away.clone().multiplyScalar(-28);
+  vel.z = 22;
+  const toward = vel.dot(away);
+  if (!resolveGoalRim(pos, vel)) fail('rim did not collide');
+  if (vel.dot(away) < toward + 8) fail('rim did not bounce off the frame normal');
+
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  sim.match.resetTimer = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 4;
+  sim.ball.arc = null;
+  sim.ball.position.set(onFrame.x, onFrame.y, z - 2.5);
+  sim.ball.velocity.set(0, 0, 70);
+  for (let i = 0; i < 40; i++) sim.step(1 / 60, blankIntent());
+  if (sim.match.score[0] > 0 || sim.match.score[1] > 0) fail('a rim hit scored');
+  if (inGoalPocket(sim.ball.position)) fail('a rim hit ended in the net');
+}
+
+function checkGoalStaysVisible(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  sim.match.resetTimer = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  const z = goalPlaneZ(0);
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 3;
+  sim.ball.arc = null;
+  sim.ball.velocity.set(0, 0, 70);
+  sim.ball.position.set(0, 0, z - 2);
+  let scored = false;
+  for (let i = 0; i < 30 && !scored; i++) {
+    sim.step(1 / 60, blankIntent());
+    scored = sim.match.score[0] > 0;
+  }
+  if (!scored) fail('shot did not score');
+  if (sim.ball.position.length() < 4) fail('ball vanished on the goal');
+  if (!inGoalPocket(sim.ball.position, 0)) fail('ball was not in the net');
+  for (let i = 0; i < 20; i++) sim.step(1 / 60, blankIntent());
+  if (sim.match.resetTimer <= 0) fail('goal reset started immediately');
+  if (sim.ball.position.length() < 4) fail('ball vanished before the restart');
+  if (!inGoalPocket(sim.ball.position, 0)) fail('ball left the net before the restart');
+}
+
 function checkArenaShell(): void {
   const saved = ARENA_RADIUS;
   try {
@@ -1897,6 +2002,9 @@ export function runRotationChecks(): void {
   checkShoulderCheck();
   checkDrillOpponent();
   checkArenaShell();
+  checkWallRicochet();
+  checkRimDeflection();
+  checkGoalStaysVisible();
   checkShotIntoGoal();
   checkShotSteer();
   checkBallFit();

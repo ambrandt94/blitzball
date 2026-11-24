@@ -207,6 +207,26 @@
         min-width: 2.5em;
         text-align: right;
       }
+      #goal-banner {
+        position: absolute;
+        top: 28%;
+        left: 50%;
+        transform: translate(-50%, -50%) scale(0.92);
+        font-size: 6.4rem;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        color: #fff6c8;
+        text-shadow:
+          0 0 24px rgba(255, 214, 120, 0.9),
+          0 0 64px rgba(80, 180, 255, 0.55);
+        opacity: 0;
+        pointer-events: none;
+      }
+      #goal-banner.show {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1);
+        transition: opacity 0.12s ease, transform 0.2s ease;
+      }
       #debug-stats {
         position: absolute;
         left: 16px;
@@ -235,6 +255,7 @@
             <div class="team-b" id="score-b">0</div>
           </div>
         </div>
+        <div id="goal-banner">GOAL</div>
         <div id="status">Swim, catch, pass, shoot</div>
         <div id="possession" class="free">Ball free</div>
         <div id="debug-stats"></div>

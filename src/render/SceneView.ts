@@ -93,6 +93,9 @@ export class SceneView {
   private emitOrigin = new THREE.Vector3();
   private emitDir = new THREE.Vector3();
   private bubbleUp = new THREE.Vector3(0, 1, 0);
+  private splashRing!: THREE.Mesh;
+  private splashMat!: THREE.MeshBasicMaterial;
+  private nearBubbleAcc = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -116,6 +119,7 @@ export class SceneView {
     this.buildLights();
     this.water = buildArenaDressing(this.scene);
     this.buildGoals();
+    this.buildSplashRing();
     this.buildBall();
     this.buildGhosts();
     this.buildAimCursor();
@@ -170,6 +174,22 @@ export class SceneView {
     root.name = 'goals';
     for (const team of [0, 1] as const) root.add(buildGoalFrame(team));
     this.scene.add(root);
+  }
+
+  /** Ring that sits on the glass where the ball meets it. */
+  private buildSplashRing(): void {
+    this.splashMat = new THREE.MeshBasicMaterial({
+      color: 0xdff8ff,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    });
+    this.splashRing = new THREE.Mesh(new THREE.TorusGeometry(1, 0.09, 8, 32), this.splashMat);
+    this.splashRing.visible = false;
+    this.scene.add(this.splashRing);
   }
 
   /** Drop the shell, bowl, sunbeams, and goals, then build them at the current radius. */
@@ -531,12 +551,43 @@ export class SceneView {
     this.syncAimCursor(sim);
     this.syncCatchBeacon(sim);
     this.syncBubbles(sim, dt);
+    this.syncGoalFlash(sim);
+    this.syncSplash(sim);
     this.water.update(
       this.pulse,
       this.camera.position,
       sim.tunables.showSunbeams,
       sim.tunables.sunbeamIntensity,
+      sim.ball.position,
+      sim.nearShell,
+      Math.max(sim.impactPulse, sim.breachTime > 0 ? 1 : 0),
     );
+  }
+
+  private syncGoalFlash(sim: Simulation): void {
+    const goals = this.scene.getObjectByName('goals');
+    if (!goals) return;
+    goals.traverse((child) => {
+      if (child.name !== 'goalFlash' || !(child instanceof THREE.Mesh)) return;
+      const team = child.parent?.name === 'goal-orange' ? 1 : 0;
+      const mat = child.material as THREE.MeshBasicMaterial;
+      const on = sim.goalCelebrate > 0 && sim.goalTeam === team;
+      const pulse = 0.4 + 0.6 * Math.abs(Math.sin(this.pulse * 9));
+      mat.opacity = on ? pulse * Math.min(1, sim.goalCelebrate) : 0;
+    });
+  }
+
+  private syncSplash(sim: Simulation): void {
+    const show = sim.nearShell > 0.12 || sim.impactPulse > 0.02 || sim.breachTime > 0;
+    this.splashRing.visible = show;
+    if (!show) return;
+    this.splashRing.position.copy(sim.shellPoint);
+    if (sim.breachTime > 0) this.splashRing.position.copy(sim.breachPoint);
+    this.splashRing.lookAt(0, 0, 0);
+    const scale = 0.9 + sim.nearShell * 1.6 + sim.impactPulse * 2.4 + (sim.breachTime > 0 ? 1.8 : 0);
+    this.splashRing.scale.setScalar(scale);
+    this.splashMat.opacity = Math.min(0.95, 0.12 + sim.nearShell * 0.4 + sim.impactPulse * 0.55);
+    this.splashMat.color.setHex(sim.breachTime > 0 ? 0xfff2c4 : 0xdff8ff);
   }
 
   private spinBall(sim: Simulation, dt: number): void {
@@ -616,6 +667,49 @@ export class SceneView {
         }
         p.hitBurst = 0;
       }
+    }
+
+    if (sim.nearShell > 0.5) {
+      this.nearBubbleAcc += (8 + sim.nearShell * 18) * dt;
+      const contact = sim.breachTime > 0 ? sim.breachPoint : sim.shellPoint;
+      while (this.nearBubbleAcc >= 1) {
+        this.emitOrigin.copy(contact);
+        this.emitDir.copy(contact).multiplyScalar(-1);
+        if (this.emitDir.lengthSq() > 1e-6) this.emitDir.normalize();
+        else this.emitDir.set(0, 1, 0);
+        this.trails.emit({
+          origin: this.emitOrigin,
+          direction: this.emitDir,
+          kick: 0.8 + sim.impactPulse * 1.4,
+          life: 0.8,
+          size: 0.12 + sim.nearShell * 0.08,
+          rise: 0.7,
+          spread: 0.45,
+        });
+        this.nearBubbleAcc -= 1;
+      }
+    }
+    if (sim.splashBurst > 0) {
+      const n = Math.min(sim.splashBurst, 20);
+      const celebrating = sim.goalCelebrate > 1.4;
+      const origin = celebrating ? sim.ball.position : sim.breachTime > 0 ? sim.breachPoint : sim.shellPoint;
+      for (let i = 0; i < n; i++) {
+        this.emitDir.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+        if (this.emitDir.lengthSq() < 1e-6) this.emitDir.set(0, 1, 0);
+        else this.emitDir.normalize();
+        if (sim.breachTime > 0) this.emitDir.addScaledVector(sim.breachNormal, 0.8).normalize();
+        this.emitOrigin.copy(origin);
+        this.trails.emit({
+          origin: this.emitOrigin,
+          direction: this.emitDir,
+          kick: celebrating ? 2.2 : 3.6,
+          life: 0.85,
+          size: celebrating ? 0.22 : 0.26,
+          rise: 0.9,
+          spread: 0.7,
+        });
+      }
+      sim.splashBurst = 0;
     }
 
     const ballSpeed = sim.ball.velocity.length();

@@ -148,6 +148,21 @@ export class Simulation {
   kickoffLock = 0;
   /** 0..1 impact shake. The view reads it; the sim decays it. */
   cameraShake = 0;
+  /** Seconds the ball is outside the shell before the throw-in. */
+  breachTime = 0;
+  readonly breachPoint = new THREE.Vector3();
+  readonly breachNormal = new THREE.Vector3(1, 0, 0);
+  /** 0..1, how close the loose ball is to the glass. */
+  nearShell = 0;
+  /** Contact on the shell for the ripple and the splash ring. */
+  readonly shellPoint = new THREE.Vector3();
+  /** 1 on a fresh wall or rim hit, decays. */
+  impactPulse = 0;
+  /** Bubbles the view still owes for a splash, breach, or goal. */
+  splashBurst = 0;
+  /** Seconds of the goal celebration still to play. The ball stays in the net. */
+  goalCelebrate = 0;
+  goalTeam: 0 | 1 | null = null;
   /** Tracks the test-opponent toggle so the roster is parked once per change. */
   private soloApplied = false;
   private ai: DummyAI;
@@ -261,6 +276,12 @@ export class Simulation {
     this.kickoffLock = 2.2;
     this.match.statusMessage = 'Face-off…';
     this.cameraShake = 0;
+    this.breachTime = 0;
+    this.nearShell = 0;
+    this.impactPulse = 0;
+    this.splashBurst = 0;
+    this.goalCelebrate = 0;
+    this.goalTeam = null;
     this.orientHumanCamera();
     this.soloApplied = !this.tunables.soloOpponent;
     this.syncSoloRoster();
@@ -375,6 +396,8 @@ export class Simulation {
       this.releaseBall();
       this.ball.position.set(0, 0, 0);
       this.ball.velocity.set(0, 0, 0);
+      this.breachTime = 0;
+      this.goalCelebrate = 0;
       this.ball.claimLock = 0.35;
       this.kickoffLock = 0.8;
       this.match.statusMessage = 'Ball reset';
@@ -383,11 +406,13 @@ export class Simulation {
     const human = this.getHuman();
     this.noteCatchStance(intent);
     if (intent.claim) this.claimLatch = PLAYER.claimBuffer;
+    // A goal holds the swimmers in slow motion so the ball can settle in the net.
+    const motion = this.goalCelebrate > 0 ? dt * 0.28 : dt;
     // Look is applied once per rendered frame via applyFrameLook. Mouse deltas
     // are not per physics tick — applying them here doubled look on long frames
     // and dropped it on frames that did not step.
     // Human may always move; ball actions gated during kickoff lock.
-    this.movePlayer(human, intent, dt, true);
+    this.movePlayer(human, intent, motion, true);
 
     const live = this.kickoffLock <= 0 && this.match.resetTimer <= 0;
 
@@ -400,7 +425,7 @@ export class Simulation {
           continue;
         }
         const drill = this.ai.thinkDrill(p, this.ball, this.tunables, dt);
-        this.movePlayer(p, drill, dt, false);
+        this.movePlayer(p, drill, motion, false);
         if (drill.claim) this.tryClaim(p);
         continue;
       }
@@ -414,7 +439,7 @@ export class Simulation {
       }
       if (onDefense) {
         const aiIntent = this.ai.think(p, this.ball, this.players, this.tunables);
-        this.movePlayer(p, aiIntent, dt, false);
+        this.movePlayer(p, aiIntent, motion, false);
         this.resolveAiActions(p, aiIntent, dt);
       } else {
         const mateIntent = this.teammate.think(
@@ -426,13 +451,13 @@ export class Simulation {
           intent.callForPass,
           dt,
         );
-        this.movePlayer(p, mateIntent, dt, false);
+        this.movePlayer(p, mateIntent, motion, false);
         this.resolveTeammate(p, mateIntent);
       }
     }
 
-    if (live) this.updatePossession(human, intent, dt);
-    this.updateBall(dt);
+    if (live) this.updatePossession(human, intent, motion);
+    this.updateBall(motion);
     if (live) {
       this.resolveCatches();
       this.separateBallFromPlayers();
@@ -463,6 +488,8 @@ export class Simulation {
       }
     }
     if (this.cameraShake > 0) this.cameraShake = Math.max(0, this.cameraShake - dt * 2.6);
+    if (this.impactPulse > 0) this.impactPulse = Math.max(0, this.impactPulse - dt * 1.8);
+    if (this.goalCelebrate > 0) this.goalCelebrate = Math.max(0, this.goalCelebrate - dt);
     if (this.ball.claimLock > 0) this.ball.claimLock -= dt;
     this.refreshSelfCatchLocks();
     if (!intent.claim && this.claimLatch > 0) this.claimLatch = Math.max(0, this.claimLatch - dt);
@@ -1352,6 +1379,12 @@ export class Simulation {
 
   private updateBall(dt: number): void {
     this.ballFrom.copy(this.ball.position);
+    if (this.breachTime > 0) {
+      this.stepBreach(dt);
+      this.ballPreWall.copy(this.ball.position);
+      this.noteShellProximity();
+      return;
+    }
     if (this.ball.arc) {
       const scripted = this.advanceArc(dt);
       this.ballPreWall.copy(this.ball.position);
@@ -1384,6 +1417,36 @@ export class Simulation {
     this.ball.position.addScaledVector(this.ball.velocity, dt);
     this.ballPreWall.copy(this.ball.position);
     this.resolveBallEnvironment();
+    this.noteShellProximity();
+  }
+
+  /** The ball has left the sphere. It arcs out, then is thrown back in from that spot. */
+  private stepBreach(dt: number): void {
+    this.ball.velocity.y -= 8 * dt;
+    this.ball.velocity.multiplyScalar(Math.exp(-0.65 * dt));
+    this.ball.position.addScaledVector(this.ball.velocity, dt);
+    this.breachTime = Math.max(0, this.breachTime - dt);
+    if (this.breachTime > 0) return;
+    const n = this.breachNormal;
+    this.ball.position.copy(n).multiplyScalar(Math.max(2, ARENA_RADIUS - BALL.radius - 1.15));
+    this.ball.velocity.copy(n).multiplyScalar(-18);
+    this.ball.arc = null;
+    this.ball.claimLock = Math.max(this.ball.claimLock, 0.45);
+    this.splashBurst = Math.max(this.splashBurst, 16);
+    this.impactPulse = 1;
+    this.shellPoint.copy(n).multiplyScalar(ARENA_RADIUS);
+    this.match.statusMessage = 'Throw-in';
+  }
+
+  private noteShellProximity(): void {
+    const limit = ARENA_RADIUS - BALL.radius;
+    const gap = limit - this.ball.position.length();
+    const pocket = inGoalPocket(this.ball.position) || this.goalCelebrate > 0;
+    this.nearShell = pocket || this.ball.possession === 'held' ? 0 : THREE.MathUtils.clamp(1 - gap / 3.4, 0, 1);
+    if (this.breachTime > 0) this.nearShell = 1;
+    if (this.ball.position.lengthSq() > 1e-4) {
+      this.shellPoint.copy(this.ball.position).normalize().multiplyScalar(ARENA_RADIUS);
+    }
   }
 
   /** Hoop, net, then the sphere. A ball already through the mouth is not bounced off the glass. */
@@ -1394,7 +1457,14 @@ export class Simulation {
       if (inGoalPocket(this.ball.position)) containInNet(this.ball.position, this.ball.velocity);
       return;
     }
-    if (resolveGoalRim(this.ball.position, this.ball.velocity)) return;
+    const rim = resolveGoalRim(this.ball.position, this.ball.velocity);
+    if (rim) {
+      this.impactPulse = 1;
+      this.splashBurst = Math.max(this.splashBurst, 12);
+      this.shellPoint.copy(rim.point);
+      this.match.statusMessage = 'Off the frame';
+      return;
+    }
 
     const hit = resolveSphereWall(this.ball.position, this.ball.velocity, BALL.radius, {
       escapeSpeed: this.tunables.wallEscapeSpeed,
@@ -1404,10 +1474,22 @@ export class Simulation {
     this.ball.position.copy(hit.position);
     this.ball.velocity.copy(hit.velocity);
     if (hit.escaped) {
-      this.match.statusMessage = 'Ball flew out — reset';
-      this.match.resetTimer = MATCH.resetDelay;
-      this.ball.velocity.set(0, 0, 0);
-      this.ball.position.set(0, 0, 0);
+      const dist = this.ball.position.length() || 1;
+      this.breachNormal.copy(this.ball.position).multiplyScalar(1 / dist);
+      this.breachPoint.copy(this.breachNormal).multiplyScalar(ARENA_RADIUS);
+      this.breachTime = 0.7;
+      this.impactPulse = 1;
+      this.splashBurst = Math.max(this.splashBurst, 28);
+      this.shellPoint.copy(this.breachPoint);
+      this.match.statusMessage = 'Out of bounds';
+      return;
+    }
+    if (hit.bounced) {
+      this.impactPulse = 1;
+      this.splashBurst = Math.max(this.splashBurst, 10);
+      if (this.ball.position.lengthSq() > 1e-4) {
+        this.shellPoint.copy(this.ball.position).normalize().multiplyScalar(ARENA_RADIUS);
+      }
     }
   }
 
@@ -1610,11 +1692,16 @@ export class Simulation {
       (inGoalPocket(this.ball.position, 0) ? 0 : inGoalPocket(this.ball.position, 1) ? 1 : null);
     if (scoringTeam === null) return;
     this.match.score[scoringTeam] += 1;
-    this.match.statusMessage = scoringTeam === 0 ? 'Blue scores!' : 'Orange scores!';
-    this.match.resetTimer = MATCH.resetDelay;
+    this.match.statusMessage = 'GOAL';
+    this.match.resetTimer = 2.15;
+    this.goalCelebrate = 2.15;
+    this.goalTeam = scoringTeam;
+    this.splashBurst = Math.max(this.splashBurst, 26);
+    this.impactPulse = 1;
     this.releaseBall();
-    this.ball.velocity.set(0, 0, 0);
-    this.ball.position.set(0, 0, 0);
+    this.ball.arc = null;
+    // Leave the ball in the tunnel. containInNet has already caught it; it settles there.
+    this.ball.velocity.multiplyScalar(0.45);
   }
 
   cameraZoomOut(intent: InputIntent): boolean {

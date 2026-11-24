@@ -278,5 +278,21 @@ export function buildGoalFrame(team: 0 | 1): THREE.Group {
   glow.position.z = 0.2;
   group.add(glow);
 
+  const flash = new THREE.Mesh(
+    new THREE.ShapeGeometry(triangleShape(0.96)),
+    new THREE.MeshBasicMaterial({
+      color: 0xfff4c4,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    }),
+  );
+  flash.name = 'goalFlash';
+  flash.position.z = 0.4;
+  group.add(flash);
+
   return group;
 }

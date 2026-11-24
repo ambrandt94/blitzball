@@ -58,6 +58,7 @@ export class Game {
   private chargeEl: HTMLElement;
   private chargeFill: HTMLElement;
   private chargeLabel: HTMLElement;
+  private goalBanner: HTMLElement | null;
 
   constructor(app: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -82,6 +83,7 @@ export class Game {
     this.chargeEl = document.getElementById('charge')!;
     this.chargeFill = document.getElementById('charge-fill')!;
     this.chargeLabel = document.getElementById('charge-label')!;
+    this.goalBanner = document.getElementById('goal-banner');
 
     this.onResize();
     window.addEventListener('resize', this.onResize);
@@ -142,6 +144,7 @@ export class Game {
     this.scoreA.textContent = String(this.sim.match.score[0]);
     this.scoreB.textContent = String(this.sim.match.score[1]);
     this.status.textContent = this.sim.match.statusMessage;
+    this.goalBanner?.classList.toggle('show', this.sim.goalCelebrate > 0);
 
     const b = this.sim.ball;
     this.possessionEl.classList.remove('you', 'orange', 'free');
