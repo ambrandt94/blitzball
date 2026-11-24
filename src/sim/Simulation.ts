@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import {
   ARENA_RADIUS,
+  ARENA_REFERENCE,
   BALL,
   CAMERA,
   MATCH,
   PLAYER,
   SHOT_ARC,
+  setArenaRadius,
 } from '../game/constants';
 import type {
   ActionPose,
@@ -36,10 +38,10 @@ import {
   containInNet,
   goalPlaneZ,
   inGoalPocket,
+  pointInGoalMouth,
   pointInsidePocket,
   rayHitsMouth,
   resolveGoalRim,
-  scoreRadius,
   segmentScores,
 } from './goal';
 import { clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
@@ -71,6 +73,11 @@ function makePlayer(
     burstCooldown: 0,
     burstPuff: 0,
     burstDir: new THREE.Vector3(0, 0, 1),
+    checkMask: 0,
+    knockTime: 0,
+    staggerTime: 0,
+    hitFlash: 0,
+    hitBurst: 0,
     catchStance: false,
     active,
     actionPose: 'none',
@@ -139,6 +146,10 @@ export class Simulation {
   humanId = 0;
   /** Seconds remaining before play is live (kickoff / after goal). */
   kickoffLock = 0;
+  /** 0..1 impact shake. The view reads it; the sim decays it. */
+  cameraShake = 0;
+  /** Tracks the test-opponent toggle so the roster is parked once per change. */
+  private soloApplied = false;
   private ai: DummyAI;
   private teammate: TeammateAI;
   private tmp = {
@@ -188,7 +199,7 @@ export class Simulation {
   resetKickoff(full = false): void {
     if (full) {
       this.players = [];
-      const sep = MATCH.kickoffSeparation;
+      const sep = MATCH.kickoffSeparation * (ARENA_RADIUS / ARENA_REFERENCE);
       const flank = sep * 0.85;
       // Team 0 (blue): human, one passing teammate, one stub. Attack +Z.
       this.players.push(makePlayer(0, 0, 'human', new THREE.Vector3(0, 0, -sep), true));
@@ -219,6 +230,11 @@ export class Simulation {
         p.burstTime = 0;
         p.burstCooldown = 0;
         p.burstPuff = 0;
+        p.checkMask = 0;
+        p.knockTime = 0;
+        p.staggerTime = 0;
+        p.hitFlash = 0;
+        p.hitBurst = 0;
         p.catchStance = false;
         p.actionPose = 'none';
         p.actionPoseTime = 0;
@@ -244,7 +260,76 @@ export class Simulation {
     this.match.resetTimer = 0;
     this.kickoffLock = 2.2;
     this.match.statusMessage = 'Face-off…';
+    this.cameraShake = 0;
     this.orientHumanCamera();
+    this.soloApplied = !this.tunables.soloOpponent;
+    this.syncSoloRoster();
+  }
+
+  /** Dev toggle. Parks every AI but one slow enemy, or restores the practice pair. */
+  setSoloOpponent(on: boolean): void {
+    this.tunables.soloOpponent = on;
+    this.soloApplied = !on;
+    this.syncSoloRoster();
+  }
+
+  private syncSoloRoster(): void {
+    const on = this.tunables.soloOpponent;
+    if (on === this.soloApplied) return;
+    this.soloApplied = on;
+    if (on) this.parkForDrill();
+    else this.restorePracticeAi();
+  }
+
+  private parkForDrill(): void {
+    let kept = false;
+    for (const p of this.players) {
+      if (p.role !== 'ai') continue;
+      if (!kept && p.team !== this.getHuman().team) {
+        kept = true;
+        p.active = true;
+        continue;
+      }
+      if (p.hasBall && this.ball.ownerId === p.id) {
+        p.hasBall = false;
+        this.ball.possession = 'free';
+        this.ball.ownerId = null;
+        this.ball.claimLock = 0.25;
+      }
+      p.active = false;
+      p.velocity.set(0, 0, 0);
+    }
+  }
+
+  private restorePracticeAi(): void {
+    for (const p of this.players) {
+      if (p.role === 'ai') p.active = true;
+    }
+  }
+
+  /**
+   * Resize the shell. Goals are derived from the radius, so they stay on it.
+   * Swimmers, the ball, and the current aim scale with the sphere.
+   */
+  resizeArena(radius: number): void {
+    const prev = ARENA_RADIUS;
+    const next = setArenaRadius(radius);
+    this.tunables.arenaRadius = next;
+    if (Math.abs(next - prev) < 1e-3 || prev < 1e-3) return;
+    const ratio = next / prev;
+    for (const p of this.players) {
+      p.position.multiplyScalar(ratio);
+      constrainPlayerToSphere(p.position, p.velocity, PLAYER.radius);
+    }
+    this.ball.position.multiplyScalar(ratio);
+    const arc = this.ball.arc;
+    if (arc) {
+      arc.p0.multiplyScalar(ratio);
+      arc.p1.multiplyScalar(ratio);
+      arc.p2.multiplyScalar(ratio);
+    }
+    this.shotAim.target.multiplyScalar(ratio);
+    for (const sample of this.ball.trail) sample.multiplyScalar(ratio);
   }
 
   /** Point chase cam toward the attack goal / ball so the sphere reads immediately. */
@@ -274,6 +359,7 @@ export class Simulation {
   }
 
   step(dt: number, intent: InputIntent): void {
+    this.syncSoloRoster();
     if (this.match.resetTimer > 0) {
       this.match.resetTimer -= dt;
       if (this.match.resetTimer <= 0) this.resetKickoff(false);
@@ -308,6 +394,16 @@ export class Simulation {
     for (const p of this.players) {
       if (!p.active || p.role !== 'ai') continue;
       const onDefense = p.team !== human.team;
+      if (onDefense && this.tunables.soloOpponent) {
+        if (!live) {
+          p.velocity.multiplyScalar(0.9);
+          continue;
+        }
+        const drill = this.ai.thinkDrill(p, this.ball, this.tunables, dt);
+        this.movePlayer(p, drill, dt, false);
+        if (drill.claim) this.tryClaim(p);
+        continue;
+      }
       if (onDefense && !this.tunables.defenseActive) {
         p.velocity.set(0, 0, 0);
         continue;
@@ -342,11 +438,15 @@ export class Simulation {
       this.separateBallFromPlayers();
       this.checkGoals();
     }
+    this.resolveBodies(dt);
 
     for (const p of this.players) {
       if (p.tackleCooldown > 0) p.tackleCooldown -= dt;
       if (p.reclaimGrace > 0) p.reclaimGrace -= dt;
       if (p.selfCatchLock) p.selfCatchTime += dt;
+      if (p.knockTime > 0) p.knockTime = Math.max(0, p.knockTime - dt);
+      if (p.staggerTime > 0) p.staggerTime = Math.max(0, p.staggerTime - dt);
+      if (p.hitFlash > 0) p.hitFlash = Math.max(0, p.hitFlash - dt * 2.4);
       if (p.burstCooldown > 0) p.burstCooldown = Math.max(0, p.burstCooldown - dt);
       if (p.burstTime > 0) p.burstTime = Math.max(0, p.burstTime - dt);
       if (p.burstPuff > 0) p.burstPuff = Math.max(0, p.burstPuff - dt * 3.2);
@@ -362,6 +462,7 @@ export class Simulation {
         p.actionPose = 'none';
       }
     }
+    if (this.cameraShake > 0) this.cameraShake = Math.max(0, this.cameraShake - dt * 2.6);
     if (this.ball.claimLock > 0) this.ball.claimLock -= dt;
     this.refreshSelfCatchLocks();
     if (!intent.claim && this.claimLatch > 0) this.claimLatch = Math.max(0, this.claimLatch - dt);
@@ -446,6 +547,15 @@ export class Simulation {
   ): void {
     if (!player.active) return;
 
+    if (player.knockTime > 0) {
+      player.velocity.multiplyScalar(Math.exp(-1.15 * dt));
+      clampMagnitude(player.velocity, PLAYER.checkKnock * 1.2);
+      this.steerBody(player, player.facing, dt, false);
+      player.position.addScaledVector(player.velocity, dt);
+      constrainPlayerToSphere(player.position, player.velocity, PLAYER.radius);
+      return;
+    }
+
     const moveLocal = intent.move.clone();
     if (moveLocal.lengthSq() > 1) moveLocal.normalize();
 
@@ -485,8 +595,9 @@ export class Simulation {
     if (canBurst) {
       const dir = player.burstDir;
       if (wish.lengthSq() > 1e-6) dir.copy(wish).normalize();
-      else if (aimDir.lengthSq() > 1e-8) dir.copy(aimDir).normalize();
+      else if (player.facing.lengthSq() > 1e-8) dir.copy(player.facing).normalize();
       else dir.set(0, 0, 1);
+      player.checkMask = 0;
       this.tmp.burstLaunch.copy(dir).multiplyScalar(Math.max(4, this.tunables.burstSpeed));
       player.velocity.lerp(this.tmp.burstLaunch, 0.88);
       player.burstTime = Math.max(0.05, this.tunables.burstDuration);
@@ -505,11 +616,15 @@ export class Simulation {
     player.catchStance = aimLocked && !player.hasBall && !bursting && !aimingShot;
     player.sprinting = intent.sprint && !player.hasBall && !bursting;
     let maxSpeed = Math.max(4, this.tunables.playerMaxSpeed);
-    const accel = bursting ? this.tunables.playerAccel * 1.65 : this.tunables.playerAccel;
+    let accel = bursting ? this.tunables.playerAccel * 1.65 : this.tunables.playerAccel;
     if (player.hasBall) maxSpeed *= PLAYER.carrierSpeedMult;
     if (player.sprinting) maxSpeed *= Math.max(1, this.tunables.sprintMult);
     if (aimLocked && !bursting) maxSpeed *= this.tunables.strafeSpeedMult;
     if (bursting) maxSpeed = Math.max(4, this.tunables.burstSpeed);
+    if (player.staggerTime > 0 && !bursting) {
+      maxSpeed *= 0.16;
+      accel *= 0.22;
+    }
 
     if (wish.lengthSq() > 1e-6) {
       const targetVel = wish.multiplyScalar(maxSpeed);
@@ -1389,6 +1504,102 @@ export class Simulation {
     this.match.statusMessage = 'Teammate caught it';
   }
 
+  /** Sphere push-apart, then shoulder checks that connected this step. */
+  private resolveBodies(dt: number): void {
+    const live = this.players.filter((p) => p.active && p.role !== 'stub');
+    const reach = PLAYER.radius * 2;
+    const hits: { checker: PlayerState; target: PlayerState; dir: THREE.Vector3 }[] = [];
+    for (let i = 0; i < live.length; i++) {
+      for (let j = i + 1; j < live.length; j++) {
+        const a = live[i]!;
+        const b = live[j]!;
+        const ab = this.checkConnect(a, b, dt, reach);
+        if (ab) hits.push(ab);
+        const ba = this.checkConnect(b, a, dt, reach);
+        if (ba) hits.push(ba);
+      }
+    }
+    this.separateBodies(live, reach);
+    for (const hit of hits) this.applyCheck(hit.checker, hit.target, hit.dir);
+  }
+
+  private checkConnect(
+    checker: PlayerState,
+    target: PlayerState,
+    dt: number,
+    reach: number,
+  ): { checker: PlayerState; target: PlayerState; dir: THREE.Vector3 } | null {
+    if (checker.burstTime <= 0) return null;
+    if ((checker.checkMask & (1 << target.id)) !== 0) return null;
+    if (!this.bodiesTouch(checker, target, dt, reach)) return null;
+    const dir = checker.burstDir.clone();
+    if (dir.lengthSq() < 1e-6) dir.copy(target.position).sub(checker.position);
+    if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1);
+    else dir.normalize();
+    return { checker, target, dir };
+  }
+
+  private bodiesTouch(a: PlayerState, b: PlayerState, dt: number, reach: number): boolean {
+    if (a.position.distanceTo(b.position) <= reach + 0.06) return true;
+    const prev = a.position.clone().addScaledVector(a.velocity, -Math.max(0, dt));
+    const ab = a.position.clone().sub(prev);
+    const ab2 = ab.lengthSq();
+    if (ab2 < 1e-8) return false;
+    let t = b.position.clone().sub(prev).dot(ab) / ab2;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    return prev.addScaledVector(ab, t).distanceTo(b.position) <= reach;
+  }
+
+  private separateBodies(live: PlayerState[], reach: number): void {
+    const normal = new THREE.Vector3();
+    for (let i = 0; i < live.length; i++) {
+      for (let j = i + 1; j < live.length; j++) {
+        const a = live[i]!;
+        const b = live[j]!;
+        normal.copy(b.position).sub(a.position);
+        let dist = normal.length();
+        if (dist >= reach) continue;
+        if (dist < 1e-5) {
+          normal.set(1, 0, 0);
+          dist = 1e-5;
+        } else normal.multiplyScalar(1 / dist);
+        const push = (reach - dist) * 0.5;
+        a.position.addScaledVector(normal, -push);
+        b.position.addScaledVector(normal, push);
+        const rel = b.velocity.dot(normal) - a.velocity.dot(normal);
+        if (rel < 0) {
+          const impulse = -rel * (1 + PLAYER.checkBounce) * 0.5;
+          a.velocity.addScaledVector(normal, -impulse);
+          b.velocity.addScaledVector(normal, impulse);
+        }
+      }
+    }
+  }
+
+  private applyCheck(checker: PlayerState, target: PlayerState, dir: THREE.Vector3): void {
+    checker.checkMask |= 1 << target.id;
+    target.velocity.copy(dir).multiplyScalar(PLAYER.checkKnock);
+    target.knockTime = PLAYER.checkKnockTime;
+    target.staggerTime = PLAYER.checkStagger;
+    target.hitFlash = 1;
+    target.hitBurst = 16;
+    target.catchStance = false;
+    checker.hitFlash = 1;
+    checker.hitBurst = 12;
+    checker.velocity.addScaledVector(dir, -3.2);
+    if (checker.id === this.humanId || target.id === this.humanId) this.cameraShake = 1;
+    if (target.id === this.humanId && this.shotAim.active) this.clearShotAim();
+    if (target.hasBall && this.ball.ownerId === target.id) {
+      this.releaseBall(dir.clone().multiplyScalar(PLAYER.checkPop));
+      this.ball.position.copy(target.position).addScaledVector(dir, PLAYER.radius + BALL.radius + 0.4);
+      this.ball.claimLock = 0.45;
+      target.actionPose = 'none';
+      target.actionPoseTime = 0;
+    }
+    this.match.statusMessage = 'Shoulder check!';
+  }
+
   private checkGoals(): void {
     if (this.match.resetTimer > 0) return;
     if (this.ball.possession === 'held') return;
@@ -1658,7 +1869,6 @@ export class Simulation {
       );
     }
 
-    const mouth = scoreRadius();
     for (const scoringTeam of [0, 1] as const) {
       const goalZ = goalPlaneZ(scoringTeam);
       if (Math.abs(dz) < 1e-5) continue;
@@ -1666,7 +1876,7 @@ export class Simulation {
       if (t <= 0.45) continue;
       const x = ox + dx * t;
       const y = oy + dy * t;
-      if (x * x + y * y <= mouth * mouth) consider(t, 'goal', scoringTeam);
+      if (pointInGoalMouth(x, y)) consider(t, 'goal', scoringTeam);
     }
 
     // Shell sits just inside the glass so the marker is not buried in the wall.

@@ -1,4 +1,4 @@
-import { BALL, CAMERA, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
+import { ARENA_RADIUS, BALL, CAMERA, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
 import type { Tunables } from '../game/types';
 
 export function defaultTunables(): Tunables {
@@ -47,6 +47,8 @@ export function defaultTunables(): Tunables {
     teammateLockRadius: SHOT_ARC.teammateLockRadius,
     shotCarry: SHOT_ARC.carry,
     defenseActive: false,
+    soloOpponent: true,
+    arenaRadius: ARENA_RADIUS,
     teammatePassDelay: PRACTICE.passDelay,
     shoulderOffset: CAMERA.shoulderOffset,
     shoulderTransition: CAMERA.shoulderTransition,
@@ -59,10 +61,10 @@ export function defaultTunables(): Tunables {
 export class DevPanel {
   private root: HTMLElement;
   private tunables: Tunables;
-  private onChange: () => void;
+  private onChange: (key: keyof Tunables) => void;
   visible = true;
 
-  constructor(root: HTMLElement, tunables: Tunables, onChange: () => void) {
+  constructor(root: HTMLElement, tunables: Tunables, onChange: (key: keyof Tunables) => void) {
     this.root = root;
     this.tunables = tunables;
     this.onChange = onChange;
@@ -91,6 +93,8 @@ export class DevPanel {
     this.bool('Charge ghost trail', 'showChargeGhost');
     this.bool('Debug stats', 'showDebugStats');
     this.bool('Defense chases', 'defenseActive');
+    this.bool('Test opponent', 'soloOpponent');
+    this.range('Arena radius', 'arenaRadius', 44, 96, 0.5);
     this.bool('Sunbeams', 'showSunbeams');
     this.range('Sunbeam strength', 'sunbeamIntensity', 0, 1.5, 0.05);
     this.range('Wall escape speed', 'wallEscapeSpeed', 20, 110, 0.5);
@@ -107,9 +111,9 @@ export class DevPanel {
     this.range('Pass speed', 'passSpeed', 12, 80, 1);
     this.range('Shot speed min', 'shootSpeedMin', 12, 70, 1);
     this.range('Shot speed max', 'shootSpeedMax', 20, 110, 1);
-    this.range('Burst speed', 'burstSpeed', 16, 60, 0.5);
-    this.range('Burst length', 'burstDuration', 0.08, 0.5, 0.01);
-    this.range('Burst cooldown', 'burstCooldown', 0.1, 1.6, 0.01);
+    this.range('Check speed', 'burstSpeed', 16, 60, 0.5);
+    this.range('Check window', 'burstDuration', 0.08, 0.5, 0.01);
+    this.range('Check cooldown', 'burstCooldown', 0.2, 1.6, 0.01);
     this.range('Ball drag', 'ballDrag', 0.2, 3, 0.05);
     this.range('Aim assist', 'aimAssist', 0, 1, 0.05);
     this.range('Body turn rate', 'bodyTurnRate', 2, 16, 0.5);
@@ -147,7 +151,7 @@ export class DevPanel {
       (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
       // Only the up-axis change rebuilds the chase basis. Invert toggles and
       // other checkboxes must not snap yaw/pitch back to kickoff.
-      if (key === 'goalAxisUp') this.onChange();
+      if (key === 'goalAxisUp') this.onChange(key);
     });
     row.appendChild(lab);
     row.appendChild(input);
@@ -177,6 +181,7 @@ export class DevPanel {
       const n = parseFloat(input.value);
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
       value.textContent = n.toFixed(2);
+      if (key === 'arenaRadius') this.onChange(key);
     });
     wrap.appendChild(name);
     wrap.appendChild(input);

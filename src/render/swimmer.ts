@@ -181,5 +181,20 @@ export function createSwimmer(team: 0 | 1, marker: 'you' | 'mate' | 'none'): THR
   badge.name = 'teamBadge';
   group.add(badge);
 
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(0.95, 14, 10),
+    new THREE.MeshBasicMaterial({
+      color: 0xfff4e4,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    }),
+  );
+  flash.name = 'hitFlash';
+  flash.visible = false;
+  group.add(flash);
+
   return group;
 }
