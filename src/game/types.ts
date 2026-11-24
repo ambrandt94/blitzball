@@ -11,7 +11,8 @@ export type ActionPose = 'none' | 'claim' | 'hold' | 'pass' | 'shoot' | 'burst';
 
 export interface Tunables {
   goalAxisUp: boolean;
-  zoomHoldMode: boolean; // true = hold V/LB; false = toggle
+  /** True: V and LB zoom while held. False: those inputs toggle. Middle mouse always toggles. */
+  zoomHoldMode: boolean;
   /** When true, flip yaw so mouse-right looks left (non-standard). */
   mouseLookInvertX: boolean;
   /** When true, flip pitch so mouse-up looks down (flight-sim style). */
@@ -96,23 +97,18 @@ export interface Tunables {
   shoulderOffset: number;
   /** Ease rate for that shift (1/seconds). Higher is snappier. */
   shoulderTransition: number;
-  /** Fallback distance of the right-click aim cursor. */
-  aimCursorDistance: number;
   /** Stadium sunbeams. Off hides them; strength scales what is left at the shell. */
   showSunbeams: boolean;
   /** 0 hides the shafts. 1 is the tuned rim brightness. */
   sunbeamIntensity: number;
 }
 
-export type AimCursorKind = 'air' | 'wall' | 'player' | 'ball' | 'goal';
-
-/** World-space marker for the right-click look ray. */
-export interface AimCursorState {
+/** Yellow landing dot. RMB places it on the straight throw; LMB keeps it on the locked arc. */
+export interface LandingMarkerState {
   visible: boolean;
-  kind: AimCursorKind;
   position: THREE.Vector3;
-  /** Team tint for a player or the goal they score in. Null for air, wall, and ball. */
-  team: TeamId | null;
+  /** Teammate the point is on, or null for a free aim along the look. */
+  lockId: number | null;
 }
 
 export interface PlayerState {
@@ -223,7 +219,10 @@ export interface InputIntent {
   burst: boolean;
   passHeld: boolean;
   zoomOut: boolean;
+  /** Keyboard or gamepad edge. Toggles only when zoom hold mode is off. */
   zoomTogglePressed: boolean;
+  /** Middle mouse press. Always toggles the wide camera. */
+  middleZoomPressed: boolean;
   /** Wheel notches, in world units. Positive lengthens the arc aim. */
   aimRangeDelta: number;
   /** Ask the teammate to pass now, or to cut harder if they don't have it. */

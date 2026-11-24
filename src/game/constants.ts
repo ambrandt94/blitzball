@@ -199,11 +199,6 @@ export const CAMERA = {
   catchLookAhead: 3.6,
   /** Ease rate for the catch framing, in 1/seconds. */
   catchTransition: 7,
-  /**
-   * Strafe cursor distance along the look ray when it does not hit a player,
-   * the ball, a goal, or the shell first.
-   */
-  aimCursorDistance: 18,
 };
 
 export const INPUT = {

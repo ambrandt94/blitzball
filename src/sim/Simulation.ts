@@ -11,14 +11,12 @@ import {
 } from '../game/constants';
 import type {
   ActionPose,
-  AimCursorKind,
-  AimCursorState,
   BallState,
   ChargeState,
   InputIntent,
+  LandingMarkerState,
   MatchState,
   PlayerState,
-  TeamId,
   Tunables,
 } from '../game/types';
 import { DummyAI } from '../ai/DummyAI';
@@ -36,9 +34,7 @@ import {
 import { inCatchVolume, segmentHitsCatch } from './catch';
 import {
   containInNet,
-  goalPlaneZ,
   inGoalPocket,
-  pointInGoalMouth,
   pointInsidePocket,
   rayHitsMouth,
   resolveGoalRim,
@@ -126,12 +122,14 @@ export class Simulation {
   catchFrame = 0;
   /** Human is holding strafe without the ball. */
   catchStance = false;
-  /** Right-click aim cursor. Hidden off-ball, and unless strafe or a shot aim is up. */
-  readonly aimCursor: AimCursorState = {
+  /**
+   * Landing dot for a carried ball. Right-click puts it on the straight throw
+   * and leaves the curve hidden. A shot hold keeps that dot on the locked arc.
+   */
+  readonly landingMarker: LandingMarkerState = {
     visible: false,
-    kind: 'air',
     position: new THREE.Vector3(),
-    team: null,
+    lockId: null,
   };
   private strafing = false;
   /** Seconds of extra reach left after a claim press. */
@@ -375,7 +373,6 @@ export class Simulation {
   }
 
   isZoomOut(intent: InputIntent): boolean {
-    if (this.tunables.zoomHoldMode) return intent.zoomOut;
     return this.zoomOutLatched || intent.zoomOut;
   }
 
@@ -555,9 +552,13 @@ export class Simulation {
     if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
   }
 
-  /** Latch zoom-out when Dev is in toggle mode. Call once per press, not per step. */
+  /**
+   * Middle mouse always toggles the wide camera. V and the gamepad toggle
+   * only when Dev is not in hold mode. Call once per press, not per step.
+   */
   noteZoomToggle(intent: InputIntent): void {
-    if (!this.tunables.zoomHoldMode && intent.zoomTogglePressed) {
+    const keyToggles = !this.tunables.zoomHoldMode && intent.zoomTogglePressed;
+    if (intent.middleZoomPressed || keyToggles) {
       this.zoomOutLatched = !this.zoomOutLatched;
     }
   }
@@ -1053,6 +1054,7 @@ export class Simulation {
     this.charge.amount = 0;
     const raw = this.tmp.holdTarget.copy(this.ball.position).addScaledVector(basis.forward, this.aimDistance());
     this.clampShotTarget(raw);
+    this.acquireTeammate();
   }
 
   private breakShotLock(): void {
@@ -1748,7 +1750,7 @@ export class Simulation {
     this.noteCatchStance(intent);
     this.strafing = intent.strafe;
     this.updateShoulder(Math.max(0, dt));
-    this.updateAimCursor();
+    this.updateLandingMarker();
     this.updateCatchBeacon();
   }
 
@@ -1879,102 +1881,45 @@ export class Simulation {
     return null;
   }
 
-  private updateAimCursor(): void {
+  /**
+   * Straight-throw point the right-click marker uses, and the point a shot
+   * hold locks before the mouse bends it. Along the look from the carry pose,
+   * inside the shell, and on a teammate when the ray meets one.
+   */
+  private placeStraightLanding(out: THREE.Vector3): number | null {
+    const human = this.getHuman();
+    const basis = this.cameraBasis();
+    const hand = this.tmp.holdTarget
+      .copy(human.position)
+      .addScaledVector(basis.forward, BALL.holdOffset)
+      .addScaledVector(basis.up, 0.15);
+    const raw = this.tmp.predictPos.copy(hand).addScaledVector(basis.forward, this.aimDistance());
+    clampAimMarker(out, raw, hand, SHOT_ARC.minRange, this.markerLimit());
+    const mate = this.teammateOnLook();
+    if (!mate) return null;
+    const limit = this.markerLimit();
+    out.copy(mate.position).addScaledVector(mate.up, 0.15);
+    if (out.length() > limit) out.setLength(limit);
+    return mate.id;
+  }
+
+  private updateLandingMarker(): void {
     const human = this.getHuman();
     const holding = this.ball.possession === 'held' && this.ball.ownerId === human.id;
-    // Off-ball reach has no crosshair. A shot hold keeps the reticle up so a
-    // teammate under it still reads as locked, with or without strafe.
-    if (!(this.shotAim.active || (this.strafing && holding))) {
-      this.aimCursor.visible = false;
+    if (this.shotAim.active) {
+      this.landingMarker.visible = true;
+      this.landingMarker.position.copy(this.shotAim.target);
+      this.landingMarker.lockId = this.shotAim.lockId;
       return;
     }
-
-    const origin = this.tmp.side.copy(human.position);
-    const dir = this.tmp.aim.copy(this.cameraBasis().forward);
-    if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1);
-    else dir.normalize();
-
-    const ox = origin.x;
-    const oy = origin.y;
-    const oz = origin.z;
-    const dx = dir.x;
-    const dy = dir.y;
-    const dz = dir.z;
-
-    let bestT = Infinity;
-    let kind: AimCursorKind = 'air';
-    let team: TeamId | null = null;
-    const consider = (t: number | null, nextKind: AimCursorKind, nextTeam: TeamId | null): void => {
-      if (t === null || t >= bestT) return;
-      bestT = t;
-      kind = nextKind;
-      team = nextTeam;
-    };
-
-    for (const p of this.players) {
-      if (!p.active || p.role === 'stub' || p.id === human.id) continue;
-      consider(
-        this.raySphereT(ox, oy, oz, dx, dy, dz, p.position.x, p.position.y, p.position.z, PLAYER.radius + 0.12, 0.45),
-        'player',
-        p.team,
-      );
+    // Off-ball reach has no aim mark. Right-click with the ball shows the
+    // straight landing point and does not build a curve.
+    if (!(this.strafing && holding)) {
+      this.landingMarker.visible = false;
+      this.landingMarker.lockId = null;
+      return;
     }
-
-    if (!holding) {
-      consider(
-        this.raySphereT(
-          ox,
-          oy,
-          oz,
-          dx,
-          dy,
-          dz,
-          this.ball.position.x,
-          this.ball.position.y,
-          this.ball.position.z,
-          BALL.radius + 0.1,
-          0.45,
-        ),
-        'ball',
-        null,
-      );
-    }
-
-    for (const scoringTeam of [0, 1] as const) {
-      const goalZ = goalPlaneZ(scoringTeam);
-      if (Math.abs(dz) < 1e-5) continue;
-      const t = (goalZ - oz) / dz;
-      if (t <= 0.45) continue;
-      const x = ox + dx * t;
-      const y = oy + dy * t;
-      if (pointInGoalMouth(x, y)) consider(t, 'goal', scoringTeam);
-    }
-
-    // Shell sits just inside the glass so the marker is not buried in the wall.
-    const wallT = this.raySphereT(ox, oy, oz, dx, dy, dz, 0, 0, 0, ARENA_RADIUS - 0.45, 0.02);
-    const cursorDist = THREE.MathUtils.clamp(this.tunables.aimCursorDistance, 4, ARENA_RADIUS - 1);
-
-    let t: number;
-    if (Number.isFinite(bestT) && (wallT === null || bestT <= wallT + 0.02)) {
-      t = bestT;
-    } else if (wallT !== null && wallT <= cursorDist) {
-      t = wallT;
-      kind = 'wall';
-      team = null;
-    } else {
-      t = wallT !== null ? Math.min(cursorDist, wallT) : cursorDist;
-      kind = 'air';
-      team = null;
-    }
-
-    const point = this.aimCursor.position.copy(origin).addScaledVector(dir, t);
-    const limit = ARENA_RADIUS - 0.4;
-    if (point.length() > limit) {
-      point.setLength(limit);
-      if (kind === 'air') kind = 'wall';
-    }
-    this.aimCursor.visible = true;
-    this.aimCursor.kind = kind;
-    this.aimCursor.team = team;
+    this.landingMarker.lockId = this.placeStraightLanding(this.landingMarker.position);
+    this.landingMarker.visible = true;
   }
 }

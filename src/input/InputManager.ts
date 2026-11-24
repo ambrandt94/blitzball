@@ -34,6 +34,8 @@ export class InputManager {
   private lmbDown = false;
   private lmbPressed = false;
   private rmbDown = false;
+  /** Middle mouse went down this frame. Consumed by sample. */
+  private mmbPressed = false;
   private clickGate = new PrimaryClickGate();
   private wheel = 0;
   /** Set when pointerrawupdate already recorded this frame's motion. */
@@ -57,6 +59,10 @@ export class InputManager {
     // contextmenu event, including when the pointer is not yet locked.
     canvas.addEventListener('contextmenu', this.onContextMenu, { capture: true });
     document.addEventListener('contextmenu', this.onContextMenu, { capture: true });
+    // Middle click toggles the wide camera. Stop autoscroll and the auxclick
+    // default (paste, scroll) on the canvas and while the pointer is locked.
+    canvas.addEventListener('auxclick', this.onAuxClick, { capture: true });
+    document.addEventListener('auxclick', this.onAuxClick, { capture: true });
     canvas.addEventListener('wheel', this.onWheel, { passive: false });
   }
 
@@ -72,6 +78,8 @@ export class InputManager {
     window.removeEventListener('mouseup', this.onMouseUp, true);
     this.canvas.removeEventListener('contextmenu', this.onContextMenu, { capture: true });
     document.removeEventListener('contextmenu', this.onContextMenu, { capture: true });
+    this.canvas.removeEventListener('auxclick', this.onAuxClick, { capture: true });
+    document.removeEventListener('auxclick', this.onAuxClick, { capture: true });
     this.canvas.removeEventListener('wheel', this.onWheel);
   }
 
@@ -82,6 +90,11 @@ export class InputManager {
   };
 
   private onContextMenu = (e: Event): void => {
+    if (e.target === this.canvas || this.pointerLocked) e.preventDefault();
+  };
+
+  private onAuxClick = (e: MouseEvent): void => {
+    if (e.button !== 1) return;
     if (e.target === this.canvas || this.pointerLocked) e.preventDefault();
   };
 
@@ -104,6 +117,7 @@ export class InputManager {
     this.keys.clear();
     this.lmbDown = false;
     this.rmbDown = false;
+    this.mmbPressed = false;
     this.clickGate.pointerUp();
   };
 
@@ -162,7 +176,8 @@ export class InputManager {
 
   private onMouseDown = (e: MouseEvent): void => {
     // A drag starting here would swallow later keydowns. Aiming is not a drag.
-    if (e.button === 0 || this.pointerLocked) e.preventDefault();
+    // Button 1 is the wide-camera toggle; cancel autoscroll even before lock.
+    if (e.button === 0 || e.button === 1 || this.pointerLocked) e.preventDefault();
     if (this.pointerLocked) this.blurGameFocus();
     if (e.button === 0) {
       // The press that captures the pointer is not a shot and not a lunge.
@@ -172,6 +187,7 @@ export class InputManager {
         this.lmbPressed = true;
       }
     }
+    if (e.button === 1 && this.pointerLocked) this.mmbPressed = true;
     if (e.button === 2 && this.pointerLocked) {
       this.rmbDown = true;
     }
@@ -184,6 +200,7 @@ export class InputManager {
   };
 
   private onMouseUp = (e: MouseEvent): void => {
+    if (e.button === 1 && (e.target === this.canvas || this.pointerLocked)) e.preventDefault();
     if (e.button === 0) {
       this.clickGate.pointerUp();
       this.lmbDown = false;
@@ -282,6 +299,7 @@ export class InputManager {
       passHeld: this.anyDown(KEYS.pass),
       zoomOut: this.anyDown(KEYS.zoom),
       zoomTogglePressed: this.anyJust(KEYS.zoom),
+      middleZoomPressed: this.mmbPressed,
       resetBall: this.anyJust(KEYS.reset),
       toggleDev: this.anyJust(KEYS.toggleDev),
       // Wheel-up (negative deltaY) lengthens the aim. ~3 units per notch.
@@ -313,6 +331,7 @@ export class InputManager {
 
     this.justPressed.clear();
     this.lmbPressed = false;
+    this.mmbPressed = false;
     this.sawPointerDelta = false;
     if (this.pointerLocked) this.blurGameFocus();
 

@@ -43,6 +43,7 @@ function blankIntent(zoom = false): InputIntent {
     passHeld: false,
     zoomOut: zoom,
     zoomTogglePressed: false,
+    middleZoomPressed: false,
     resetBall: false,
     toggleDev: false,
     aimRangeDelta: 0,
@@ -607,11 +608,7 @@ function parkOthers(sim: Simulation): void {
   sim.ball.ownerId = null;
 }
 
-function cursorKind(sim: Simulation): string {
-  return sim.aimCursor.kind;
-}
-
-function checkAimCursor(): void {
+function checkStraightAimMarker(): void {
   const sim = new Simulation(defaultTunables());
   sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
@@ -623,22 +620,23 @@ function checkAimCursor(): void {
   sim.pitch = 0;
   parkOthers(sim);
   const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
-  if (!mate) fail('missing teammate for the aim cursor');
+  if (!mate) fail('missing teammate for the landing marker');
   mate.position.set(0, 0, 12);
   const strafe = blankIntent();
   strafe.strafe = true;
 
   sim.updateAimPresentation(strafe, 1 / 60);
-  if (sim.aimCursor.visible) fail('off-ball strafe showed a reticle on a teammate');
+  if (sim.landingMarker.visible) fail('off-ball strafe showed a landing marker on a teammate');
+  if (sim.chargeGhost.length > 0 || sim.shotAim.active) fail('off-ball strafe showed a curve');
   sim.ball.position.set(0, 0, 9);
   sim.ball.possession = 'free';
   sim.ball.ownerId = null;
   sim.updateAimPresentation(strafe, 1 / 60);
-  if (sim.aimCursor.visible) fail('off-ball strafe showed a reticle on the ball');
+  if (sim.landingMarker.visible) fail('off-ball strafe showed a landing marker on the ball');
   sim.yaw = 1.1;
   sim.pitch = 0.35;
   sim.updateAimPresentation(strafe, 1 / 60);
-  if (sim.aimCursor.visible) fail('off-ball strafe showed an open-water reticle');
+  if (sim.landingMarker.visible) fail('off-ball strafe showed an open-water landing marker');
 
   human.hasBall = true;
   sim.ball.possession = 'held';
@@ -648,36 +646,41 @@ function checkAimCursor(): void {
   sim.pitch = 0;
   mate.position.set(0, 0, 12);
   sim.updateAimPresentation(strafe, 1 / 60);
-  if (!sim.aimCursor.visible) fail('aim cursor hidden while holding and strafing');
-  if (cursorKind(sim) !== 'player') fail(`cursor missed the teammate (${cursorKind(sim)})`);
-  if (sim.aimCursor.position.distanceTo(mate.position) > PLAYER.radius + 0.5) {
-    fail('cursor was not on the teammate');
+  if (!sim.landingMarker.visible) fail('landing marker hidden while holding and strafing');
+  if (sim.shotAim.active || sim.chargeGhost.length > 0) fail('right-click aim drew a curve');
+  if (sim.landingMarker.lockId !== mate.id) fail('straight aim missed the teammate');
+  if (sim.landingMarker.position.distanceTo(mate.position) > PLAYER.radius + 0.5) {
+    fail('landing marker was not on the teammate');
   }
 
   mate.position.set(24, 18, -20);
-  // The held ball sits on the look ray. The cursor must ignore it and keep the goal.
   sim.updateAimPresentation(strafe, 1 / 60);
-  if (cursorKind(sim) !== 'goal') fail(`held ball stole the cursor (${cursorKind(sim)})`);
-  if (Math.abs(sim.aimCursor.position.z - goalPlaneZ(0)) > 0.6) fail('cursor was not on the goal mouth');
-
-  sim.yaw = 1.2;
-  sim.pitch = 0;
-  sim.updateAimPresentation(strafe, 1 / 60);
-  if (cursorKind(sim) !== 'air') fail(`open water cursor was ${cursorKind(sim)}`);
-  const reach = sim.aimCursor.position.distanceTo(human.position);
-  if (Math.abs(reach - sim.tunables.aimCursorDistance) > 0.75) {
-    fail(`cursor distance ${reach.toFixed(2)} was not the fallback`);
+  if (sim.landingMarker.lockId !== null) fail('open look stuck to a teammate');
+  if (sim.chargeGhost.length > 0) fail('open look drew a curve');
+  const forward = lookBasis(0, 0, false).forward;
+  const up = lookBasis(0, 0, false).up;
+  const hand = human.position.clone().addScaledVector(forward, BALL.holdOffset).addScaledVector(up, 0.15);
+  const along = sim.landingMarker.position.clone().sub(hand);
+  const reach = along.length();
+  if (along.normalize().dot(forward) < 0.98) fail('straight marker left the look ray');
+  if (Math.abs(reach - sim.tunables.arcAimDistance) > 0.75) {
+    fail(`marker distance ${reach.toFixed(2)} was not the straight throw`);
   }
+  if (sim.landingMarker.position.distanceTo(sim.ball.position) < 8) fail('held ball stole the landing marker');
 
   human.position.set(50, 0, 0);
   sim.yaw = -Math.PI / 2;
   sim.pitch = 0;
   sim.updateAimPresentation(strafe, 1 / 60);
-  if (cursorKind(sim) !== 'wall') fail(`near-wall cursor was ${cursorKind(sim)}`);
-  if (sim.aimCursor.position.length() > ARENA_RADIUS - 0.2) fail('wall cursor left the arena');
+  if (!sim.landingMarker.visible) fail('near-wall aim hid the marker');
+  if (sim.chargeGhost.length > 0 || sim.shotAim.active) fail('near-wall aim drew a curve');
+  if (sim.landingMarker.position.length() > ARENA_RADIUS - BALL.radius) fail('marker left the arena');
+  const outward = lookBasis(sim.yaw, sim.pitch, false).forward;
+  const fromHand = sim.landingMarker.position.clone().sub(human.position.clone().addScaledVector(outward, BALL.holdOffset));
+  if (fromHand.normalize().dot(outward) < 0.9) fail('wall marker left the look ray');
 
   sim.updateAimPresentation(blankIntent(), 1 / 60);
-  if (sim.aimCursor.visible) fail('aim cursor stayed up after releasing strafe');
+  if (sim.landingMarker.visible) fail('landing marker stayed up after releasing strafe');
 }
 
 function quietRoster(sim: Simulation): void {
@@ -1931,7 +1934,7 @@ function checkThrowAim(): void {
   sim.step(1 / 60, aim);
   sim.updateAimPresentation(aim, 1 / 60);
   if (sim.shotAim.active || sim.chargeGhost.length > 0) fail('right-click aim showed the curve');
-  if (!sim.aimCursor.visible) fail('right-click aim hid the reticle');
+  if (!sim.landingMarker.visible) fail('right-click aim hid the landing marker');
   const yaw = sim.yaw;
   const look = blankIntent();
   look.strafe = true;
@@ -1941,10 +1944,12 @@ function checkThrowAim(): void {
   if (Math.abs(sim.shotAim.bendRight) > 0.01) fail('right-click aim bent a curve');
   sim.updateAimPresentation(look, 1 / 60);
   const forward = lookBasis(sim.yaw, sim.pitch, false).forward;
-  const along = sim.aimCursor.position.clone().sub(human.position);
+  const along = sim.landingMarker.position.clone().sub(human.position);
+  if (!sim.landingMarker.visible) fail('right-click aim hid the landing marker');
   if (along.lengthSq() < 1e-6 || along.normalize().dot(forward) < 0.9) {
-    fail('reticle left the mouse look');
+    fail('landing marker left the mouse look');
   }
+  const preview = sim.landingMarker.position.clone();
 
   const shot = blankIntent();
   shot.shootHeld = true;
@@ -1955,7 +1960,13 @@ function checkThrowAim(): void {
   if (Math.abs(sim.yaw - lockedYaw) > 1e-6) fail('throw hold did not freeze the camera');
   if (sim.shotAim.bendRight < 0.15 * sim.tunables.arcBendSpeed) fail('throw hold did not bend');
   sim.step(1 / 60, shot);
+  sim.updateAimPresentation(shot, 1 / 60);
   if (sim.chargeGhost.length < 4) fail('throw hold hid the curve');
+  if (!sim.landingMarker.visible) fail('throw hold hid the landing marker');
+  if (sim.landingMarker.position.distanceTo(sim.shotAim.target) > 0.02) {
+    fail('curve marker left the landing point');
+  }
+  if (sim.shotAim.target.distanceTo(preview) > 0.35) fail('throw hold jumped the straight marker');
   const marker = sim.shotAim.target.clone();
   shot.move.set(0, 0, 1);
   shot.lookDelta.x = 0;
@@ -1999,6 +2010,30 @@ function checkArenaShell(): void {
   }
 }
 
+function checkWideCamera(): void {
+  const sim = new Simulation(defaultTunables());
+  if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
+  const held = blankIntent(true);
+  if (!sim.isZoomOut(held)) fail('held zoom key did not open the wide view');
+  if (sim.zoomOutLatched) fail('held zoom key latched the wide view');
+
+  const middle = blankIntent();
+  middle.middleZoomPressed = true;
+  sim.noteZoomToggle(middle);
+  if (!sim.zoomOutLatched || !sim.isZoomOut(blankIntent())) fail('middle click did not turn the wide view on');
+  sim.noteZoomToggle(middle);
+  if (sim.zoomOutLatched || sim.isZoomOut(blankIntent())) fail('middle click did not turn the wide view off');
+
+  const key = blankIntent();
+  key.zoomTogglePressed = true;
+  sim.noteZoomToggle(key);
+  if (sim.zoomOutLatched) fail('V toggled the wide view while zoom is set to hold');
+
+  sim.tunables.zoomHoldMode = false;
+  sim.noteZoomToggle(key);
+  if (!sim.zoomOutLatched) fail('V did not toggle the wide view when zoom hold is off');
+}
+
 export function runRotationChecks(): void {
   checkRotateToward();
   checkUpPole();
@@ -2016,7 +2051,7 @@ export function runRotationChecks(): void {
   checkTeammateLock();
   checkPractice();
   checkShoulder();
-  checkAimCursor();
+  checkStraightAimMarker();
   checkCatch();
   checkTeammatePassReachesPlayer();
   checkOpponentInterceptsPass();
@@ -2037,6 +2072,7 @@ export function runRotationChecks(): void {
   checkShotIntoGoal();
   checkShotSteer();
   checkThrowAim();
+  checkWideCamera();
   checkBallFit();
   checkSpeeds();
   checkBurst();

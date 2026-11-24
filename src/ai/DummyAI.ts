@@ -111,6 +111,7 @@ function emptyIntent(): InputIntent {
     passHeld: false,
     zoomOut: false,
     zoomTogglePressed: false,
+    middleZoomPressed: false,
     resetBall: false,
     toggleDev: false,
     aimRangeDelta: 0,
