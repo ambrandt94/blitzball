@@ -91,6 +91,10 @@ export interface Tunables {
   shoulderTransition: number;
   /** Fallback distance of the right-click aim cursor. */
   aimCursorDistance: number;
+  /** Stadium sunbeams. Off hides them; strength scales what is left at the shell. */
+  showSunbeams: boolean;
+  /** 0 hides the shafts. 1 is the tuned rim brightness. */
+  sunbeamIntensity: number;
 }
 
 export type AimCursorKind = 'air' | 'wall' | 'player' | 'ball' | 'goal';
@@ -118,6 +122,13 @@ export interface PlayerState {
   hasBall: boolean;
   tackleCooldown: number;
   reclaimGrace: number;
+  /**
+   * Set when this player releases a pass or shot. While set, they cannot
+   * pick that ball back up. Cleared once it has left them, or after selfCatchMax.
+   */
+  selfCatchLock: boolean;
+  /** Seconds since that release. */
+  selfCatchTime: number;
   /** Seconds left on the off-ball lunge speed cap. */
   burstTime: number;
   /** Seconds before another lunge can start. */

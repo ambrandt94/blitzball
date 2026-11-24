@@ -65,6 +65,8 @@ function makePlayer(
     hasBall: false,
     tackleCooldown: 0,
     reclaimGrace: 0,
+    selfCatchLock: false,
+    selfCatchTime: 0,
     burstTime: 0,
     burstCooldown: 0,
     burstPuff: 0,
@@ -212,6 +214,8 @@ export class Simulation {
         p.hasBall = false;
         p.tackleCooldown = 0;
         p.reclaimGrace = 0;
+        p.selfCatchLock = false;
+        p.selfCatchTime = 0;
         p.burstTime = 0;
         p.burstCooldown = 0;
         p.burstPuff = 0;
@@ -342,6 +346,7 @@ export class Simulation {
     for (const p of this.players) {
       if (p.tackleCooldown > 0) p.tackleCooldown -= dt;
       if (p.reclaimGrace > 0) p.reclaimGrace -= dt;
+      if (p.selfCatchLock) p.selfCatchTime += dt;
       if (p.burstCooldown > 0) p.burstCooldown = Math.max(0, p.burstCooldown - dt);
       if (p.burstTime > 0) p.burstTime = Math.max(0, p.burstTime - dt);
       if (p.burstPuff > 0) p.burstPuff = Math.max(0, p.burstPuff - dt * 3.2);
@@ -358,6 +363,7 @@ export class Simulation {
       }
     }
     if (this.ball.claimLock > 0) this.ball.claimLock -= dt;
+    this.refreshSelfCatchLocks();
     if (!intent.claim && this.claimLatch > 0) this.claimLatch = Math.max(0, this.claimLatch - dt);
 
     if (this.ball.trail.length > 28) this.ball.trail.shift();
@@ -571,6 +577,7 @@ export class Simulation {
     const dist = Math.max(3, player.position.distanceTo(human.position));
     const passSpeed = Math.max(4, this.tunables.passSpeed);
     const speed = Math.min(passSpeed, Math.max(passSpeed * 0.45, dist * this.tunables.ballDrag * 1.25));
+    this.noteThrow(player);
     this.releaseBall(aim.multiplyScalar(speed).addScaledVector(player.velocity, 0.15));
     this.playPose(player, 'pass', 0.28);
     this.match.statusMessage = 'Pass back';
@@ -660,6 +667,8 @@ export class Simulation {
     if (!player.active || player.role === 'stub' || player.hasBall) return false;
     if (this.ball.claimLock > 0) return false;
     if (player.reclaimGrace > 0 && this.ball.lastOwnerId === player.id) return false;
+    // Passes and shots only. A drop still uses the short reclaim grace.
+    if (player.selfCatchLock && this.ball.lastOwnerId === player.id) return false;
     return true;
   }
 
@@ -756,6 +765,7 @@ export class Simulation {
     if (!this.catchStance || this.ball.possession !== 'free' || this.ball.arc) return;
     if (this.ball.claimLock > 0) return;
     if (human.reclaimGrace > 0 && this.ball.lastOwnerId === human.id) return;
+    if (human.selfCatchLock && this.ball.lastOwnerId === human.id) return;
     if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
     const pull = Math.max(0, this.tunables.catchPull);
     if (pull <= 0) return;
@@ -797,6 +807,42 @@ export class Simulation {
     this.giveBall(tacker);
     this.ball.claimLock = 0.05;
     this.match.statusMessage = 'Strip!';
+  }
+
+  /** Bar this thrower from the ball until it has cleared their mitt. */
+  private noteThrow(player: PlayerState): void {
+    player.selfCatchLock = true;
+    player.selfCatchTime = 0;
+  }
+
+  /**
+   * The release sweep still intersects the mitt on the frame the ball leaves it.
+   * Wait out a short grace, then require both ends of the step to sit past the
+   * mitt so the next sweep cannot pick the throw up. Other players are unaffected.
+   */
+  private ballClearOfThrower(player: PlayerState): boolean {
+    const { reach, radius } = this.catchScales(player);
+    const clear = reach + radius + PLAYER.selfCatchClearance;
+    return (
+      this.ball.position.distanceTo(player.position) >= clear &&
+      this.ballFrom.distanceTo(player.position) >= clear
+    );
+  }
+
+  private refreshSelfCatchLocks(): void {
+    for (const player of this.players) {
+      if (!player.selfCatchLock) continue;
+      const stillTheirs = this.ball.possession !== 'held' && this.ball.lastOwnerId === player.id;
+      if (!stillTheirs || player.selfCatchTime >= PLAYER.selfCatchMax) {
+        player.selfCatchLock = false;
+        player.selfCatchTime = 0;
+        continue;
+      }
+      if (player.selfCatchTime >= PLAYER.selfCatchGrace && this.ballClearOfThrower(player)) {
+        player.selfCatchLock = false;
+        player.selfCatchTime = 0;
+      }
+    }
   }
 
   private releaseBall(impulse?: THREE.Vector3): void {
@@ -1062,6 +1108,7 @@ export class Simulation {
     this.placeRelease(player, aim);
     const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), charge);
     const impulse = aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.35));
+    this.noteThrow(player);
     this.releaseBall(impulse);
     this.playPose(player, 'shoot', 0.3);
     this.match.statusMessage = charge > 0.7 ? 'Charged shot!' : 'Shot';
@@ -1076,6 +1123,7 @@ export class Simulation {
     this.stickBallToHand(player);
     if (!this.shotAim.active) this.beginShotAim();
     const arc = this.plannedArc(charge);
+    this.noteThrow(player);
     this.releaseBall();
     this.ball.position.copy(arc.p0);
     this.ball.arc = {
@@ -1136,6 +1184,7 @@ export class Simulation {
     if (best) aim = best.position.clone().sub(player.position).normalize();
     this.placeRelease(player, aim);
     const speed = Math.max(4, this.tunables.passSpeed) * (0.65 + 0.35 * charge);
+    this.noteThrow(player);
     this.releaseBall(aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.25)));
     this.playPose(player, 'pass', 0.28);
     this.match.statusMessage = best ? 'Pass' : 'Pass (no target)';

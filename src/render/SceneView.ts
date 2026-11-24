@@ -530,7 +530,12 @@ export class SceneView {
     this.syncAimCursor(sim);
     this.syncCatchBeacon(sim);
     this.syncBubbles(sim, dt);
-    this.water.update(this.pulse, this.camera.position);
+    this.water.update(
+      this.pulse,
+      this.camera.position,
+      sim.tunables.showSunbeams,
+      sim.tunables.sunbeamIntensity,
+    );
   }
 
   private spinBall(sim: Simulation, dt: number): void {

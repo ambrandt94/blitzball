@@ -69,7 +69,7 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 
 ## What’s playable
 
-- Sphere arena, radius 56, with a translucent shell, caustic shimmer, sunbeams, and a stadium bowl outside the water. Each end has a round hoop and a domed net set into the shell. Latitude rings mark the sphere without a wireframe cage.
+- Sphere arena, radius 56, with a translucent shell, caustic shimmer, and a stadium bowl outside the water. Sunbeams hug the shell and fade out in the play volume so they do not wash the chase view. Each end has a round hoop and a domed net set into the shell. Latitude rings mark the sphere without a wireframe cage.
 - Human 6DOF swim with sprint and an off-ball lunge; carrier speed/turn damp
 - Chase camera that eases to an over-the-shoulder view while you aim with the ball, and eases back and centers while you reach to catch
 - World-space aim cursor on the look ray while strafing with the ball (player, goal, wall, or a set distance). Hidden while reaching off-ball
@@ -79,7 +79,7 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 - Strict goal rims; continuous play with score + kickoff reset
 - Practice: one green-ring teammate who gets open, receives a pass, and passes back after **Teammate pass delay** or when you press `G`. The orange defender holds position unless **Defense chases** is on.
 - **3v3 scaffolding**: six roster slots (human + teammate + one defender active; three stubs inactive)
-- Dev toggles: goal-axis vs world-up, zoom mode, invert look X/Y, shoulder offset / transition, aim cursor distance, arc hand curve, power fill rate / angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs
+- Dev toggles: goal-axis vs world-up, zoom mode, invert look X/Y, sunbeams and sunbeam strength, shoulder offset / transition, aim cursor distance, arc hand curve, power fill rate / angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs
 
 ## Not in Phase 0
 
