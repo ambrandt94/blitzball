@@ -29,7 +29,7 @@ npm run preview  # serve the build
 | Claim / tackle (along look) | `E` | A |
 | Drop (along look) | `Q` | B |
 | Pass (tap, or hold to charge) | `F` | X |
-| Strafe / aim (3D cursor, over-shoulder camera, slower swim) | Hold RMB | Y |
+| Reach to catch (no reticle; wider mitt). With the ball: strafe / aim | Hold RMB | Y |
 | Aim an arc (ball stays in the hand; release throws at the power on the meter) | Hold LMB | RT |
 | While aiming: marker left / right | `A` / `D` | Left stick X |
 | While aiming: marker up / down | `W` / `S` and `Space` / `C` | Left stick Y, RB / LT |
@@ -42,7 +42,7 @@ npm run preview  # serve the build
 | Dev panel | `` ` `` | — |
 | Release mouse | `Esc` | — |
 
-Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. A world-space cursor rides the look ray. It sticks to a player, the ball, a goal mouth, or the arena shell, and otherwise sits at **Aim cursor distance**. The camera eases onto the shoulder on the side of a held ball (the right shoulder when your hands are empty or the ball is centered in front). **Shoulder offset** is how far it slides, **Shoulder transition** is how quickly, and both ease in and out without a snap. The rig stays inside the sphere. Right-click does not open the browser menu.
+Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. With the ball, a world-space cursor rides the look ray. It sticks to a player, a goal mouth, or the arena shell, and otherwise sits at **Aim cursor distance**. The camera eases onto the shoulder on the side of a held ball (the right shoulder when the ball is centered in front). **Shoulder offset** is how far it slides, **Shoulder transition** is how quickly, and both ease in and out without a snap. Without the ball, the same hold reaches both arms forward to catch, hides the reticle, and eases the camera back onto the center line so the hands and the ball in front of them stay in frame. The rig stays inside the sphere. Right-click does not open the browser menu.
 
 While a shot is held, you coast: `WASD` and `Space` / `C` do not swim. `A`/`D` slide the marker left and right, `W`/`S` (and `Space` / `C`) raise and lower it, the wheel sets range, and the mouse bends the arc instead of looking. That still works while right-click aim is held. Let go of the mouse button to swim and look again. The dev panel can stay open; pointer lock takes the keys back from its sliders.
 
@@ -62,11 +62,11 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 
 ## What’s playable
 
-- Sphere arena, radius 56, with wireframe + equator / goal-axis cues. Swim, pass, and shot speeds are scaled with it so a trip across the sphere takes about as long as before.
+- Sphere arena, radius 56, with wireframe + equator / goal-axis cues. Each end has a round hoop and a domed net set into the shell. Swim, pass, and shot speeds are scaled with it so a trip across the sphere takes about as long as before.
 - Human 6DOF swim with sprint; carrier speed/turn damp
-- Chase camera that eases to an over-the-shoulder view while you hold aim, on the side of the hand with the ball, and stays inside the sphere
-- World-space aim cursor on the look ray while strafing (player, ball, goal, wall, or a set distance)
-- Ball claim (facing + radius), laggy hold, pass, charged shoot
+- Chase camera that eases to an over-the-shoulder view while you aim with the ball, and eases back and centers while you reach to catch
+- World-space aim cursor on the look ray while strafing with the ball (player, goal, wall, or a set distance). Hidden while reaching off-ball
+- Ball claim (forward mitt; wider while reaching), laggy hold, pass, charged shoot. Shots aimed or bent into a hoop carry through the mouth.
 - Beginner charge ghost trail
 - Sphere wall banks; hard straight hits can fly out → possession reset
 - Strict goal rims; continuous play with score + kickoff reset

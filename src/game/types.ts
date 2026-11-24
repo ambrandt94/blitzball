@@ -19,6 +19,14 @@ export interface Tunables {
   wallEscapeSpeed: number;
   wallEscapeAngle: number;
   claimRadius: number;
+  /** Forward length of the catch mitt. */
+  catchReach: number;
+  /** Multiplier on catch reach while the off-ball catch stance is held. */
+  catchStanceReach: number;
+  /** Multiplier on catch width while the off-ball catch stance is held. */
+  catchStanceWidth: number;
+  /** Pull toward the hands for a ball just outside the stance mitt. */
+  catchPull: number;
   holdLag: number;
   playerAccel: number;
   ballDrag: number;
@@ -54,6 +62,11 @@ export interface Tunables {
   shotPowerAngle: number;
   /** Extra radius on the look ray for snapping a shot onto a teammate. */
   teammateLockRadius: number;
+  /**
+   * World units past the aim marker a shot will still carry into a goal.
+   * Zero keeps the ball on the marker.
+   */
+  shotCarry: number;
   /** When false, the opposing team holds its spots and does not chase or tackle. */
   defenseActive: boolean;
   /** Seconds the teammate holds the ball before passing it back. */
@@ -119,6 +132,11 @@ export interface BallArc {
   duration: number;
   /** Teammate the arc is delivering to, or null for a free shot. */
   receiverId: number | null;
+  /** World units left to travel on `carryDir` after the curve reaches `p2`. */
+  carryLeft: number;
+  /** Unit direction of that follow-through. Null when `carryLeft` is 0. */
+  carryDir: THREE.Vector3 | null;
+  carrySpeed: number;
 }
 
 export interface MatchState {

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GOAL } from '../game/constants';
+import { goalMouthZ } from './goal';
 
 /** Goal axis is ±Z; "goal-up" treats +Y as up when looking toward goals in a stadium sense,
  * but for sphere sports we use the axis connecting goals as the navigational pole.
@@ -26,8 +26,8 @@ export function orthonormalBasis(
 }
 
 export function goalCenter(team: 0 | 1): THREE.Vector3 {
-  // Team 0 shoots toward +Z, team 1 toward -Z.
-  const z = team === 0 ? GOAL.distance : -GOAL.distance;
+  // Team 0 shoots toward +Z, team 1 toward -Z. The center is the hoop, on the shell.
+  const z = team === 0 ? goalMouthZ() : -goalMouthZ();
   return new THREE.Vector3(0, 0, z);
 }
 

@@ -23,10 +23,31 @@ export const PLAYER = {
   swimAnimAmount: 0.7,
   /** Swim speed while holding aim/strafe, relative to normal. */
   strafeSpeedMult: 0.62,
-  claimRadius: 1.65,
-  claimFacingDot: 0.15,
+  /**
+   * Width of the catch mitt. The old auto-claim used 0.55 × 1.65 = 0.91, which
+   * is inside the 0.97 body+ball contact, so touching the ball bounced it away.
+   */
+  claimRadius: 1.35,
+  /**
+   * How far in front of the chest the mitt extends, along look (camera for the human).
+   * Straight-ahead grab reach is about this plus `claimRadius`.
+   */
+  claimReach: 2.65,
+  /** Extra mitt length while right-click catch stance is held. */
+  catchStanceReach: 1.55,
+  /** Extra mitt width while right-click catch stance is held. */
+  catchStanceWidth: 1.42,
+  /** Acceleration toward the hands when the ball is just outside the stance mitt. */
+  catchPull: 22,
+  /** Brief reach bonus after pressing claim, so a slightly early E still connects. */
+  claimPressReach: 1.18,
+  claimPressWidth: 1.15,
+  claimBuffer: 0.16,
+  claimFacingDot: 0.2,
   reclaimCoyote: 0.18,
   tackleCooldown: 0.55,
+  /** Strip range. Kept off the catch radius so a bigger mitt does not lengthen tackles. */
+  tackleRange: 1.85,
 };
 
 /**
@@ -60,6 +81,11 @@ export const SHOT_ARC = {
   samples: 22,
   /** Marker cannot sit closer than this to the ball. */
   minRange: 4,
+  /**
+   * How far past the aim marker a shot still carries into a goal it is aimed
+   * or bent toward. The curve itself is unchanged until that extension.
+   */
+  carry: 34,
 };
 
 export const BALL = {
@@ -85,10 +111,10 @@ export const WALL = {
 };
 
 export const GOAL = {
-  /** Distance of goal center from origin along ±Z (goal axis). */
-  distance: 49,
-  rimRadius: 3.6,
-  depth: 2,
+  /** Circular mouth. The hoop is mounted on the shell; the net is the dome behind it. */
+  rimRadius: 8.5,
+  /** Tube radius of the illuminated ring. */
+  rimTube: 0.48,
 };
 
 export const CAMERA = {
@@ -111,6 +137,13 @@ export const CAMERA = {
   shoulderOffset: 1.55,
   /** How fast the shoulder shift eases in and out, in 1/seconds. */
   shoulderTransition: 6.5,
+  /** Chase distance while reaching for a catch. Farther back so both arms and the ball read. */
+  catchDistance: 7.9,
+  catchHeight: 2.15,
+  /** Look-at distance while reaching. Short, so the hands and the space in front of them sit in frame. */
+  catchLookAhead: 3.6,
+  /** Ease rate for the catch framing, in 1/seconds. */
+  catchTransition: 7,
   /**
    * Strafe cursor distance along the look ray when it does not hit a player,
    * the ball, a goal, or the shell first.
