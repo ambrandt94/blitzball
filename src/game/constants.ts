@@ -6,15 +6,17 @@ export const FIXED_DT = 1 / 60;
 
 export const PLAYER = {
   radius: 0.55,
-  maxSpeed: 28,
-  accel: 84,
-  drag: 3.2,
-  sprintMult: 1.35,
+  /** Cruise top speed. Lower than the first greybox so paths across the sphere stay readable. */
+  maxSpeed: 18,
+  /** High on purpose: time-to-speed stays short so the lower cap still feels snappy. */
+  accel: 110,
+  drag: 3.5,
+  sprintMult: 1.38,
   carrierSpeedMult: 0.82,
   carrierTurnMult: 0.72,
-  turnRate: 10,
+  turnRate: 12,
   /** How fast the body slerps toward swim velocity (1/seconds). */
-  bodyTurnRate: 7,
+  bodyTurnRate: 9,
   /** Below this speed the body eases back to aim instead of velocity. */
   bodyIdleSpeed: 3.6,
   /** Paddle cycles per second at full sprint. */
@@ -23,6 +25,13 @@ export const PLAYER = {
   swimAnimAmount: 0.7,
   /** Swim speed while holding aim/strafe, relative to normal. */
   strafeSpeedMult: 0.62,
+  /**
+   * Off-ball lunge. Above sprint for a short window so a click closes a gap
+   * for a tackle or a catch, then cruise speed returns.
+   */
+  burstSpeed: 34,
+  burstDuration: 0.2,
+  burstCooldown: 0.48,
   /**
    * Width of the catch mitt. The old auto-claim used 0.55 × 1.65 = 0.91, which
    * is inside the 0.97 body+ball contact, so touching the ball bounced it away.
@@ -94,9 +103,10 @@ export const BALL = {
   restitution: 0.72,
   holdLag: 8.5,
   holdOffset: 0.85,
-  passSpeed: 44,
-  shootSpeedMin: 36,
-  shootSpeedMax: 76,
+  /** A little under the first greybox so passes and shots are easier to read and meet. */
+  passSpeed: 36,
+  shootSpeedMin: 30,
+  shootSpeedMax: 62,
   chargeTime: 0.85,
   claimCooldown: 0.12,
 };

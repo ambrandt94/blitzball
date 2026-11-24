@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { INPUT } from '../game/constants';
 import type { InputIntent } from '../game/types';
+import { PrimaryClickGate } from './primaryClickGate';
 
 const KEYS = {
   forward: ['KeyW', 'ArrowUp'],
@@ -33,6 +34,7 @@ export class InputManager {
   private lmbDown = false;
   private lmbPressed = false;
   private rmbDown = false;
+  private clickGate = new PrimaryClickGate();
   private wheel = 0;
   /** Set when pointerrawupdate already recorded this frame's motion. */
   private sawPointerDelta = false;
@@ -102,14 +104,24 @@ export class InputManager {
     this.keys.clear();
     this.lmbDown = false;
     this.rmbDown = false;
+    this.clickGate.pointerUp();
   };
 
   private onClick = (): void => {
-    if (!this.pointerLocked) this.canvas.requestPointerLock();
+    if (!this.pointerLocked) {
+      this.clickGate.noteLockRequest();
+      this.canvas.requestPointerLock();
+    }
   };
 
   private onPointerLock = (): void => {
-    this.pointerLocked = document.pointerLockElement === this.canvas;
+    const locked = document.pointerLockElement === this.canvas;
+    this.clickGate.setLocked(locked);
+    this.pointerLocked = locked;
+    if (!locked || this.clickGate.suppress) {
+      this.lmbDown = false;
+      this.lmbPressed = false;
+    }
     // Unlock/lock often delivers a cursor-warp mousemove. Drop it so the view does not flick.
     this.mouseDelta.x = 0;
     this.mouseDelta.y = 0;
@@ -149,16 +161,18 @@ export class InputManager {
   };
 
   private onMouseDown = (e: MouseEvent): void => {
-    // The click that captures the pointer is not a shot or a pass.
-    if (!this.pointerLocked) return;
     // A drag starting here would swallow later keydowns. Aiming is not a drag.
-    e.preventDefault();
-    this.blurGameFocus();
+    if (e.button === 0 || this.pointerLocked) e.preventDefault();
+    if (this.pointerLocked) this.blurGameFocus();
     if (e.button === 0) {
-      this.lmbDown = true;
-      this.lmbPressed = true;
+      // The press that captures the pointer is not a shot and not a lunge.
+      const accept = this.clickGate.pointerDown();
+      if (accept) {
+        this.lmbDown = true;
+        this.lmbPressed = true;
+      }
     }
-    if (e.button === 2) {
+    if (e.button === 2 && this.pointerLocked) {
       this.rmbDown = true;
     }
   };
@@ -170,7 +184,10 @@ export class InputManager {
   };
 
   private onMouseUp = (e: MouseEvent): void => {
-    if (e.button === 0) this.lmbDown = false;
+    if (e.button === 0) {
+      this.clickGate.pointerUp();
+      this.lmbDown = false;
+    }
     if (e.button === 2) this.rmbDown = false;
   };
 
@@ -218,6 +235,7 @@ export class InputManager {
       pass: x,
       shoot: Boolean(rtPressed),
       shootHeld: rt,
+      burst: false,
       passHeld: x,
       zoomOut: lb,
       zoomTogglePressed: rs,
@@ -260,6 +278,7 @@ export class InputManager {
       pass: this.anyJust(KEYS.pass),
       shoot: this.lmbPressed,
       shootHeld: this.lmbDown,
+      burst: this.lmbPressed,
       passHeld: this.anyDown(KEYS.pass),
       zoomOut: this.anyDown(KEYS.zoom),
       zoomTogglePressed: this.anyJust(KEYS.zoom),

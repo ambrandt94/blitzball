@@ -1,6 +1,6 @@
-# Blitzball — Phase 0 Greybox
+# Blitzball
 
-Browser sports toy: underwater sphere arena, 6DOF swim, claim/pass/shoot, wall banks, and a dummy AI opponent. Built with **Vite + Three.js + TypeScript**.
+Browser sports toy: underwater sphere arena, 6DOF swim, claim/pass/shoot, an off-ball lunge, wall banks, and a practice teammate. Built with **Vite + Three.js + TypeScript**.
 
 Design locked from the Blitzball questionnaire / game plan (chase camera, free 6DOF, goal-axis up toggle, arcade movement + precision ball).
 
@@ -30,7 +30,8 @@ npm run preview  # serve the build
 | Drop (along look) | `Q` | B |
 | Pass (tap, or hold to charge) | `F` | X |
 | Reach to catch (no reticle; wider mitt). With the ball: strafe / aim | Hold RMB | Y |
-| Aim an arc (ball stays in the hand; release throws at the power on the meter) | Hold LMB | RT |
+| Lunge toward your swim, or your look if you are not steering (only when you do not have the ball) | LMB | — |
+| Aim an arc (ball stays in the hand; release throws at the power on the meter) | Hold LMB while carrying | RT |
 | While aiming: marker left / right | `A` / `D` | Left stick X |
 | While aiming: marker up / down | `W` / `S` and `Space` / `C` | Left stick Y, RB / LT |
 | Bend the arc, while aiming | Mouse | Right stick |
@@ -42,7 +43,13 @@ npm run preview  # serve the build
 | Dev panel | `` ` `` | — |
 | Release mouse | `Esc` | — |
 
-Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. With the ball, a world-space cursor rides the look ray. It sticks to a player, a goal mouth, or the arena shell, and otherwise sits at **Aim cursor distance**. The camera eases onto the shoulder on the side of a held ball (the right shoulder when the ball is centered in front). **Shoulder offset** is how far it slides, **Shoulder transition** is how quickly, and both ease in and out without a snap. Without the ball, the same hold reaches both arms forward to catch, hides the reticle, and eases the camera back onto the center line so the hands and the ball in front of them stay in frame. The rig stays inside the sphere. Right-click does not open the browser menu.
+Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. The click that captures the pointer does not shoot and does not lunge. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to strafe: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. With the ball, a world-space cursor rides the look ray. It sticks to a player, a goal mouth, or the arena shell, and otherwise sits at **Aim cursor distance**. The camera eases onto the shoulder on the side of a held ball (the right shoulder when the ball is centered in front). **Shoulder offset** is how far it slides, **Shoulder transition** is how quickly, and both ease in and out without a snap. Without the ball, the same hold reaches both arms forward to catch, hides the reticle, and eases the camera back onto the center line so the hands and the ball in front of them stay in frame. The rig stays inside the sphere. Right-click does not open the browser menu.
+
+Cruise and sprint are slower than the first greybox so a trip across the sphere stays readable. Acceleration, turn rate, and the off-ball lunge stay snappy. Passes and shots are a little slower too. **Cruise speed**, **Sprint mult**, **Pass speed**, **Shot speed min / max**, **Burst speed**, **Burst length**, and **Burst cooldown** are on the dev panel.
+
+While the ball is loose or in flight, an aqua ring and beam mark where it will settle, or the end of a curved shot, including a carry into the net. The marker hides while someone is holding the ball. Bubbles trail swimmers (thicker in a sprint or a lunge) and the ball (thicker on a fast or bending flight).
+
+`public/models/blitzball.glb` is the ball. It is recentered on the physics pivot and scaled to the gameplay radius on load. The procedural ball stays if that file fails to load.
 
 While a shot is held, you coast: `WASD` and `Space` / `C` do not swim. `A`/`D` slide the marker left and right, `W`/`S` (and `Space` / `C`) raise and lower it, the wheel sets range, and the mouse bends the arc instead of looking. That still works while right-click aim is held. Let go of the mouse button to swim and look again. The dev panel can stay open; pointer lock takes the keys back from its sliders.
 
@@ -62,8 +69,8 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 
 ## What’s playable
 
-- Sphere arena, radius 56, with wireframe + equator / goal-axis cues. Each end has a round hoop and a domed net set into the shell. Swim, pass, and shot speeds are scaled with it so a trip across the sphere takes about as long as before.
-- Human 6DOF swim with sprint; carrier speed/turn damp
+- Sphere arena, radius 56, with a translucent shell, caustic shimmer, sunbeams, and a stadium bowl outside the water. Each end has a round hoop and a domed net set into the shell. Latitude rings mark the sphere without a wireframe cage.
+- Human 6DOF swim with sprint and an off-ball lunge; carrier speed/turn damp
 - Chase camera that eases to an over-the-shoulder view while you aim with the ball, and eases back and centers while you reach to catch
 - World-space aim cursor on the look ray while strafing with the ball (player, goal, wall, or a set distance). Hidden while reaching off-ball
 - Ball claim (forward mitt; wider while reaching), laggy hold, pass, charged shoot. Shots aimed or bent into a hoop carry through the mouth.
@@ -78,7 +85,7 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 
 - Full tech tree / overdrive / RPG stats
 - Online multiplayer
-- Polished art / FF model rips
+- Ripped Final Fantasy models (the ball and swimmers are original procedural meshes)
 - Mobile touch
 - Win-condition settings UI (score-to-N vs timed)
 - Full 3v3 roles and keepers (one practice teammate only; other slots stay stubs)

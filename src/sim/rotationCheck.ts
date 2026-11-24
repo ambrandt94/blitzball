@@ -5,6 +5,8 @@
 import * as THREE from 'three';
 import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, SHOT_ARC } from '../game/constants';
 import type { InputIntent } from '../game/types';
+import { PrimaryClickGate } from '../input/primaryClickGate';
+import { fitBallModel } from '../render/blitzball';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { defaultTunables } from '../ui/DevPanel';
 import { Simulation } from './Simulation';
@@ -37,6 +39,7 @@ function blankIntent(zoom = false): InputIntent {
     pass: false,
     shoot: false,
     shootHeld: false,
+    burst: false,
     passHeld: false,
     zoomOut: zoom,
     zoomTogglePressed: false,
@@ -1096,6 +1099,252 @@ function checkShotSteer(): void {
   if (wheelDelta.addScaledVector(forward, -along).length() > 0.05) fail('wheel moved the marker off the look axis');
 }
 
+function solo(sim: Simulation): ReturnType<Simulation['getHuman']> {
+  sim.kickoffLock = 0;
+  sim.match.resetTimer = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  return sim.getHuman();
+}
+
+function checkBallFit(): void {
+  const root = new THREE.Group();
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(2, 10, 8));
+  // Same situation as the GLB: the mesh center is not the group origin.
+  mesh.position.set(3, -4, 1.5);
+  root.add(mesh);
+  if (!fitBallModel(root, BALL.radius)) fail('fit rejected a sphere');
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const center = box.getCenter(new THREE.Vector3());
+  if (center.length() > 0.02) {
+    fail(`fitted ball was not on the pivot (${center.toArray().map((n) => n.toFixed(3)).join(',')})`);
+  }
+  const radius = box.getSize(new THREE.Vector3()).length() / 2;
+  const expect = BALL.radius * Math.sqrt(3);
+  if (Math.abs(radius - expect) > 0.04) fail(`fitted ball radius ${radius.toFixed(3)} != ${expect.toFixed(3)}`);
+}
+
+function checkSpeeds(): void {
+  if (PLAYER.maxSpeed >= 24) fail(`cruise speed was not lowered (${PLAYER.maxSpeed})`);
+  if (BALL.passSpeed >= 42) fail(`pass speed was not lowered (${BALL.passSpeed})`);
+  if (BALL.shootSpeedMax >= 70) fail(`shot speed was not lowered (${BALL.shootSpeedMax})`);
+  if (PLAYER.accel < 90) fail(`accel lost its snap (${PLAYER.accel})`);
+  const defaults = defaultTunables();
+  if (defaults.playerMaxSpeed !== PLAYER.maxSpeed) fail('cruise slider does not start at the new default');
+  if (defaults.passSpeed !== BALL.passSpeed) fail('pass slider does not start at the new default');
+  if (defaults.burstSpeed !== PLAYER.burstSpeed) fail('burst slider does not start at the new default');
+
+  const sim = new Simulation(defaultTunables());
+  const human = solo(sim);
+  human.position.set(0, 0, -20);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  const swim = blankIntent();
+  swim.move.set(0, 0, 1);
+  for (let i = 0; i < 18; i++) sim.step(1 / 60, swim);
+  const speed = human.velocity.length();
+  if (speed < PLAYER.maxSpeed * 0.72) {
+    fail(`accel not snappy after 0.3s (${speed.toFixed(2)} / ${PLAYER.maxSpeed})`);
+  }
+  if (speed > PLAYER.maxSpeed * 1.2) fail(`swim overshot cruise (${speed.toFixed(2)})`);
+}
+
+function checkBurst(): void {
+  const sim = new Simulation(defaultTunables());
+  const human = solo(sim);
+  human.position.set(0, 2, -10);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = false;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 9;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.set(30, 20, 10);
+  sim.yaw = 0;
+  sim.pitch = 0;
+
+  const burst = blankIntent();
+  burst.burst = true;
+  sim.step(1 / 60, burst);
+  if (human.burstCooldown <= 0) fail('burst did not start a cooldown');
+  if (human.actionPose !== 'burst') fail(`burst pose was ${human.actionPose}`);
+  if (human.velocity.z < sim.tunables.burstSpeed * 0.5) {
+    fail(`look burst was not along the camera (${human.velocity.z.toFixed(2)})`);
+  }
+  if (human.velocity.length() > sim.tunables.burstSpeed * 1.05) {
+    fail(`burst exceeded its cap (${human.velocity.length().toFixed(2)})`);
+  }
+
+  const z = human.velocity.z;
+  sim.step(1 / 60, burst);
+  if (human.velocity.z > z + 5) fail('burst fired again during cooldown');
+
+  const wait = blankIntent();
+  for (let i = 0; i < 90; i++) sim.step(1 / 60, wait);
+  if (human.burstCooldown > 0) fail('burst cooldown did not end');
+
+  const side = blankIntent();
+  side.burst = true;
+  side.move.set(1, 0, 0);
+  sim.step(1 / 60, side);
+  const right = lookBasis(0, 0, false).right;
+  const along = human.velocity.dot(right);
+  if (along < sim.tunables.burstSpeed * 0.45) {
+    fail(`burst did not follow swim input (${along.toFixed(2)})`);
+  }
+
+  human.position.set(0, 0, -8);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.burstCooldown = 0;
+  human.burstTime = 0;
+  human.hasBall = false;
+  const stance = blankIntent();
+  stance.strafe = true;
+  sim.step(1 / 60, stance);
+  if (!human.catchStance) fail('strafe without the ball did not enter catch stance');
+
+  const lunge = blankIntent();
+  lunge.burst = true;
+  lunge.strafe = true;
+  sim.step(1 / 60, lunge);
+  if (human.velocity.dot(new THREE.Vector3(0, 0, 1)) < sim.tunables.burstSpeed * 0.45) {
+    fail('strafe burst did not lunge along look');
+  }
+  if (human.facing.dot(new THREE.Vector3(0, 0, 1)) < 0.8) fail('burst broke catch-stance facing');
+  if (human.catchStance) fail('lunge frame stayed in the catch reach');
+  const holdStance = blankIntent();
+  holdStance.strafe = true;
+  for (let i = 0; i < 24; i++) sim.step(1 / 60, holdStance);
+  if (!human.catchStance) fail('catch stance did not return after the lunge');
+
+  sim.ball.position.copy(human.position).add(new THREE.Vector3(0, 0, 1));
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 0;
+  human.hasBall = false;
+  const grab = blankIntent();
+  grab.strafe = true;
+  grab.claim = true;
+  sim.step(1 / 60, grab);
+  if (!human.hasBall) fail('catch stance blocked the claim');
+
+  human.burstCooldown = 0;
+  human.burstTime = 0;
+  const shoot = blankIntent();
+  shoot.burst = true;
+  shoot.shoot = true;
+  shoot.shootHeld = true;
+  sim.step(1 / 60, shoot);
+  if (human.burstCooldown > 0) fail('on-ball click triggered a burst');
+  if (!sim.shotAim.active) fail('on-ball click did not start the shot');
+}
+
+function checkPointerLockGuard(): void {
+  const idle = new PrimaryClickGate();
+  if (idle.pointerDown()) fail('unlocked click was accepted');
+  idle.pointerUp();
+  idle.noteLockRequest();
+  idle.setLocked(true);
+  if (idle.suppress) fail('lock after the button was released stayed suppressed');
+  if (!idle.pointerDown()) fail('locked click was rejected');
+  idle.pointerUp();
+
+  const capture = new PrimaryClickGate();
+  capture.pointerDown();
+  capture.noteLockRequest();
+  capture.setLocked(true);
+  if (!capture.suppress) fail('capturing press was not suppressed');
+  if (capture.pointerDown()) fail('capturing click produced a shot or a burst');
+  capture.pointerUp();
+  if (capture.suppress) fail('release did not clear the pointer-lock guard');
+  if (!capture.pointerDown()) fail('click after the guard did not register');
+}
+
+function checkCatchBeacon(): void {
+  const sim = new Simulation(defaultTunables());
+  const human = solo(sim);
+  human.position.set(0, 0, -12);
+  human.hasBall = false;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.arc = null;
+  sim.ball.velocity.set(0, 2, 18);
+  sim.ball.position.set(0, 0, -4);
+  sim.updateAimPresentation(blankIntent(), 1 / 60);
+  if (!sim.catchBeacon.visible) fail('loose ball hid the catch beacon');
+  if (sim.catchBeacon.position.z <= sim.ball.position.z + 2) {
+    fail(`beacon did not lead the loose ball (${sim.catchBeacon.position.z.toFixed(2)})`);
+  }
+
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.updateAimPresentation(blankIntent(), 1 / 60);
+  if (sim.catchBeacon.visible) fail('held ball still showed the catch beacon');
+
+  human.hasBall = false;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  const end = new THREE.Vector3(0, 1, 16);
+  sim.ball.arc = {
+    p0: new THREE.Vector3(0, 0, -8),
+    p1: new THREE.Vector3(2, 4, 0),
+    p2: end,
+    elapsed: 0.1,
+    duration: 1,
+    receiverId: null,
+    carryLeft: 0,
+    carryDir: null,
+    carrySpeed: 0,
+  };
+  sim.updateAimPresentation(blankIntent(), 1 / 60);
+  if (!sim.catchBeacon.visible) fail('arc hid the catch beacon');
+  if (sim.catchBeacon.position.distanceTo(end) > 0.05) fail('beacon was not on the arc end');
+}
+
+function checkGoalBoundArc(): void {
+  const { sim, hold } = aimingSim();
+  sim.step(1 / 60, hold);
+  const mouth = goalPlaneZ(0);
+  sim.shotAim.target.set(0, 0, mouth);
+  sim.shotAim.bendRight = 6;
+  sim.shotAim.bendUp = 3;
+  sim.step(1 / 60, hold);
+  const ghost = sim.chargeGhost;
+  const mid = ghost[Math.floor(ghost.length / 2)];
+  if (!mid) fail('goal-bound preview missing');
+  const chord = sim.shotAim.target.clone().sub(sim.ball.position).normalize();
+  const off = mid.clone().sub(sim.ball.position);
+  off.addScaledVector(chord, -off.dot(chord));
+  if (off.length() < 0.6) fail('goal-bound arc lost its curve');
+  sim.step(1 / 60, blankIntent());
+  if (!sim.ball.arc) fail('goal-bound release did not throw');
+  sim.updateAimPresentation(blankIntent(), 1 / 60);
+  if (!sim.catchBeacon.visible) fail('flight hid the catch beacon');
+  const flightEnd = sim.ball.arc.p2.clone();
+  if (sim.ball.arc.carryLeft > 0 && sim.ball.arc.carryDir) {
+    flightEnd.addScaledVector(sim.ball.arc.carryDir, sim.ball.arc.carryLeft);
+  }
+  if (sim.catchBeacon.position.distanceTo(flightEnd) > 0.2) fail('beacon left the goal-bound arc');
+  let guard = 0;
+  const fly = blankIntent();
+  while (sim.ball.arc && guard < 500) {
+    sim.step(1 / 60, fly);
+    guard++;
+  }
+  const reached = sim.ball.position.z >= mouth - 8 || sim.match.score[0] > 0;
+  if (!reached) fail(`curved shot did not reach the goal (z ${sim.ball.position.z.toFixed(1)})`);
+}
+
 export function runRotationChecks(): void {
   checkRotateToward();
   checkUpPole();
@@ -1119,6 +1368,12 @@ export function runRotationChecks(): void {
   checkGoalMouth();
   checkShotIntoGoal();
   checkShotSteer();
+  checkBallFit();
+  checkSpeeds();
+  checkBurst();
+  checkPointerLockGuard();
+  checkCatchBeacon();
+  checkGoalBoundArc();
   checkCamera(false, false);
   checkCamera(false, true);
   checkCamera(true, false);

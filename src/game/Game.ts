@@ -13,6 +13,7 @@ function orEdges(pending: InputIntent, fresh: InputIntent): InputIntent {
     drop: pending.drop || fresh.drop,
     pass: pending.pass || fresh.pass,
     shoot: pending.shoot || fresh.shoot,
+    burst: pending.burst || fresh.burst,
     resetBall: pending.resetBall || fresh.resetBall,
     callForPass: pending.callForPass || fresh.callForPass,
   };
@@ -27,6 +28,7 @@ function withoutEdges(intent: InputIntent): InputIntent {
     drop: false,
     pass: false,
     shoot: false,
+    burst: false,
     resetBall: false,
     zoomTogglePressed: false,
     toggleDev: false,
@@ -184,6 +186,8 @@ export class Game {
         this.sim.shotAim.active
           ? `arc ${b.position.distanceTo(this.sim.shotAim.target).toFixed(1)}u bend ${Math.hypot(this.sim.shotAim.bendRight, this.sim.shotAim.bendUp).toFixed(1)}`
           : 'arc idle',
+        `burst ${h.burstCooldown > 0 ? h.burstCooldown.toFixed(2) + 's' : 'ready'}`,
+        this.sim.catchBeacon.visible ? 'catch beacon on' : 'catch beacon off',
         `shoulder ${this.sim.shoulderLateral.toFixed(2)}`,
         this.sim.aimCursor.visible ? `cursor ${this.sim.aimCursor.kind}` : 'cursor off',
         this.sim.catchStance ? 'catch reach' : 'catch off',

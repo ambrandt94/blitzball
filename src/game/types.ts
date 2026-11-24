@@ -6,8 +6,8 @@ export type PlayerRole = 'human' | 'ai' | 'stub';
 
 export type PossessionState = 'free' | 'held';
 
-/** Short greybox pose. `hold` lasts while carrying; the others are timed. */
-export type ActionPose = 'none' | 'claim' | 'hold' | 'pass' | 'shoot';
+/** Short pose. `hold` lasts while carrying; the others are timed. */
+export type ActionPose = 'none' | 'claim' | 'hold' | 'pass' | 'shoot' | 'burst';
 
 export interface Tunables {
   goalAxisUp: boolean;
@@ -29,6 +29,20 @@ export interface Tunables {
   catchPull: number;
   holdLag: number;
   playerAccel: number;
+  /** Cruise top speed. Sprint and the carrier tax scale this. */
+  playerMaxSpeed: number;
+  /** Sprint multiplier on cruise speed. */
+  sprintMult: number;
+  /** Loose pass speed at a full charge. */
+  passSpeed: number;
+  shootSpeedMin: number;
+  shootSpeedMax: number;
+  /** Peak speed of the off-ball lunge. */
+  burstSpeed: number;
+  /** Seconds the lunge holds that speed. */
+  burstDuration: number;
+  /** Seconds before another lunge. */
+  burstCooldown: number;
   ballDrag: number;
   aimAssist: number;
   showChargeGhost: boolean;
@@ -104,6 +118,16 @@ export interface PlayerState {
   hasBall: boolean;
   tackleCooldown: number;
   reclaimGrace: number;
+  /** Seconds left on the off-ball lunge speed cap. */
+  burstTime: number;
+  /** Seconds before another lunge can start. */
+  burstCooldown: number;
+  /** 1 when a lunge just started, decays for the extra bubble puff. */
+  burstPuff: number;
+  /** World direction locked at the moment of the lunge. */
+  burstDir: THREE.Vector3;
+  /** Right-click held with empty hands: arms reach to catch. */
+  catchStance: boolean;
   /** Stub slots reserved for future 3v3 AI. */
   active: boolean;
   actionPose: ActionPose;
@@ -164,6 +188,11 @@ export interface InputIntent {
   pass: boolean;
   shoot: boolean;
   shootHeld: boolean;
+  /**
+   * Off-ball primary click. Same edge as shoot; the sim lunges only when
+   * this player is not holding the ball.
+   */
+  burst: boolean;
   passHeld: boolean;
   zoomOut: boolean;
   zoomTogglePressed: boolean;
