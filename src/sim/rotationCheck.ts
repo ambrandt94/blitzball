@@ -3,17 +3,17 @@
  *   npx tsx src/sim/rotationCheck.ts
  */
 import * as THREE from 'three';
-import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, SHOT_ARC } from '../game/constants';
+import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, SHOT_ARC, setArenaRadius } from '../game/constants';
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { defaultTunables } from '../ui/DevPanel';
 import { Simulation } from './Simulation';
-import { goalPlaneZ, inGoalPocket, segmentScores } from './goal';
+import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
 import { lookBasis, rotateToward, stabilizeUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
-import { constrainPlayerToSphere } from './wallPhysics';
+import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
 function fail(message: string): never {
   throw new Error(message);
@@ -196,6 +196,7 @@ function holdPoint(sim: Simulation): THREE.Vector3 {
 
 function aimingSim(): { sim: Simulation; human: ReturnType<Simulation['getHuman']>; hold: InputIntent } {
   const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
   for (const p of sim.players) {
     if (p.id !== sim.humanId) p.active = false;
@@ -221,8 +222,8 @@ function aimingSim(): { sim: Simulation; human: ReturnType<Simulation['getHuman'
 
 function checkArcHand(): void {
   const { sim, human, hold } = aimingSim();
-  // Camera looks off the body's facing so the carry pose has to turn,
-  // and the swimmer still has speed. WASD / rise must not add thrust.
+  // Camera looks off the body's facing so the carry pose has to turn.
+  // WASD still swims, but only at the throw creep.
   sim.yaw = 0.7;
   human.velocity.set(0, 0, 6);
   hold.move.set(1, 0, 0);
@@ -232,15 +233,16 @@ function checkArcHand(): void {
   for (let i = 0; i < 30; i++) sim.step(1 / 60, hold);
   if (!sim.shotAim.active) fail('shot aim did not lock');
   if (human.actionPose !== 'hold') fail(`aim pose was ${human.actionPose}, ball would leave the hands`);
-  if (Math.abs(human.velocity.x) > 0.4 || human.velocity.y > 0.4) {
-    fail(`WASD still swam during the hold (${human.velocity.x.toFixed(2)}, ${human.velocity.y.toFixed(2)})`);
-  }
+  const creep = PLAYER.maxSpeed * PLAYER.carrierSpeedMult * PLAYER.throwSwimMult;
+  const speed = human.velocity.length();
+  if (speed > creep * 1.3) fail(`throw swim was not slowed (${speed.toFixed(2)} > ${creep.toFixed(2)})`);
+  if (speed < creep * 0.45) fail(`throw swim did not creep (${speed.toFixed(2)})`);
   const carried = sim.ball.position.distanceTo(holdPoint(sim));
   if (carried > 0.05) fail(`ball left the hand by ${carried.toFixed(2)}`);
   if (sim.ball.position.distanceTo(startBall) < 0.2) {
     fail('ball froze in the water instead of moving with the hold pose');
   }
-  if (human.position.distanceTo(startPlayer) < 0.15) fail('player did not coast while aiming');
+  if (human.position.distanceTo(startPlayer) < 0.15) fail('player did not move while throwing');
 }
 
 function checkArcBend(): void {
@@ -285,12 +287,8 @@ function checkArcMarker(): void {
   const frames = 30;
   for (let i = 0; i < frames; i++) sim.step(1 / 60, hold);
   const moved = sim.shotAim.target.distanceTo(before);
-  const expect = sim.tunables.arcAimSpeed * (frames / 60);
-  if (Math.abs(moved - expect) > 0.35) fail(`marker moved ${moved.toFixed(2)}, expected ${expect.toFixed(2)}`);
-  if (human.position.distanceTo(playerBefore) > 0.15) fail('player swam while WASD moved the marker');
-  const right = lookBasis(sim.yaw, sim.pitch, false).right;
-  const lateral = sim.shotAim.target.clone().sub(before).dot(right);
-  if (lateral < expect * 0.9) fail(`A/D did not strafe the marker (${lateral.toFixed(2)})`);
+  if (moved > 0.2) fail(`WASD moved the throw marker (${moved.toFixed(2)})`);
+  if (human.position.distanceTo(playerBefore) < 0.2) fail('WASD did not creep the swimmer during the throw');
 
   const forward = lookBasis(sim.yaw, sim.pitch, false).forward;
   const ranged = sim.shotAim.target.clone();
@@ -394,6 +392,7 @@ function checkShapeMath(): void {
 
 function checkPractice(): void {
   const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
   if (sim.tunables.defenseActive) fail('defense should start holding position');
   const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
   const defense = sim.players.find((p) => p.team === 1 && p.active);
@@ -614,6 +613,7 @@ function cursorKind(sim: Simulation): string {
 
 function checkAimCursor(): void {
   const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
   const human = sim.getHuman();
   human.position.set(0, 0, 0);
@@ -785,6 +785,7 @@ function checkCatch(): void {
  */
 function checkTeammatePassReachesPlayer(): void {
   const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
   sim.tunables.defenseActive = false;
   sim.tunables.teammatePassDelay = 0.05;
@@ -845,6 +846,7 @@ function checkTeammatePassReachesPlayer(): void {
 /** A defender on the pass line still takes it. The thrower's lock is not global. */
 function checkOpponentInterceptsPass(): void {
   const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
   sim.tunables.defenseActive = false;
   sim.tunables.teammatePassDelay = 0.05;
@@ -894,6 +896,7 @@ function checkOpponentInterceptsPass(): void {
 /** Strip range still beats a held ball. The throw lock must not cover tackles. */
 function checkTackleStillStrips(): void {
   const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
   const human = sim.getHuman();
   const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
@@ -958,6 +961,7 @@ function checkArcShotLeavesThrower(): void {
 /** The player's own pass has to reach the teammate, and must not snap back. */
 function checkHumanPassReachesTeammate(): void {
   const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
   sim.tunables.defenseActive = false;
   const human = sim.getHuman();
@@ -1067,9 +1071,9 @@ function checkCatchPose(): void {
 
 function checkGoalMouth(): void {
   const z = goalPlaneZ(0);
-  const inside = new THREE.Vector3(GOAL.rimRadius * 0.45, 0, z + 0.5);
-  const angled = new THREE.Vector3(0, GOAL.rimRadius * 0.45, z + 0.5);
-  if (!inGoalPocket(inside, 0) || !inGoalPocket(angled, 0)) fail('round mouth rejected a point inside the hoop');
+  const inside = new THREE.Vector3(GOAL.rimRadius * 0.12, 0, z + 0.5);
+  const angled = new THREE.Vector3(0, GOAL.rimRadius * 0.12, z + 0.5);
+  if (!inGoalPocket(inside, 0) || !inGoalPocket(angled, 0)) fail('triangle mouth rejected a point inside the opening');
   const ring = new THREE.Vector3(GOAL.rimRadius + GOAL.rimTube + 0.3, 0, z);
   if (inGoalPocket(ring, 0)) fail('the ring tube counted as the net');
   const wide = new THREE.Vector3(GOAL.rimRadius + 2.2, 0, z + 1);
@@ -1271,6 +1275,7 @@ function checkTeammateLock(): void {
 
 function checkShotSteer(): void {
   const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
   for (const p of sim.players) {
     if (p.id !== sim.humanId) p.active = false;
@@ -1294,58 +1299,23 @@ function checkShotSteer(): void {
   sim.step(1 / 60, upAim);
   const lockedAt = human.position.clone();
   const before = sim.shotAim.target.clone();
+  const yaw = sim.yaw;
   for (let i = 0; i < 30; i++) sim.step(1 / 60, upAim);
-  const delta = sim.shotAim.target.clone().sub(before);
-  const basis = lookBasis(sim.yaw, sim.pitch, false);
-  const up = delta.dot(basis.up);
-  const fwd = delta.dot(basis.forward);
-  const side = delta.dot(basis.right);
-  if (up < 4) fail(`W did not raise the marker (up ${up.toFixed(2)})`);
-  if (Math.abs(fwd) > 1.2) fail(`W moved the marker along the look (${fwd.toFixed(2)})`);
-  if (Math.abs(side) > 1.2) fail(`W slid the marker sideways (${side.toFixed(2)})`);
-  if (human.position.distanceTo(lockedAt) > 0.35) {
-    fail(`WASD still swam while aiming (${human.position.distanceTo(lockedAt).toFixed(2)})`);
+  if (sim.shotAim.target.distanceTo(before) > 0.25) fail('W moved the locked throw marker');
+  if (Math.abs(sim.yaw - yaw) > 1e-6) fail('WASD turned the locked aim');
+  const crept = human.position.distanceTo(lockedAt);
+  if (crept < 0.35) fail(`throw hold did not let WASD swim (${crept.toFixed(2)})`);
+  const creep = PLAYER.maxSpeed * PLAYER.carrierSpeedMult * PLAYER.throwSwimMult;
+  if (human.velocity.length() > creep * 1.3) {
+    fail(`throw swim too fast (${human.velocity.length().toFixed(2)})`);
   }
 
   const riseBefore = sim.shotAim.target.clone();
-  const riseAt = human.position.clone();
   const climb = blankIntent();
   climb.shootHeld = true;
   climb.up = 1;
-  for (let i = 0; i < 30; i++) sim.step(1 / 60, climb);
-  const rise = sim.shotAim.target.clone().sub(riseBefore);
-  if (rise.dot(basis.up) < 4) fail(`Space did not raise the marker (up ${rise.dot(basis.up).toFixed(2)})`);
-  if (Math.abs(rise.dot(basis.forward)) > 1.2) fail('Space moved the marker along the look');
-  if (human.position.distanceTo(riseAt) > 0.35) fail('Space swam while aiming');
-
-  const lateral = new Simulation(defaultTunables());
-  lateral.kickoffLock = 0;
-  for (const p of lateral.players) {
-    if (p.id !== lateral.humanId) p.active = false;
-  }
-  const carrier = lateral.getHuman();
-  carrier.position.set(0, 1, -6);
-  carrier.velocity.set(0, 0, 0);
-  carrier.facing.set(0, 0, 1);
-  carrier.up.set(0, 1, 0);
-  carrier.hasBall = true;
-  lateral.ball.possession = 'held';
-  lateral.ball.ownerId = carrier.id;
-  lateral.ball.position.set(0, 1, -5.2);
-  lateral.yaw = 0.3;
-  lateral.pitch = 0.2;
-  const sideAim = blankIntent();
-  sideAim.shootHeld = true;
-  sideAim.move.set(1, 0, 0);
-  lateral.step(1 / 60, sideAim);
-  const sideBefore = lateral.shotAim.target.clone();
-  for (let i = 0; i < 30; i++) lateral.step(1 / 60, sideAim);
-  const sideDelta = lateral.shotAim.target.clone().sub(sideBefore);
-  const sideBasis = lookBasis(lateral.yaw, lateral.pitch, false);
-  const rightDot = sideDelta.dot(sideBasis.right);
-  if (rightDot < 4) fail(`A/D did not slide the marker (${rightDot.toFixed(2)})`);
-  if (Math.abs(sideDelta.dot(sideBasis.up)) > 1.2) fail('A/D raised the marker');
-  if (Math.abs(sideDelta.dot(sideBasis.forward)) > 1.2) fail('A/D changed the range');
+  for (let i = 0; i < 20; i++) sim.step(1 / 60, climb);
+  if (sim.shotAim.target.distanceTo(riseBefore) > 0.25) fail('Space moved the locked throw marker');
 
   const ranged = new Simulation(defaultTunables());
   ranged.kickoffLock = 0;
@@ -1619,6 +1589,416 @@ function checkGoalBoundArc(): void {
   if (!reached) fail(`curved shot did not reach the goal (z ${sim.ball.position.z.toFixed(1)})`);
 }
 
+function checkTriangleOpening(): void {
+  const z = goalPlaneZ(0);
+  const tip = goalMouthVertex(0);
+  const through = new THREE.Vector3(tip.x * 0.62, tip.y * 0.62, z);
+  if (!pointInGoalMouth(through.x, through.y)) fail('lower opening was outside the triangle');
+  const bulge = GOAL.rimRadius * 0.82;
+  if (pointInGoalMouth(bulge, 0)) fail('round-mouth bulge was inside the triangle');
+  if (segmentScores(new THREE.Vector3(bulge, 0, z - 4), new THREE.Vector3(bulge, 0, z + 2)) !== null) {
+    fail('a shot through the round mouth outside the triangle scored');
+  }
+
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  sim.match.resetTimer = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.lastOwnerId = null;
+  sim.ball.arc = null;
+  sim.ball.claimLock = 2;
+  sim.ball.velocity.set(0, 0, 90);
+  sim.ball.position.set(through.x, through.y, z - 4);
+  let scored = false;
+  for (let i = 0; i < 40 && !scored; i++) {
+    sim.step(1 / 60, blankIntent());
+    scored = sim.match.score[0] > 0;
+  }
+  if (!scored) fail('a shot through the triangle opening did not score');
+}
+
+function checkBodiesSeparate(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  sim.tunables.defenseActive = false;
+  const human = sim.getHuman();
+  const other = sim.players.find((p) => p.team === 1 && p.active);
+  if (!other) fail('missing a body to collide with');
+  human.position.set(-0.15, 0, 0);
+  human.velocity.set(5, 0, 0);
+  human.facing.set(1, 0, 0);
+  human.up.set(0, 1, 0);
+  other.position.set(0.15, 0, 0);
+  other.velocity.set(-5, 0, 0);
+  other.facing.set(-1, 0, 0);
+  sim.ball.position.set(0, 20, 0);
+  sim.ball.claimLock = 5;
+  sim.step(1 / 60, blankIntent());
+  const gap = human.position.distanceTo(other.position);
+  if (gap < PLAYER.radius * 2 - 0.04) fail(`bodies still overlapped (${gap.toFixed(3)})`);
+}
+
+function checkShoulderCheck(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  sim.tunables.defenseActive = false;
+  const human = sim.getHuman();
+  const enemy = sim.players.find((p) => p.team === 1 && p.role === 'ai');
+  if (!enemy) fail('missing a carrier to check');
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = false;
+  human.burstCooldown = 0;
+  sim.yaw = 0;
+  sim.pitch = 0;
+  enemy.position.set(0, 0, 0.85);
+  enemy.velocity.set(0, 0, 0);
+  enemy.hasBall = true;
+  enemy.active = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = enemy.id;
+  sim.ball.lastOwnerId = enemy.id;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.set(0, 0.15, 1.5);
+  const check = blankIntent();
+  check.burst = true;
+  check.move.set(0, 0, 1);
+  sim.step(1 / 60, check);
+  const loose: string = sim.ball.possession;
+  if (enemy.hasBall || loose !== 'free') fail('check did not knock the ball loose');
+  if (sim.ball.velocity.z < 6) fail(`loose ball was not thrown forward (${sim.ball.velocity.z.toFixed(2)})`);
+  if (enemy.staggerTime <= 0) fail('checked swimmer was not staggered');
+  if (human.hitFlash <= 0 || enemy.hitFlash <= 0) fail('check did not flash both swimmers');
+  if (sim.cameraShake <= 0) fail('a landed check did not shake the camera');
+  if (human.burstCooldown < 0.75) fail(`check cooldown was ${human.burstCooldown.toFixed(2)}`);
+  const gap = human.position.distanceTo(enemy.position);
+  if (gap < PLAYER.radius * 2 - 0.05) fail(`check left the bodies overlapping (${gap.toFixed(3)})`);
+
+  const friendly = new Simulation(defaultTunables());
+  friendly.setSoloOpponent(false);
+  friendly.kickoffLock = 0;
+  friendly.tunables.defenseActive = false;
+  const you = friendly.getHuman();
+  const pal = friendly.players.find((p) => p.team === 0 && p.role === 'ai');
+  if (!pal) fail('missing teammate');
+  you.position.set(0, 0, 0);
+  you.velocity.set(0, 0, 0);
+  you.facing.set(0, 0, 1);
+  you.up.set(0, 1, 0);
+  you.burstCooldown = 0;
+  friendly.yaw = 0;
+  friendly.pitch = 0;
+  pal.position.set(0, 0, 0.85);
+  pal.velocity.set(0, 0, 0);
+  pal.active = true;
+  pal.hasBall = true;
+  friendly.ball.possession = 'held';
+  friendly.ball.ownerId = pal.id;
+  friendly.ball.position.set(0, 0.15, 1.5);
+  const again = blankIntent();
+  again.burst = true;
+  again.move.set(0, 0, 1);
+  friendly.step(1 / 60, again);
+  const friendlyBall: string = friendly.ball.possession;
+  if (pal.hasBall || friendlyBall !== 'free') fail('friendly check left the ball with a teammate');
+  if (pal.staggerTime <= 0) fail('friendly fire did not stagger the teammate');
+
+  const hit = new Simulation(defaultTunables());
+  hit.setSoloOpponent(false);
+  hit.kickoffLock = 0;
+  hit.tunables.defenseActive = false;
+  const swimmer = hit.getHuman();
+  const foe = hit.players.find((p) => p.team === 1 && p.role === 'ai');
+  if (!foe) fail('missing checker');
+  swimmer.position.set(0, 0, 0);
+  swimmer.velocity.set(0, 0, 0);
+  swimmer.facing.set(0, 0, 1);
+  swimmer.up.set(0, 1, 0);
+  hit.yaw = 0;
+  hit.pitch = 0;
+  foe.position.set(0, 0, 0.7);
+  foe.velocity.set(0, 0, 0);
+  foe.burstTime = 0.25;
+  foe.burstDir.set(0, 0, -1);
+  foe.active = true;
+  hit.ball.position.set(20, 20, 20);
+  hit.ball.claimLock = 5;
+  hit.step(1 / 60, blankIntent());
+  if (swimmer.staggerTime <= 0 || hit.cameraShake <= 0) fail('a check you take did not stagger or shake');
+  const coast = blankIntent();
+  let guard = 0;
+  while (swimmer.knockTime > 0 && guard < 40) {
+    hit.step(1 / 60, coast);
+    guard++;
+  }
+  if (swimmer.staggerTime <= 0) fail('stagger ended with the knock');
+  const swim = blankIntent();
+  swim.move.set(0, 0, 1);
+  for (let i = 0; i < 10; i++) hit.step(1 / 60, swim);
+  if (swimmer.staggerTime <= 0) fail('stagger did not last through the control check');
+  if (swimmer.velocity.length() > PLAYER.maxSpeed * 0.45) {
+    fail(`stagger still swam at ${swimmer.velocity.length().toFixed(2)}`);
+  }
+}
+
+function checkDrillOpponent(): void {
+  const sim = new Simulation(defaultTunables());
+  if (!sim.tunables.soloOpponent) fail('test opponent should start on');
+  sim.kickoffLock = 0;
+  const human = sim.getHuman();
+  human.position.set(0, 0, -30);
+  human.velocity.set(0, 0, 0);
+  const foe = sim.players.find((p) => p.team === 1 && p.role === 'ai' && p.active);
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai');
+  if (!foe || !mate) fail('missing the drill roster');
+  if (mate.active) fail('teammate was not parked for the test opponent');
+  foe.position.set(0, 0, 0);
+  foe.velocity.set(0, 0, 0);
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 4;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.set(0, 0, 16);
+  const start = foe.position.clone();
+  const intent = blankIntent();
+  for (let i = 0; i < 90; i++) sim.step(1 / 60, intent);
+  if (mate.active) fail('teammate woke up');
+  const foes = sim.players.filter((p) => p.team === 1 && p.active);
+  if (foes.length !== 1) fail(`expected one enemy, saw ${foes.length}`);
+  if (foe.position.distanceTo(start) < 0.5) fail('opponent did not chase the ball');
+  if (foe.velocity.length() > sim.tunables.playerMaxSpeed * 0.62) {
+    fail(`opponent chased at ${foe.velocity.length().toFixed(2)}`);
+  }
+  foe.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = foe.id;
+  sim.ball.claimLock = 0;
+  let shot = false;
+  for (let i = 0; i < 180; i++) {
+    sim.step(1 / 60, intent);
+    const poss: string = sim.ball.possession;
+    if (sim.ball.arc || sim.match.score[1] > 0 || (poss === 'free' && sim.ball.velocity.length() > 8)) {
+      shot = true;
+    }
+  }
+  if (shot) fail('test opponent passed or shot');
+  if (!foe.hasBall) fail('test opponent dropped the ball');
+  if (foe.velocity.length() > sim.tunables.playerMaxSpeed * 0.55) {
+    fail(`wander was ${foe.velocity.length().toFixed(2)}`);
+  }
+}
+
+function checkWallRicochet(): void {
+  const noEscape = { escapeSpeed: 500, escapeAngle: 0.01, allowEscape: false };
+  const pos = new THREE.Vector3(ARENA_RADIUS - BALL.radius + 0.35, 0, 0);
+  const vel = new THREE.Vector3(40, 0, 0);
+  const before = vel.length();
+  const hit = resolveSphereWall(pos, vel, BALL.radius, noEscape);
+  if (hit.escaped) fail('head-on bounce was treated as an escape');
+  if (vel.x >= 0) fail('bounce did not reflect off the surface normal');
+  const speed = vel.length();
+  if (speed >= before - 0.05) fail(`bounce did not drop speed (${speed.toFixed(2)})`);
+  if (speed < before * 0.55) fail(`bounce killed the shot (${speed.toFixed(2)})`);
+
+  const angled = new THREE.Vector3(24, 18, 0);
+  const angledBefore = angled.length();
+  resolveSphereWall(new THREE.Vector3(ARENA_RADIUS - BALL.radius + 0.3, 0, 0), angled, BALL.radius, noEscape);
+  if (angled.x >= 0) fail('angled bounce stayed outward');
+  if (angled.y < 18 * 0.7) fail('angled bounce lost the curve');
+  if (angled.length() >= angledBefore - 0.05) fail('angled bounce did not drop speed');
+
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 5;
+  sim.ball.arc = null;
+  const shell = ARENA_RADIUS - BALL.radius;
+  sim.ball.position.set(shell - 0.05, 0, 0);
+  sim.ball.velocity.set(90, 4, 0);
+  let breached = false;
+  let thrownIn = false;
+  for (let i = 0; i < 120; i++) {
+    sim.step(1 / 60, blankIntent());
+    if (sim.ball.position.length() < 0.5) fail('ball vanished on the shell');
+    if (sim.ball.position.x > ARENA_RADIUS + 0.3) breached = true;
+    if (breached && sim.ball.position.x > shell * 0.5 && sim.ball.velocity.x < -6) thrownIn = true;
+  }
+  if (!breached) fail('a strong shot did not leave the shell');
+  if (!thrownIn) fail('throw-in did not bring the ball back from the breach');
+}
+
+function checkRimDeflection(): void {
+  const curve = goalFrameCurve(0);
+  const onFrame = curve.getPoint(0.5);
+  const z = goalPlaneZ(0);
+  const away = new THREE.Vector3(onFrame.x, onFrame.y, 0);
+  if (away.lengthSq() < 1e-6) fail('frame sample collapsed');
+  away.normalize();
+  const pos = new THREE.Vector3(onFrame.x, onFrame.y, z - 0.15).addScaledVector(away, GOAL.rimTube * 0.65);
+  const vel = away.clone().multiplyScalar(-28);
+  vel.z = 22;
+  const toward = vel.dot(away);
+  if (!resolveGoalRim(pos, vel)) fail('rim did not collide');
+  if (vel.dot(away) < toward + 8) fail('rim did not bounce off the frame normal');
+
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  sim.match.resetTimer = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 4;
+  sim.ball.arc = null;
+  sim.ball.position.set(onFrame.x, onFrame.y, z - 2.5);
+  sim.ball.velocity.set(0, 0, 70);
+  for (let i = 0; i < 40; i++) sim.step(1 / 60, blankIntent());
+  if (sim.match.score[0] > 0 || sim.match.score[1] > 0) fail('a rim hit scored');
+  if (inGoalPocket(sim.ball.position)) fail('a rim hit ended in the net');
+}
+
+function checkGoalStaysVisible(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  sim.match.resetTimer = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  const z = goalPlaneZ(0);
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 3;
+  sim.ball.arc = null;
+  sim.ball.velocity.set(0, 0, 70);
+  sim.ball.position.set(0, 0, z - 2);
+  let scored = false;
+  for (let i = 0; i < 30 && !scored; i++) {
+    sim.step(1 / 60, blankIntent());
+    scored = sim.match.score[0] > 0;
+  }
+  if (!scored) fail('shot did not score');
+  if (sim.ball.position.length() < 4) fail('ball vanished on the goal');
+  if (!inGoalPocket(sim.ball.position, 0)) fail('ball was not in the net');
+  for (let i = 0; i < 20; i++) sim.step(1 / 60, blankIntent());
+  if (sim.match.resetTimer <= 0) fail('goal reset started immediately');
+  if (sim.ball.position.length() < 4) fail('ball vanished before the restart');
+  if (!inGoalPocket(sim.ball.position, 0)) fail('ball left the net before the restart');
+}
+
+function checkThrowAim(): void {
+  if (PLAYER.throwSwimMult < 0.25 || PLAYER.throwSwimMult > 0.35) {
+    fail(`throw swim ${PLAYER.throwSwimMult} is outside 25–35% of normal`);
+  }
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.position.set(0, 0.15, 0.85);
+  sim.yaw = 0;
+  sim.pitch = 0;
+
+  const aim = blankIntent();
+  aim.strafe = true;
+  aim.move.set(1, 0, 0);
+  sim.step(1 / 60, aim);
+  sim.updateAimPresentation(aim, 1 / 60);
+  if (sim.shotAim.active || sim.chargeGhost.length > 0) fail('right-click aim showed the curve');
+  if (!sim.aimCursor.visible) fail('right-click aim hid the reticle');
+  const yaw = sim.yaw;
+  const look = blankIntent();
+  look.strafe = true;
+  look.lookDelta.x = 0.35;
+  sim.applyFrameLook(look);
+  if (Math.abs(sim.yaw - (yaw + 0.35)) > 1e-4) fail('right-click aim did not follow the mouse');
+  if (Math.abs(sim.shotAim.bendRight) > 0.01) fail('right-click aim bent a curve');
+  sim.updateAimPresentation(look, 1 / 60);
+  const forward = lookBasis(sim.yaw, sim.pitch, false).forward;
+  const along = sim.aimCursor.position.clone().sub(human.position);
+  if (along.lengthSq() < 1e-6 || along.normalize().dot(forward) < 0.9) {
+    fail('reticle left the mouse look');
+  }
+
+  const shot = blankIntent();
+  shot.shootHeld = true;
+  shot.lookDelta.x = 0.2;
+  const lockedYaw = sim.yaw;
+  sim.armShotAim(shot);
+  sim.applyFrameLook(shot);
+  if (Math.abs(sim.yaw - lockedYaw) > 1e-6) fail('throw hold did not freeze the camera');
+  if (sim.shotAim.bendRight < 0.15 * sim.tunables.arcBendSpeed) fail('throw hold did not bend');
+  sim.step(1 / 60, shot);
+  if (sim.chargeGhost.length < 4) fail('throw hold hid the curve');
+  const marker = sim.shotAim.target.clone();
+  shot.move.set(0, 0, 1);
+  shot.lookDelta.x = 0;
+  const at = human.position.clone();
+  for (let i = 0; i < 20; i++) sim.step(1 / 60, shot);
+  if (sim.shotAim.target.distanceTo(marker) > 0.3) fail('swim moved the locked marker');
+  if (human.position.distanceTo(at) < 0.15) fail('throw hold ignored WASD');
+  if (sim.charge.amount < 0.2) fail(`power did not charge during the throw (${sim.charge.amount.toFixed(2)})`);
+  sim.step(1 / 60, blankIntent());
+  if (!sim.ball.arc) fail('release did not throw');
+  if (sim.charge.active) fail('power kept charging after release');
+}
+
+function checkArenaShell(): void {
+  const saved = ARENA_RADIUS;
+  try {
+    setArenaRadius(saved * 1.22);
+    for (const index of [0, 1, 2] as const) {
+      const corner = goalCornerWorld(0, index);
+      const shell = ARENA_RADIUS - 0.2;
+      if (Math.abs(corner.length() - shell) > 0.05) {
+        fail(`goal corner left the shell (${corner.length().toFixed(2)} vs ${shell.toFixed(2)})`);
+      }
+    }
+    const sim = new Simulation(defaultTunables());
+    sim.resizeArena(ARENA_RADIUS * 0.82);
+    const shell = ARENA_RADIUS - 0.2;
+    for (const index of [0, 1, 2] as const) {
+      const corner = goalCornerWorld(1, index);
+      if (Math.abs(corner.length() - shell) > 0.05) {
+        fail(`resize left the goal off the shell (${corner.length().toFixed(2)} vs ${shell.toFixed(2)})`);
+      }
+    }
+    for (const p of sim.players) {
+      if (p.position.length() > ARENA_RADIUS - PLAYER.radius + 0.08) {
+        fail('player outside the shell after an arena resize');
+      }
+    }
+  } finally {
+    setArenaRadius(saved);
+  }
+}
+
 export function runRotationChecks(): void {
   checkRotateToward();
   checkUpPole();
@@ -1646,8 +2026,17 @@ export function runRotationChecks(): void {
   checkNormalCatchRegression();
   checkCatchPose();
   checkGoalMouth();
+  checkTriangleOpening();
+  checkBodiesSeparate();
+  checkShoulderCheck();
+  checkDrillOpponent();
+  checkArenaShell();
+  checkWallRicochet();
+  checkRimDeflection();
+  checkGoalStaysVisible();
   checkShotIntoGoal();
   checkShotSteer();
+  checkThrowAim();
   checkBallFit();
   checkSpeeds();
   checkBurst();

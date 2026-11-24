@@ -37,11 +37,11 @@ export interface Tunables {
   passSpeed: number;
   shootSpeedMin: number;
   shootSpeedMax: number;
-  /** Peak speed of the off-ball lunge. */
+  /** Peak speed of the off-ball shoulder check. */
   burstSpeed: number;
-  /** Seconds the lunge holds that speed. */
+  /** Seconds the check can still hit someone. */
   burstDuration: number;
-  /** Seconds before another lunge. */
+  /** Seconds before another check. */
   burstCooldown: number;
   ballDrag: number;
   aimAssist: number;
@@ -83,6 +83,13 @@ export interface Tunables {
   shotCarry: number;
   /** When false, the opposing team holds its spots and does not chase or tackle. */
   defenseActive: boolean;
+  /**
+   * One slow enemy chases the ball and, once they have it, wanders.
+   * They never pass or shoot. Other AI is parked.
+   */
+  soloOpponent: boolean;
+  /** Shell radius. Changing it rebuilds the sphere, goals, and dressing. */
+  arenaRadius: number;
   /** Seconds the teammate holds the ball before passing it back. */
   teammatePassDelay: number;
   /** World-unit shift of the over-the-shoulder camera while strafing. */
@@ -129,14 +136,24 @@ export interface PlayerState {
   selfCatchLock: boolean;
   /** Seconds since that release. */
   selfCatchTime: number;
-  /** Seconds left on the off-ball lunge speed cap. */
+  /** Seconds left in the shoulder-check hit window. */
   burstTime: number;
-  /** Seconds before another lunge can start. */
+  /** Seconds before another check can start. */
   burstCooldown: number;
-  /** 1 when a lunge just started, decays for the extra bubble puff. */
+  /** 1 when a check just started, decays for the extra bubble puff. */
   burstPuff: number;
-  /** World direction locked at the moment of the lunge. */
+  /** World direction locked at the moment of the check. */
   burstDir: THREE.Vector3;
+  /** Bitmask of player ids this check has already hit. */
+  checkMask: number;
+  /** Seconds of ragdoll left from a shoulder check. Steering is ignored. */
+  knockTime: number;
+  /** Seconds of reduced swim control after a check. */
+  staggerTime: number;
+  /** 1 on a fresh hit, decays. The view flashes the body from this. */
+  hitFlash: number;
+  /** Bubbles the view still owes this swimmer for a hit. */
+  hitBurst: number;
   /** Right-click held with empty hands: arms reach to catch. */
   catchStance: boolean;
   /** Stub slots reserved for future 3v3 AI. */
@@ -200,8 +217,8 @@ export interface InputIntent {
   shoot: boolean;
   shootHeld: boolean;
   /**
-   * Off-ball primary click. Same edge as shoot; the sim lunges only when
-   * this player is not holding the ball.
+   * Off-ball primary click. Same edge as shoot; the sim shoulder-checks only
+   * when this player is not holding the ball.
    */
   burst: boolean;
   passHeld: boolean;

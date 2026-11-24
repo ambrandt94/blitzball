@@ -1,6 +1,16 @@
 /** Tunable Phase 0 greybox constants — plan defaults where Input was unanswered. */
 
-export const ARENA_RADIUS = 56;
+/** Playable sphere. About 20% larger than the first tuned arena (56). */
+export let ARENA_RADIUS = 68;
+
+/** Dressing, sunbeams, and kickoff spacing were laid out at this radius. */
+export const ARENA_REFERENCE = 56;
+
+/** Clamp and publish a new shell radius. Importers see the update on the next read. */
+export function setArenaRadius(radius: number): number {
+  ARENA_RADIUS = Math.min(100, Math.max(40, radius));
+  return ARENA_RADIUS;
+}
 
 export const FIXED_DT = 1 / 60;
 
@@ -26,12 +36,27 @@ export const PLAYER = {
   /** Swim speed while holding aim/strafe, relative to normal. */
   strafeSpeedMult: 0.62,
   /**
-   * Off-ball lunge. Above sprint for a short window so a click closes a gap
-   * for a tackle or a catch, then cruise speed returns.
+   * Swim while the throw is held, relative to the speed you would otherwise
+   * have (including the carrier tax). About a third, so you can still creep.
    */
-  burstSpeed: 34,
-  burstDuration: 0.2,
-  burstCooldown: 0.48,
+  throwSwimMult: 0.3,
+  /**
+   * Off-ball shoulder check. A strong thrust in the swim direction (or facing,
+   * if you are not steering) with a short hit window, then a longer cooldown.
+   */
+  burstSpeed: 40,
+  burstDuration: 0.26,
+  burstCooldown: 0.9,
+  /** Speed a checked swimmer is thrown, along the check. */
+  checkKnock: 21,
+  /** Seconds of reduced control after the knock ends. */
+  checkStagger: 0.55,
+  /** Seconds the knock ignores steering before the stagger takes over. */
+  checkKnockTime: 0.28,
+  /** Speed the ball leaves a checked carrier. */
+  checkPop: 15,
+  /** Restitution of the idle body-to-body bounce. */
+  checkBounce: 0.34,
   /**
    * Width of the catch mitt. The old auto-claim used 0.55 × 1.65 = 0.91, which
    * is inside the 0.97 body+ball contact, so touching the ball bounced it away.
@@ -132,10 +157,19 @@ export const WALL = {
 };
 
 export const GOAL = {
-  /** Circular mouth. The hoop is mounted on the shell; the net is the dome behind it. */
-  rimRadius: 8.5,
-  /** Tube radius of the illuminated ring. */
-  rimTube: 0.48,
+  /** Circumradius of the triangular frame. The three corners sit on the shell. */
+  rimRadius: 12.2,
+  /** How far each bowed side pulls in, as a fraction of the straight midpoint. */
+  bow: 0.16,
+  /** Tube radius of the ornate frame. */
+  rimTube: 0.5,
+  /**
+   * Scoring triangle as a fraction of `rimRadius`. Inscribed inside the bows
+   * and the corner pieces, so the posts are solid and the opening is the hole.
+   */
+  scoreScale: 0.72,
+  /** Shallow tunnel from the mouth plane out toward the shell. */
+  pocketDepth: 3.5,
 };
 
 export const CAMERA = {
