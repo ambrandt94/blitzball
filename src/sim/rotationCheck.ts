@@ -43,6 +43,7 @@ function blankIntent(zoom = false): InputIntent {
     passHeld: false,
     zoomOut: zoom,
     zoomTogglePressed: false,
+    middleZoomPressed: false,
     resetBall: false,
     toggleDev: false,
     aimRangeDelta: 0,
@@ -2009,6 +2010,30 @@ function checkArenaShell(): void {
   }
 }
 
+function checkWideCamera(): void {
+  const sim = new Simulation(defaultTunables());
+  if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
+  const held = blankIntent(true);
+  if (!sim.isZoomOut(held)) fail('held zoom key did not open the wide view');
+  if (sim.zoomOutLatched) fail('held zoom key latched the wide view');
+
+  const middle = blankIntent();
+  middle.middleZoomPressed = true;
+  sim.noteZoomToggle(middle);
+  if (!sim.zoomOutLatched || !sim.isZoomOut(blankIntent())) fail('middle click did not turn the wide view on');
+  sim.noteZoomToggle(middle);
+  if (sim.zoomOutLatched || sim.isZoomOut(blankIntent())) fail('middle click did not turn the wide view off');
+
+  const key = blankIntent();
+  key.zoomTogglePressed = true;
+  sim.noteZoomToggle(key);
+  if (sim.zoomOutLatched) fail('V toggled the wide view while zoom is set to hold');
+
+  sim.tunables.zoomHoldMode = false;
+  sim.noteZoomToggle(key);
+  if (!sim.zoomOutLatched) fail('V did not toggle the wide view when zoom hold is off');
+}
+
 export function runRotationChecks(): void {
   checkRotateToward();
   checkUpPole();
@@ -2047,6 +2072,7 @@ export function runRotationChecks(): void {
   checkShotIntoGoal();
   checkShotSteer();
   checkThrowAim();
+  checkWideCamera();
   checkBallFit();
   checkSpeeds();
   checkBurst();

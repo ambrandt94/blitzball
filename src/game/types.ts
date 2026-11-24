@@ -11,7 +11,8 @@ export type ActionPose = 'none' | 'claim' | 'hold' | 'pass' | 'shoot' | 'burst';
 
 export interface Tunables {
   goalAxisUp: boolean;
-  zoomHoldMode: boolean; // true = hold V/LB; false = toggle
+  /** True: V and LB zoom while held. False: those inputs toggle. Middle mouse always toggles. */
+  zoomHoldMode: boolean;
   /** When true, flip yaw so mouse-right looks left (non-standard). */
   mouseLookInvertX: boolean;
   /** When true, flip pitch so mouse-up looks down (flight-sim style). */
@@ -218,7 +219,10 @@ export interface InputIntent {
   burst: boolean;
   passHeld: boolean;
   zoomOut: boolean;
+  /** Keyboard or gamepad edge. Toggles only when zoom hold mode is off. */
   zoomTogglePressed: boolean;
+  /** Middle mouse press. Always toggles the wide camera. */
+  middleZoomPressed: boolean;
   /** Wheel notches, in world units. Positive lengthens the arc aim. */
   aimRangeDelta: number;
   /** Ask the teammate to pass now, or to cut harder if they don't have it. */

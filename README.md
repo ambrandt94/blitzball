@@ -36,7 +36,7 @@ npm run preview  # serve the build
 | Bend the arc, while throwing | Mouse | Right stick |
 | Arc range, while throwing | Mouse wheel | — |
 | Throw the arc to a teammate | Put the landing marker on them, then hold LMB and release | — |
-| Zoom out | `V` (hold or toggle via Dev) | LB |
+| Wide / overview camera | Middle mouse toggles. `V` still zooms (hold, or toggle when Dev says so) | LB |
 | Call for a pass | `G` | — |
 | Reset ball | `R` | Select |
 | Dev panel | `` ` `` | — |
@@ -81,7 +81,7 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 - **Test opponent** (on by default): one orange swimmer slowly chases the ball, well under cruise speed. With the ball they wander and never pass or shoot, so a shoulder check can pop it loose. The teammate and any other enemy stay parked. Turn the toggle off to restore practice.
 - Practice, with the test opponent off: one green-ring teammate who gets open, receives a pass, and passes back after **Teammate pass delay** or when you press `G`. The orange defender holds position unless **Defense chases** is on.
 - **3v3 scaffolding**: six roster slots (human + teammate + one defender active; three stubs inactive)
-- Dev toggles: goal-axis vs world-up, zoom mode, invert look X/Y, test opponent, arena radius, sunbeams and sunbeam strength, shoulder offset / transition, arc hand curve, power fill rate / angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs
+- Dev toggles: goal-axis vs world-up, V/LB zoom hold vs toggle, invert look X/Y, test opponent, arena radius, sunbeams and sunbeam strength, shoulder offset / transition, arc hand curve, power fill rate / angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs
 
 ## Not in Phase 0
 

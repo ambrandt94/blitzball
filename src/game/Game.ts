@@ -31,6 +31,7 @@ function withoutEdges(intent: InputIntent): InputIntent {
     burst: false,
     resetBall: false,
     zoomTogglePressed: false,
+    middleZoomPressed: false,
     toggleDev: false,
     aimRangeDelta: 0,
     callForPass: false,

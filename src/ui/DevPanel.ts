@@ -86,7 +86,7 @@ export class DevPanel {
     this.root.appendChild(h);
 
     this.bool('Goal-axis up (vs world Y)', 'goalAxisUp');
-    this.bool('Zoom = hold (off = toggle)', 'zoomHoldMode');
+    this.bool('V / LB zoom = hold (off = toggle)', 'zoomHoldMode');
     this.bool('Invert mouse look X', 'mouseLookInvertX');
     this.bool('Invert mouse look Y', 'mouseLookInvertY');
     this.bool('Charge ghost trail', 'showChargeGhost');

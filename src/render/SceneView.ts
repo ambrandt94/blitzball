@@ -406,6 +406,7 @@ export class SceneView {
       passHeld: false,
       zoomOut: intentZoom,
       zoomTogglePressed: false,
+      middleZoomPressed: false,
       resetBall: false,
       toggleDev: false,
       aimRangeDelta: 0,

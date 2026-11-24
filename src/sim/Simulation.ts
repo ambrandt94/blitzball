@@ -373,7 +373,6 @@ export class Simulation {
   }
 
   isZoomOut(intent: InputIntent): boolean {
-    if (this.tunables.zoomHoldMode) return intent.zoomOut;
     return this.zoomOutLatched || intent.zoomOut;
   }
 
@@ -553,9 +552,13 @@ export class Simulation {
     if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
   }
 
-  /** Latch zoom-out when Dev is in toggle mode. Call once per press, not per step. */
+  /**
+   * Middle mouse always toggles the wide camera. V and the gamepad toggle
+   * only when Dev is not in hold mode. Call once per press, not per step.
+   */
   noteZoomToggle(intent: InputIntent): void {
-    if (!this.tunables.zoomHoldMode && intent.zoomTogglePressed) {
+    const keyToggles = !this.tunables.zoomHoldMode && intent.zoomTogglePressed;
+    if (intent.middleZoomPressed || keyToggles) {
       this.zoomOutLatched = !this.zoomOutLatched;
     }
   }
