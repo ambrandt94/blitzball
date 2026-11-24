@@ -779,6 +779,280 @@ function checkCatch(): void {
   }
 }
 
+/**
+ * A return pass has to reach the player. The passer used to turn back into
+ * the enlarged mitt and take the ball before it arrived.
+ */
+function checkTeammatePassReachesPlayer(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.tunables.defenseActive = false;
+  sim.tunables.teammatePassDelay = 0.05;
+  const human = sim.getHuman();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('practice roster is missing the teammate or the defender');
+
+  human.position.set(0, 0, -4);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+
+  mate.position.set(0, 0.2, 12);
+  mate.velocity.set(0, 0, 0);
+  mate.facing.set(0, 0, -1);
+  mate.up.set(0, 1, 0);
+  mate.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = mate.id;
+  sim.ball.lastOwnerId = mate.id;
+  sim.ball.arc = null;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(mate.position).add(new THREE.Vector3(0, 0.15, -0.85));
+
+  defense.position.set(40, 20, 0);
+  defense.velocity.set(0, 0, 0);
+
+  const intent = blankIntent();
+  let released = false;
+  let reclaimed = false;
+  let caught = false;
+  let closest = Infinity;
+  for (let i = 0; i < 400; i++) {
+    const held = mate.hasBall;
+    sim.step(1 / 60, intent);
+    const poss: string = sim.ball.possession;
+    if (held && !mate.hasBall && poss === 'free' && sim.ball.lastOwnerId === mate.id) {
+      released = true;
+    }
+    if (released && mate.hasBall) reclaimed = true;
+    if (released) closest = Math.min(closest, sim.ball.position.distanceTo(human.position));
+    if (released && human.hasBall) {
+      caught = true;
+      break;
+    }
+  }
+  if (!released) fail('teammate did not pass to the player');
+  if (reclaimed) fail('passer reclaimed their own pass');
+  if (!caught || sim.ball.ownerId !== human.id) {
+    fail(`pass did not reach the player (closest ${closest.toFixed(2)})`);
+  }
+}
+
+/** A defender on the pass line still takes it. The thrower's lock is not global. */
+function checkOpponentInterceptsPass(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.tunables.defenseActive = false;
+  sim.tunables.teammatePassDelay = 0.05;
+  const human = sim.getHuman();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('practice roster is missing the teammate or the defender');
+
+  human.position.set(0, 0, -10);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+
+  mate.position.set(0, 0.2, 8);
+  mate.velocity.set(0, 0, 0);
+  mate.facing.set(0, 0, -1);
+  mate.up.set(0, 1, 0);
+  mate.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = mate.id;
+  sim.ball.lastOwnerId = mate.id;
+  sim.ball.arc = null;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(mate.position).add(new THREE.Vector3(0, 0.15, -0.85));
+
+  defense.position.set(0, 0, 1);
+  defense.velocity.set(0, 0, 0);
+  defense.facing.set(0, 0, 1);
+  defense.up.set(0, 1, 0);
+
+  const intent = blankIntent();
+  let released = false;
+  for (let i = 0; i < 240; i++) {
+    const held = mate.hasBall;
+    sim.step(1 / 60, intent);
+    const poss: string = sim.ball.possession;
+    if (held && !mate.hasBall && poss === 'free') released = true;
+    if (released && mate.hasBall) fail('passer took the ball before the defender');
+    if (released && defense.hasBall) return;
+  }
+  fail(`defender did not intercept (owner ${sim.ball.ownerId}, poss ${sim.ball.possession})`);
+}
+
+/** Strip range still beats a held ball. The throw lock must not cover tackles. */
+function checkTackleStillStrips(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  const human = sim.getHuman();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('practice roster is missing the teammate or the defender');
+  mate.active = false;
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.tackleCooldown = 0;
+  sim.yaw = 0;
+  sim.pitch = 0;
+  defense.position.set(0, 0, 1.15);
+  defense.velocity.set(0, 0, 0);
+  defense.facing.set(0, 0, -1);
+  defense.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = defense.id;
+  sim.ball.lastOwnerId = defense.id;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(defense.position).add(new THREE.Vector3(0, 0.1, -0.4));
+  const intent = blankIntent();
+  intent.claim = true;
+  sim.step(1 / 60, intent);
+  if (!human.hasBall || defense.hasBall) fail('tackle did not strip the carrier');
+}
+
+function checkArcShotLeavesThrower(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  quietRoster(sim);
+  const human = sim.getHuman();
+  human.position.set(0, 1, -18);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.lastOwnerId = human.id;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(human.position).add(new THREE.Vector3(0, 0.15, 0.85));
+  const hold = blankIntent();
+  hold.shootHeld = true;
+  sim.step(1 / 60, hold);
+  if (!sim.shotAim.active) fail('shot did not aim');
+  sim.step(1 / 60, blankIntent());
+  if (human.hasBall) fail('shot did not leave the hand');
+  for (let i = 0; i < 40; i++) {
+    sim.step(1 / 60, blankIntent());
+    if (human.hasBall) fail('thrower reclaimed their own shot');
+  }
+  const gone = sim.ball.position.distanceTo(human.position);
+  if (gone < 8) fail(`shot stayed on the thrower (${gone.toFixed(2)})`);
+}
+
+/** The player's own pass has to reach the teammate, and must not snap back. */
+function checkHumanPassReachesTeammate(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.tunables.defenseActive = false;
+  const human = sim.getHuman();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('practice roster is missing the teammate or the defender');
+  defense.position.set(30, 20, 0);
+  defense.velocity.set(0, 0, 0);
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  sim.yaw = 0;
+  sim.pitch = 0;
+  mate.position.set(0, 0.3, 14);
+  mate.velocity.set(0, 0, 0);
+  mate.facing.set(0, 0, -1);
+  mate.up.set(0, 1, 0);
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.lastOwnerId = human.id;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(human.position).add(new THREE.Vector3(0, 0.15, 0.85));
+  const pass = blankIntent();
+  pass.pass = true;
+  sim.step(1 / 60, pass);
+  if (human.hasBall) fail('human pass did not release');
+  let reclaimed = false;
+  let caught = false;
+  for (let i = 0; i < 180; i++) {
+    sim.step(1 / 60, blankIntent());
+    if (human.hasBall) reclaimed = true;
+    if (mate.hasBall) {
+      caught = true;
+      break;
+    }
+  }
+  if (reclaimed) fail('human reclaimed their own pass');
+  if (!caught) fail('teammate did not catch the human pass');
+}
+
+/** The self-pass gate must not swallow an ordinary loose-ball catch. */
+function checkNormalCatchRegression(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  quietRoster(sim);
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.lastOwnerId = null;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.set(0.25, 0.15, 2.3);
+  for (let i = 0; i < 8; i++) sim.step(1 / 60, blankIntent());
+  if (!human.hasBall) fail('normal catch missed a ball in front of the chest');
+
+  human.hasBall = false;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.lastOwnerId = null;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.set(0, 0.1, -1.8);
+  for (let i = 0; i < 8; i++) sim.step(1 / 60, blankIntent());
+  if (human.hasBall) fail('normal catch took a ball behind the swimmer');
+
+  // A pass from someone else still sticks. The thrower is not this catcher.
+  const incoming = new Simulation(defaultTunables());
+  incoming.kickoffLock = 0;
+  quietRoster(incoming);
+  const catcher = incoming.getHuman();
+  catcher.position.set(0, 0, 0);
+  catcher.velocity.set(0, 0, 0);
+  catcher.facing.set(0, 0, 1);
+  catcher.up.set(0, 1, 0);
+  incoming.yaw = 0;
+  incoming.pitch = 0;
+  incoming.ball.possession = 'free';
+  incoming.ball.ownerId = null;
+  incoming.ball.lastOwnerId = 4;
+  incoming.ball.claimLock = 0;
+  incoming.ball.velocity.set(0, 0, -28);
+  incoming.ball.position.set(0.1, 0.1, 6);
+  for (let i = 0; i < 20; i++) incoming.step(1 / 60, blankIntent());
+  if (!catcher.hasBall) fail('normal catch missed a pass thrown by someone else');
+}
+
 function checkCatchPose(): void {
   const swim = swimLimbPose(0, 0);
   const ready = blendLimbPose(swim, 1, 0);
@@ -1364,6 +1638,12 @@ export function runRotationChecks(): void {
   checkShoulder();
   checkAimCursor();
   checkCatch();
+  checkTeammatePassReachesPlayer();
+  checkOpponentInterceptsPass();
+  checkTackleStillStrips();
+  checkArcShotLeavesThrower();
+  checkHumanPassReachesTeammate();
+  checkNormalCatchRegression();
   checkCatchPose();
   checkGoalMouth();
   checkShotIntoGoal();

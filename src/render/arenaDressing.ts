@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ARENA_RADIUS } from '../game/constants';
 
 export interface WaterRig {
-  update(time: number, cameraPosition: THREE.Vector3): void;
+  update(time: number, cameraPosition: THREE.Vector3, sunbeams: boolean, intensity: number): void;
 }
 
 const shellVertex = /* glsl */ `
@@ -88,42 +88,96 @@ export function buildArenaDressing(scene: THREE.Scene): WaterRig {
   axis.rotation.x = Math.PI / 2;
   scene.add(axis);
 
-  const beams = new THREE.Group();
-  const beamMat = new THREE.MeshBasicMaterial({
-    color: 0xd8f7ff,
-    transparent: true,
-    opacity: 0.055,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-    blending: THREE.AdditiveBlending,
-    toneMapped: false,
-  });
-  for (let i = 0; i < 7; i++) {
-    const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 14, 90, 28, 1, true), beamMat);
-    const a = (i / 7) * Math.PI * 2;
-    beam.position.set(Math.cos(a) * 16, 18, Math.sin(a) * 16);
-    beam.rotation.z = Math.sin(a) * 0.18;
-    beam.rotation.x = Math.cos(a) * 0.14;
-    beam.userData.baseZ = beam.rotation.z;
-    beam.userData.baseX = beam.rotation.x;
-    beam.userData.phase = a;
-    beams.add(beam);
-  }
-  scene.add(beams);
+  const beams = buildSunbeams();
+  scene.add(beams.group);
 
   buildStadium(scene);
 
   return {
-    update(time: number, cameraPosition: THREE.Vector3) {
+    update(time: number, cameraPosition: THREE.Vector3, sunbeams: boolean, intensity: number) {
       shellMat.uniforms.uTime!.value = time;
       (shellMat.uniforms.uCameraPos!.value as THREE.Vector3).copy(cameraPosition);
-      for (const beam of beams.children) {
+      const strength = sunbeams ? Math.max(0, intensity) : 0;
+      beams.group.visible = strength > 0.001;
+      beams.material.uniforms.uIntensity!.value = strength;
+      (beams.material.uniforms.uCameraPos!.value as THREE.Vector3).copy(cameraPosition);
+      beams.material.uniforms.uTime!.value = time;
+      for (const beam of beams.group.children) {
         const phase = beam.userData.phase as number;
-        beam.rotation.z = (beam.userData.baseZ as number) + Math.sin(time * 0.35 + phase) * 0.06;
-        beam.rotation.x = (beam.userData.baseX as number) + Math.cos(time * 0.28 + phase) * 0.05;
+        beam.rotation.z = (beam.userData.baseZ as number) + Math.sin(time * 0.35 + phase) * 0.04;
+        beam.rotation.x = (beam.userData.baseX as number) + Math.cos(time * 0.28 + phase) * 0.035;
       }
     },
   };
+}
+
+const beamVertex = /* glsl */ `
+  varying vec3 vWorld;
+  void main() {
+    vec4 world = modelMatrix * vec4(position, 1.0);
+    vWorld = world.xyz;
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+const beamFragment = /* glsl */ `
+  varying vec3 vWorld;
+  uniform vec3 uCameraPos;
+  uniform float uIntensity;
+  uniform float uPlayRadius;
+  uniform float uTime;
+  void main() {
+    float radial = length(vWorld);
+    // Full at the shell, gone through the middle of the pitch.
+    float play = smoothstep(uPlayRadius * 0.72, uPlayRadius * 0.98, radial);
+    float camDist = distance(vWorld, uCameraPos);
+    float nearCam = smoothstep(7.0, 18.0, camDist);
+    float shimmer = 0.86 + 0.14 * sin(uTime * 0.6 + vWorld.y * 0.08);
+    float alpha = 0.2 * uIntensity * play * nearCam * shimmer;
+    if (alpha < 0.012) discard;
+    gl_FragColor = vec4(vec3(0.78, 0.94, 1.0), alpha);
+  }
+`;
+
+/**
+ * Shafts sit on the shell, leaning out toward the stadium lamps.
+ * The shader drops them in the play volume and next to the camera so a
+ * chase view is not looking through a cone.
+ */
+function buildSunbeams(): { group: THREE.Group; material: THREE.ShaderMaterial } {
+  const material = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uCameraPos: { value: new THREE.Vector3() },
+      uIntensity: { value: 1 },
+      uTime: { value: 0 },
+      uPlayRadius: { value: ARENA_RADIUS },
+    },
+    vertexShader: beamVertex,
+    fragmentShader: beamFragment,
+  });
+  const group = new THREE.Group();
+  group.name = 'sunbeams';
+  const count = 10;
+  for (let i = 0; i < count; i++) {
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 6.5, 64, 20, 1, true), material);
+    const a = (i / count) * Math.PI * 2 + 0.2;
+    // Just inside the glass, so the shaft reads in the water and not across the pitch.
+    const ring = ARENA_RADIUS - 7;
+    beam.position.set(Math.cos(a) * ring, 14, Math.sin(a) * ring);
+    // Lean the top outward, toward the bowl, rather than in across the pitch.
+    const tilt = 0.34;
+    beam.rotation.z = -Math.cos(a) * tilt;
+    beam.rotation.x = Math.sin(a) * tilt;
+    beam.userData.baseZ = beam.rotation.z;
+    beam.userData.baseX = beam.rotation.x;
+    beam.userData.phase = a;
+    group.add(beam);
+  }
+  return { group, material };
 }
 
 function buildStadium(scene: THREE.Scene): void {

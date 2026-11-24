@@ -51,6 +51,8 @@ export function defaultTunables(): Tunables {
     shoulderOffset: CAMERA.shoulderOffset,
     shoulderTransition: CAMERA.shoulderTransition,
     aimCursorDistance: CAMERA.aimCursorDistance,
+    showSunbeams: true,
+    sunbeamIntensity: 0.7,
   };
 }
 
@@ -89,6 +91,8 @@ export class DevPanel {
     this.bool('Charge ghost trail', 'showChargeGhost');
     this.bool('Debug stats', 'showDebugStats');
     this.bool('Defense chases', 'defenseActive');
+    this.bool('Sunbeams', 'showSunbeams');
+    this.range('Sunbeam strength', 'sunbeamIntensity', 0, 1.5, 0.05);
     this.range('Wall escape speed', 'wallEscapeSpeed', 20, 110, 0.5);
     this.range('Wall escape angle', 'wallEscapeAngle', 0.1, 1.2, 0.01);
     this.range('Claim radius', 'claimRadius', 0.6, 4, 0.05);

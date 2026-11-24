@@ -55,6 +55,14 @@ export class TeammateAI {
 
   private shouldReceive(self: PlayerState, ball: BallState, human: PlayerState): boolean {
     if (ball.possession !== 'free') return false;
+    if (ball.lastOwnerId === self.id) {
+      const away = ball.position.clone().sub(self.position);
+      const dist = away.length();
+      const outward = dist > 0.05 ? ball.velocity.dot(away) / dist : 0;
+      // A pass or shot still leaving the hands is not a ball to run onto.
+      // Chasing it turns the mitt back onto the throw.
+      if (outward > 1.5) return false;
+    }
     const toMe = self.position.distanceTo(ball.position);
     const toHuman = human.position.distanceTo(ball.position);
     const speed = ball.velocity.length();

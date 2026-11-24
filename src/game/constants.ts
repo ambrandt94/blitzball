@@ -54,6 +54,17 @@ export const PLAYER = {
   claimBuffer: 0.16,
   claimFacingDot: 0.2,
   reclaimCoyote: 0.18,
+  /**
+   * After a pass or shot, the thrower cannot reclaim until this long has
+   * passed and the ball is outside the mitt. The global claim lock (0.12s)
+   * ends while a pass is still inside the forward mitt, and the departure
+   * sweep would grab it on the way out.
+   */
+  selfCatchGrace: 0.24,
+  /** Hard cap so a ball that never clears the mitt does not stay uncatchable. */
+  selfCatchMax: 1.35,
+  /** Added to mitt length + width. The ball has left once it is past this. */
+  selfCatchClearance: 1.15,
   tackleCooldown: 0.55,
   /** Strip range. Kept off the catch radius so a bigger mitt does not lengthen tackles. */
   tackleRange: 1.85,
