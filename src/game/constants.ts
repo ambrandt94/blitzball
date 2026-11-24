@@ -36,6 +36,11 @@ export const PLAYER = {
   /** Swim speed while holding aim/strafe, relative to normal. */
   strafeSpeedMult: 0.62,
   /**
+   * Swim while the throw is held, relative to the speed you would otherwise
+   * have (including the carrier tax). About a third, so you can still creep.
+   */
+  throwSwimMult: 0.3,
+  /**
    * Off-ball shoulder check. A strong thrust in the swim direction (or facing,
    * if you are not steering) with a short hit window, then a longer cooldown.
    */

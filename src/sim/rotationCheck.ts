@@ -222,8 +222,8 @@ function aimingSim(): { sim: Simulation; human: ReturnType<Simulation['getHuman'
 
 function checkArcHand(): void {
   const { sim, human, hold } = aimingSim();
-  // Camera looks off the body's facing so the carry pose has to turn,
-  // and the swimmer still has speed. WASD / rise must not add thrust.
+  // Camera looks off the body's facing so the carry pose has to turn.
+  // WASD still swims, but only at the throw creep.
   sim.yaw = 0.7;
   human.velocity.set(0, 0, 6);
   hold.move.set(1, 0, 0);
@@ -233,15 +233,16 @@ function checkArcHand(): void {
   for (let i = 0; i < 30; i++) sim.step(1 / 60, hold);
   if (!sim.shotAim.active) fail('shot aim did not lock');
   if (human.actionPose !== 'hold') fail(`aim pose was ${human.actionPose}, ball would leave the hands`);
-  if (Math.abs(human.velocity.x) > 0.4 || human.velocity.y > 0.4) {
-    fail(`WASD still swam during the hold (${human.velocity.x.toFixed(2)}, ${human.velocity.y.toFixed(2)})`);
-  }
+  const creep = PLAYER.maxSpeed * PLAYER.carrierSpeedMult * PLAYER.throwSwimMult;
+  const speed = human.velocity.length();
+  if (speed > creep * 1.3) fail(`throw swim was not slowed (${speed.toFixed(2)} > ${creep.toFixed(2)})`);
+  if (speed < creep * 0.45) fail(`throw swim did not creep (${speed.toFixed(2)})`);
   const carried = sim.ball.position.distanceTo(holdPoint(sim));
   if (carried > 0.05) fail(`ball left the hand by ${carried.toFixed(2)}`);
   if (sim.ball.position.distanceTo(startBall) < 0.2) {
     fail('ball froze in the water instead of moving with the hold pose');
   }
-  if (human.position.distanceTo(startPlayer) < 0.15) fail('player did not coast while aiming');
+  if (human.position.distanceTo(startPlayer) < 0.15) fail('player did not move while throwing');
 }
 
 function checkArcBend(): void {
@@ -286,12 +287,8 @@ function checkArcMarker(): void {
   const frames = 30;
   for (let i = 0; i < frames; i++) sim.step(1 / 60, hold);
   const moved = sim.shotAim.target.distanceTo(before);
-  const expect = sim.tunables.arcAimSpeed * (frames / 60);
-  if (Math.abs(moved - expect) > 0.35) fail(`marker moved ${moved.toFixed(2)}, expected ${expect.toFixed(2)}`);
-  if (human.position.distanceTo(playerBefore) > 0.15) fail('player swam while WASD moved the marker');
-  const right = lookBasis(sim.yaw, sim.pitch, false).right;
-  const lateral = sim.shotAim.target.clone().sub(before).dot(right);
-  if (lateral < expect * 0.9) fail(`A/D did not strafe the marker (${lateral.toFixed(2)})`);
+  if (moved > 0.2) fail(`WASD moved the throw marker (${moved.toFixed(2)})`);
+  if (human.position.distanceTo(playerBefore) < 0.2) fail('WASD did not creep the swimmer during the throw');
 
   const forward = lookBasis(sim.yaw, sim.pitch, false).forward;
   const ranged = sim.shotAim.target.clone();
@@ -1278,6 +1275,7 @@ function checkTeammateLock(): void {
 
 function checkShotSteer(): void {
   const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
   for (const p of sim.players) {
     if (p.id !== sim.humanId) p.active = false;
@@ -1301,58 +1299,23 @@ function checkShotSteer(): void {
   sim.step(1 / 60, upAim);
   const lockedAt = human.position.clone();
   const before = sim.shotAim.target.clone();
+  const yaw = sim.yaw;
   for (let i = 0; i < 30; i++) sim.step(1 / 60, upAim);
-  const delta = sim.shotAim.target.clone().sub(before);
-  const basis = lookBasis(sim.yaw, sim.pitch, false);
-  const up = delta.dot(basis.up);
-  const fwd = delta.dot(basis.forward);
-  const side = delta.dot(basis.right);
-  if (up < 4) fail(`W did not raise the marker (up ${up.toFixed(2)})`);
-  if (Math.abs(fwd) > 1.2) fail(`W moved the marker along the look (${fwd.toFixed(2)})`);
-  if (Math.abs(side) > 1.2) fail(`W slid the marker sideways (${side.toFixed(2)})`);
-  if (human.position.distanceTo(lockedAt) > 0.35) {
-    fail(`WASD still swam while aiming (${human.position.distanceTo(lockedAt).toFixed(2)})`);
+  if (sim.shotAim.target.distanceTo(before) > 0.25) fail('W moved the locked throw marker');
+  if (Math.abs(sim.yaw - yaw) > 1e-6) fail('WASD turned the locked aim');
+  const crept = human.position.distanceTo(lockedAt);
+  if (crept < 0.35) fail(`throw hold did not let WASD swim (${crept.toFixed(2)})`);
+  const creep = PLAYER.maxSpeed * PLAYER.carrierSpeedMult * PLAYER.throwSwimMult;
+  if (human.velocity.length() > creep * 1.3) {
+    fail(`throw swim too fast (${human.velocity.length().toFixed(2)})`);
   }
 
   const riseBefore = sim.shotAim.target.clone();
-  const riseAt = human.position.clone();
   const climb = blankIntent();
   climb.shootHeld = true;
   climb.up = 1;
-  for (let i = 0; i < 30; i++) sim.step(1 / 60, climb);
-  const rise = sim.shotAim.target.clone().sub(riseBefore);
-  if (rise.dot(basis.up) < 4) fail(`Space did not raise the marker (up ${rise.dot(basis.up).toFixed(2)})`);
-  if (Math.abs(rise.dot(basis.forward)) > 1.2) fail('Space moved the marker along the look');
-  if (human.position.distanceTo(riseAt) > 0.35) fail('Space swam while aiming');
-
-  const lateral = new Simulation(defaultTunables());
-  lateral.kickoffLock = 0;
-  for (const p of lateral.players) {
-    if (p.id !== lateral.humanId) p.active = false;
-  }
-  const carrier = lateral.getHuman();
-  carrier.position.set(0, 1, -6);
-  carrier.velocity.set(0, 0, 0);
-  carrier.facing.set(0, 0, 1);
-  carrier.up.set(0, 1, 0);
-  carrier.hasBall = true;
-  lateral.ball.possession = 'held';
-  lateral.ball.ownerId = carrier.id;
-  lateral.ball.position.set(0, 1, -5.2);
-  lateral.yaw = 0.3;
-  lateral.pitch = 0.2;
-  const sideAim = blankIntent();
-  sideAim.shootHeld = true;
-  sideAim.move.set(1, 0, 0);
-  lateral.step(1 / 60, sideAim);
-  const sideBefore = lateral.shotAim.target.clone();
-  for (let i = 0; i < 30; i++) lateral.step(1 / 60, sideAim);
-  const sideDelta = lateral.shotAim.target.clone().sub(sideBefore);
-  const sideBasis = lookBasis(lateral.yaw, lateral.pitch, false);
-  const rightDot = sideDelta.dot(sideBasis.right);
-  if (rightDot < 4) fail(`A/D did not slide the marker (${rightDot.toFixed(2)})`);
-  if (Math.abs(sideDelta.dot(sideBasis.up)) > 1.2) fail('A/D raised the marker');
-  if (Math.abs(sideDelta.dot(sideBasis.forward)) > 1.2) fail('A/D changed the range');
+  for (let i = 0; i < 20; i++) sim.step(1 / 60, climb);
+  if (sim.shotAim.target.distanceTo(riseBefore) > 0.25) fail('Space moved the locked throw marker');
 
   const ranged = new Simulation(defaultTunables());
   ranged.kickoffLock = 0;
@@ -1940,6 +1903,72 @@ function checkGoalStaysVisible(): void {
   if (!inGoalPocket(sim.ball.position, 0)) fail('ball left the net before the restart');
 }
 
+function checkThrowAim(): void {
+  if (PLAYER.throwSwimMult < 0.25 || PLAYER.throwSwimMult > 0.35) {
+    fail(`throw swim ${PLAYER.throwSwimMult} is outside 25–35% of normal`);
+  }
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.position.set(0, 0.15, 0.85);
+  sim.yaw = 0;
+  sim.pitch = 0;
+
+  const aim = blankIntent();
+  aim.strafe = true;
+  aim.move.set(1, 0, 0);
+  sim.step(1 / 60, aim);
+  sim.updateAimPresentation(aim, 1 / 60);
+  if (sim.shotAim.active || sim.chargeGhost.length > 0) fail('right-click aim showed the curve');
+  if (!sim.aimCursor.visible) fail('right-click aim hid the reticle');
+  const yaw = sim.yaw;
+  const look = blankIntent();
+  look.strafe = true;
+  look.lookDelta.x = 0.35;
+  sim.applyFrameLook(look);
+  if (Math.abs(sim.yaw - (yaw + 0.35)) > 1e-4) fail('right-click aim did not follow the mouse');
+  if (Math.abs(sim.shotAim.bendRight) > 0.01) fail('right-click aim bent a curve');
+  sim.updateAimPresentation(look, 1 / 60);
+  const forward = lookBasis(sim.yaw, sim.pitch, false).forward;
+  const along = sim.aimCursor.position.clone().sub(human.position);
+  if (along.lengthSq() < 1e-6 || along.normalize().dot(forward) < 0.9) {
+    fail('reticle left the mouse look');
+  }
+
+  const shot = blankIntent();
+  shot.shootHeld = true;
+  shot.lookDelta.x = 0.2;
+  const lockedYaw = sim.yaw;
+  sim.armShotAim(shot);
+  sim.applyFrameLook(shot);
+  if (Math.abs(sim.yaw - lockedYaw) > 1e-6) fail('throw hold did not freeze the camera');
+  if (sim.shotAim.bendRight < 0.15 * sim.tunables.arcBendSpeed) fail('throw hold did not bend');
+  sim.step(1 / 60, shot);
+  if (sim.chargeGhost.length < 4) fail('throw hold hid the curve');
+  const marker = sim.shotAim.target.clone();
+  shot.move.set(0, 0, 1);
+  shot.lookDelta.x = 0;
+  const at = human.position.clone();
+  for (let i = 0; i < 20; i++) sim.step(1 / 60, shot);
+  if (sim.shotAim.target.distanceTo(marker) > 0.3) fail('swim moved the locked marker');
+  if (human.position.distanceTo(at) < 0.15) fail('throw hold ignored WASD');
+  if (sim.charge.amount < 0.2) fail(`power did not charge during the throw (${sim.charge.amount.toFixed(2)})`);
+  sim.step(1 / 60, blankIntent());
+  if (!sim.ball.arc) fail('release did not throw');
+  if (sim.charge.active) fail('power kept charging after release');
+}
+
 function checkArenaShell(): void {
   const saved = ARENA_RADIUS;
   try {
@@ -2007,6 +2036,7 @@ export function runRotationChecks(): void {
   checkGoalStaysVisible();
   checkShotIntoGoal();
   checkShotSteer();
+  checkThrowAim();
   checkBallFit();
   checkSpeeds();
   checkBurst();

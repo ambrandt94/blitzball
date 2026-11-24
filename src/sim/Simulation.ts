@@ -605,11 +605,9 @@ export class Simulation {
     }
     if (wish.lengthSq() > 1) wish.normalize();
 
-    // Shot hold spends WASD on the marker. Coast to a stop instead of swimming.
-    // shotAim stays active through the release frame, which is sampled with
-    // the button already up, so that frame does not get a swim step either.
+    // The throw hold keeps the camera locked. WASD still swims, just slowly.
+    // shotAim stays active through the release frame.
     const aimingShot = isHuman && player.hasBall && (intent.shootHeld || this.shotAim.active);
-    if (aimingShot) wish.set(0, 0, 0);
 
     const canBurst =
       isHuman &&
@@ -646,7 +644,8 @@ export class Simulation {
     let accel = bursting ? this.tunables.playerAccel * 1.65 : this.tunables.playerAccel;
     if (player.hasBall) maxSpeed *= PLAYER.carrierSpeedMult;
     if (player.sprinting) maxSpeed *= Math.max(1, this.tunables.sprintMult);
-    if (aimLocked && !bursting) maxSpeed *= this.tunables.strafeSpeedMult;
+    if (aimingShot) maxSpeed *= PLAYER.throwSwimMult;
+    else if (aimLocked && !bursting) maxSpeed *= this.tunables.strafeSpeedMult;
     if (bursting) maxSpeed = Math.max(4, this.tunables.burstSpeed);
     if (player.staggerTime > 0 && !bursting) {
       maxSpeed *= 0.16;
@@ -750,7 +749,6 @@ export class Simulation {
         // Snap before placing the marker or the preview, so both start in the hand.
         if (!this.shotAim.active) this.beginShotAim();
         this.stickBallToHand(human);
-        this.slideShotTarget(intent, dt);
         this.acquireTeammate();
         this.charge.active = true;
         this.charge.kind = 'shoot';
@@ -761,7 +759,7 @@ export class Simulation {
         this.updateChargeGhost(human);
         this.match.statusMessage = this.shotAim.lockId !== null
           ? 'Teammate locked — mouse bends the arc, release throws'
-          : 'Aiming — power cycles, WASD moves the marker, mouse bends the arc';
+          : 'Throwing — power cycles, mouse bends the arc';
       } else if (this.charge.active && this.charge.kind === 'shoot') {
         this.releaseShot(human, this.charge.amount);
         this.charge = { active: false, kind: null, amount: 0 };
@@ -1011,7 +1009,11 @@ export class Simulation {
     this.chargeGhost = [];
   }
 
-  /** Empty → full → empty while the shot button is held. Release keeps the current value. */
+  /**
+   * Shot power, isolated from aim and swim so the meter can change later
+   * without touching the throw. Empty → full → empty while the button is held.
+   * Release keeps the current value.
+   */
   private advanceShotPower(dt: number): void {
     const rate = Math.max(0, this.tunables.shotPowerRate);
     this.powerPhase = (this.powerPhase + dt * rate) % 2;
@@ -1058,25 +1060,7 @@ export class Simulation {
     this.shotAim.lockId = null;
   }
 
-  /**
-   * Slide the marker on the view plane. A/D strafe it. W/S raise and lower it
-   * (not forward/back). Space/C do the same vertical slide. The wheel owns range.
-   */
-  private slideShotTarget(intent: InputIntent, dt: number): void {
-    const basis = this.cameraBasis();
-    const wish = this.tmp.moveWorld
-      .copy(basis.right)
-      .multiplyScalar(intent.move.x)
-      .addScaledVector(basis.up, intent.move.z + intent.up);
-    if (wish.lengthSq() > 1) wish.normalize();
-    if (wish.lengthSq() > 1e-8) {
-      this.breakShotLock();
-      this.shotAim.target.addScaledVector(wish, Math.max(0, this.tunables.arcAimSpeed) * dt);
-    }
-    if (this.shotAim.lockId === null) this.clampShotTarget();
-  }
-
-  /** Snap the marker onto a teammate standing on the look ray. Steering the marker lets go. */
+  /** Snap the marker onto a teammate standing on the look ray at the moment the throw starts. */
   private acquireTeammate(): void {
     if (!this.shotAim.active || this.shotAimManual) return;
     const hit = this.teammateOnLook();
