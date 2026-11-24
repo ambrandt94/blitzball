@@ -1,12 +1,17 @@
 import * as THREE from 'three';
-import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER } from '../game/constants';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { ARENA_RADIUS, BALL, CAMERA, GOAL } from '../game/constants';
 import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
-import { rotateToward, stabilizeUp } from '../sim/math';
+import { authoritativeUp, rotateToward, stabilizeUp } from '../sim/math';
+import { buildArenaDressing, type WaterRig } from './arenaDressing';
+import { createBlitzball } from './blitzball';
+import { BubblePool } from './bubbles';
+import { createCatchBeacon } from './catchBeacon';
+import { createSwimmer } from './swimmer';
 
 /** High-contrast team colors for greybox readability. */
 const TEAM_COLORS = [0x2b9fff, 0xff6a3d];
-const TEAM_ACCENT = [0xd0ecff, 0xffd0c0];
 const TRAIL_MAX = 36;
 const GHOST_MAX = 36;
 
@@ -35,106 +40,6 @@ function makePipTexture(fill: string, stroke: string, mark?: string): THREE.Canv
   return tex;
 }
 
-/** Low-poly swim humanoid: head + torso + limbs, facing +Z local. */
-function buildHumanoid(team: 0 | 1, marker: 'you' | 'mate' | 'none'): THREE.Group {
-  const group = new THREE.Group();
-  const color = TEAM_COLORS[team]!;
-  const accent = TEAM_ACCENT[team]!;
-  const mat = new THREE.MeshBasicMaterial({ color });
-  const accentMat = new THREE.MeshBasicMaterial({ color: accent });
-  const darkMat = new THREE.MeshBasicMaterial({ color: 0x101820 });
-
-  // Torso (swim-prone: long along Z)
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.48, 1.05), mat);
-  torso.position.z = 0.05;
-  group.add(torso);
-
-  // Head at front — oversized for silhouette readability
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.36, 10, 8), accentMat);
-  head.position.set(0, 0.12, 0.82);
-  group.add(head);
-
-  // Visor / face cue so facing reads at a glance
-  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.14, 0.1), darkMat);
-  visor.position.set(0, 0.14, 1.05);
-  group.add(visor);
-
-  // Arms: pivot at the shoulder so a local yaw swings the hand forward/back.
-  for (const side of [-1, 1] as const) {
-    const pivot = new THREE.Group();
-    pivot.name = side < 0 ? 'armL' : 'armR';
-    pivot.position.set(side * 0.3, 0.08, 0.28);
-    const upper = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.16, 0.16), mat);
-    upper.position.set(side * 0.34, 0, 0);
-    pivot.add(upper);
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 6), accentMat);
-    hand.position.set(side * 0.68, 0, 0);
-    pivot.add(hand);
-    group.add(pivot);
-  }
-
-  // Legs: pivot at the hip, limb extends back along -Z. rotation.x is the kick.
-  for (const side of [-1, 1] as const) {
-    const pivot = new THREE.Group();
-    pivot.name = side < 0 ? 'legL' : 'legR';
-    pivot.position.set(side * 0.16, -0.04, -0.32);
-    const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.16, 0.58), mat);
-    thigh.position.set(0, 0, -0.3);
-    pivot.add(thigh);
-    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.22), darkMat);
-    foot.position.set(0, -0.02, -0.64);
-    pivot.add(foot);
-    group.add(pivot);
-  }
-
-  // Explicit facing chevron (white) ahead of head
-  const chevron = new THREE.Mesh(
-    new THREE.ConeGeometry(0.26, 0.55, 4),
-    new THREE.MeshBasicMaterial({ color: 0xffffff }),
-  );
-  chevron.rotation.x = Math.PI / 2;
-  chevron.position.set(0, 0.08, 1.35);
-  chevron.name = 'facingChevron';
-  group.add(chevron);
-
-  // You = bright outline disc under body
-  if (marker === 'you' || marker === 'mate') {
-    const youRing = new THREE.Mesh(
-      new THREE.RingGeometry(0.7, 0.9, 24),
-      new THREE.MeshBasicMaterial({
-        color: marker === 'you' ? 0xffffff : 0x7dffa8,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.75,
-      }),
-    );
-    youRing.rotation.x = Math.PI / 2;
-    youRing.position.y = -0.35;
-    youRing.name = 'youRing';
-    group.add(youRing);
-  }
-
-  // Carrier glow ring (shown when has ball)
-  const carrier = new THREE.Mesh(
-    new THREE.TorusGeometry(1.15, 0.09, 8, 28),
-    new THREE.MeshBasicMaterial({ color: 0xffe066 }),
-  );
-  carrier.name = 'carrierRing';
-  carrier.visible = false;
-  carrier.rotation.x = Math.PI / 2;
-  group.add(carrier);
-
-  // Soft team badge plane behind head (reads at distance)
-  const badge = new THREE.Mesh(
-    new THREE.CircleGeometry(0.22, 12),
-    new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }),
-  );
-  badge.position.set(0, 0.45, 0.2);
-  badge.name = 'teamBadge';
-  group.add(badge);
-
-  return group;
-}
 
 export class SceneView {
   scene = new THREE.Scene();
@@ -142,7 +47,7 @@ export class SceneView {
   renderer: THREE.WebGLRenderer;
 
   private playerMeshes = new Map<number, THREE.Group>();
-  private ballMesh!: THREE.Mesh;
+  private ballPivot!: THREE.Group;
   private ballHalo!: THREE.Mesh;
   private ballRing!: THREE.Mesh;
   private ballTrail!: THREE.Line;
@@ -175,6 +80,17 @@ export class SceneView {
   private bodyZ = new THREE.Vector3();
   private bodyBasis = new THREE.Matrix4();
   private pulse = 0;
+  private water!: WaterRig;
+  private trails!: BubblePool;
+  private motes!: BubblePool;
+  private catchBeacon!: THREE.Group;
+  private bubbleAcc = 0;
+  private playerBubbleAcc: number[] = [];
+  private prevBallDir = new THREE.Vector3(0, 0, 1);
+  private spinAxis = new THREE.Vector3();
+  private emitOrigin = new THREE.Vector3();
+  private emitDir = new THREE.Vector3();
+  private bubbleUp = new THREE.Vector3(0, 1, 0);
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -184,8 +100,8 @@ export class SceneView {
       powerPreference: 'high-performance',
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setClearColor(0x102030, 1);
-    this.scene.fog = new THREE.FogExp2(0x102030, 0.2 / ARENA_RADIUS);
+    this.renderer.setClearColor(0x042433, 1);
+    this.scene.fog = new THREE.FogExp2(0x0a4d66, 0.0065);
 
     this.trailPositions = new Float32Array(TRAIL_MAX * 3);
     this.ghostPositions = new Float32Array(GHOST_MAX * 3);
@@ -196,69 +112,59 @@ export class SceneView {
     this.pipBlue = makePipTexture('#2b9fff', '#0a2030', 'B');
 
     this.buildLights();
-    this.buildArena();
+    this.water = buildArenaDressing(this.scene);
     this.buildGoals();
     this.buildBall();
     this.buildGhosts();
     this.buildAimCursor();
+    this.catchBeacon = createCatchBeacon();
+    this.scene.add(this.catchBeacon);
+    this.trails = new BubblePool(this.scene, 420, 0xd7f6ff, 0.42);
+    this.motes = new BubblePool(this.scene, 160, 0xc5f4ff, 0.28);
+    this.motes.seedMotes(160, ARENA_RADIUS * 0.86);
+    void this.tryLoadCustomBall();
+  }
+
+  /**
+   * Optional swap: if public/models/blitzball.glb is present it replaces the
+   * procedural ball. A missing file keeps the built-in mesh.
+   */
+  private async tryLoadCustomBall(): Promise<void> {
+    const url = `${import.meta.env.BASE_URL}models/blitzball.glb`;
+    try {
+      const head = await fetch(url, { method: 'HEAD' });
+      if (!head.ok) return;
+      const gltf = await new GLTFLoader().loadAsync(url);
+      const model = gltf.scene;
+      const box = new THREE.Box3().setFromObject(model);
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
+      box.getSize(size);
+      box.getCenter(center);
+      const span = Math.max(size.x, size.y, size.z);
+      if (span < 1e-4) return;
+      model.position.sub(center);
+      model.scale.setScalar((BALL.radius * 2) / span);
+      for (const child of [...this.ballPivot.children]) this.ballPivot.remove(child);
+      this.ballPivot.add(model);
+    } catch {
+      // Procedural ball stays. A 404 or a bad file should not break the match.
+    }
   }
 
   private buildLights(): void {
-    const hemi = new THREE.HemisphereLight(0xa8d8ff, 0x142838, 1.15);
+    const hemi = new THREE.HemisphereLight(0xb7e6ff, 0x0c3044, 0.95);
     this.scene.add(hemi);
-    const key = new THREE.DirectionalLight(0xffffff, 1.0);
-    key.position.set(12, 18, 8);
-    this.scene.add(key);
-    const fill = new THREE.DirectionalLight(0x66aadd, 0.5);
-    fill.position.set(-10, -8, -12);
+    const sun = new THREE.DirectionalLight(0xe7f7ff, 1.35);
+    sun.position.set(14, 42, 10);
+    this.scene.add(sun);
+    const fill = new THREE.DirectionalLight(0x2f7ea4, 0.45);
+    fill.position.set(-18, -8, -16);
     this.scene.add(fill);
-    this.scene.add(new THREE.AmbientLight(0x507090, 0.4));
-  }
-
-  private buildArena(): void {
-    const shell = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(ARENA_RADIUS, 3),
-      new THREE.MeshStandardMaterial({
-        color: 0x1a4060,
-        transparent: true,
-        opacity: 0.26,
-        side: THREE.BackSide,
-        roughness: 0.9,
-        metalness: 0.05,
-      }),
-    );
-    this.scene.add(shell);
-
-    const wire = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(ARENA_RADIUS * 0.997, 2),
-      new THREE.MeshBasicMaterial({
-        color: 0x6ab0e0,
-        wireframe: true,
-        transparent: true,
-        opacity: 0.38,
-      }),
-    );
-    this.scene.add(wire);
-
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(ARENA_RADIUS * 0.99, 0.08, 8, 96),
-      new THREE.MeshBasicMaterial({ color: 0x8ec8f0, transparent: true, opacity: 0.65 }),
-    );
-    ring.rotation.x = Math.PI / 2;
-    this.scene.add(ring);
-
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.07, 0.07, ARENA_RADIUS * 2, 6),
-      new THREE.MeshBasicMaterial({ color: 0xb0e0ff, transparent: true, opacity: 0.55 }),
-    );
-    pole.rotation.x = Math.PI / 2;
-    this.scene.add(pole);
-
-    const center = new THREE.Mesh(
-      new THREE.SphereGeometry(0.3, 12, 12),
-      new THREE.MeshBasicMaterial({ color: 0x88aacc, transparent: true, opacity: 0.45 }),
-    );
-    this.scene.add(center);
+    const warm = new THREE.DirectionalLight(0xffb15a, 0.16);
+    warm.position.set(-24, 28, -12);
+    this.scene.add(warm);
+    this.scene.add(new THREE.AmbientLight(0x1a4e68, 0.38));
   }
 
   private buildGoals(): void {
@@ -305,11 +211,8 @@ export class SceneView {
   }
 
   private buildBall(): void {
-    this.ballMesh = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(BALL.radius, 1),
-      new THREE.MeshBasicMaterial({ color: 0xffffff }),
-    );
-    this.scene.add(this.ballMesh);
+    this.ballPivot = createBlitzball(BALL.radius);
+    this.scene.add(this.ballPivot);
 
     this.ballHalo = new THREE.Mesh(
       new THREE.SphereGeometry(BALL.radius * 2.2, 16, 16),
@@ -418,7 +321,7 @@ export class SceneView {
     for (const p of sim.players) {
       if (this.playerMeshes.has(p.id)) continue;
       const marker = p.role === 'human' ? 'you' : p.team === 0 && p.role === 'ai' ? 'mate' : 'none';
-      const group = buildHumanoid(p.team, marker);
+      const group = createSwimmer(p.team, marker);
       group.visible = p.active && p.role !== 'stub';
       this.scene.add(group);
       this.playerMeshes.set(p.id, group);
@@ -467,6 +370,7 @@ export class SceneView {
       pass: false,
       shoot: false,
       shootHeld: false,
+      burst: false,
       passHeld: false,
       zoomOut: intentZoom,
       zoomTogglePressed: false,
@@ -504,6 +408,14 @@ export class SceneView {
       this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, pose.fov, 0.2);
       this.camera.updateProjectionMatrix();
     }
+    const human = sim.getHuman();
+    const burstWindow = Math.max(0.05, sim.tunables.burstDuration);
+    const burstK = human.burstTime > 0 ? human.burstTime / burstWindow : 0;
+    if (burstK > 0) {
+      this.camera.fov += 3.4 * burstK;
+      this.camera.updateProjectionMatrix();
+      this.camera.position.addScaledVector(this.camOffsetDir, 0.32 * burstK);
+    }
 
     for (const p of sim.players) {
       const mesh = this.playerMeshes.get(p.id);
@@ -530,12 +442,13 @@ export class SceneView {
       if (badge) badge.lookAt(this.camera.position);
     }
 
-    this.ballMesh.position.copy(sim.ball.position);
+    this.ballPivot.position.copy(sim.ball.position);
+    this.bubbleUp.copy(authoritativeUp(sim.tunables.goalAxisUp));
+    this.spinBall(sim, dt);
     this.ballHalo.position.copy(sim.ball.position);
     this.ballRing.position.copy(sim.ball.position);
     this.ballRing.lookAt(this.camera.position);
 
-    const ballMat = this.ballMesh.material as THREE.MeshBasicMaterial;
     const haloMat = this.ballHalo.material as THREE.MeshBasicMaterial;
     const ringMat = this.ballRing.material as THREE.MeshBasicMaterial;
     const trailMat = this.ballTrail.material as THREE.LineBasicMaterial;
@@ -545,10 +458,9 @@ export class SceneView {
       const owner = sim.players[sim.ball.ownerId];
       const team = owner?.team ?? 0;
       const teamColor = TEAM_COLORS[team]!;
-      ballMat.color.setHex(0xfff4cc);
       haloMat.color.setHex(teamColor);
-      haloMat.opacity = 0.35;
-      // Carrier ring on player already marks possession — hide extra ball ring
+      haloMat.opacity = 0.28;
+      // Carrier ring on the swimmer already marks possession.
       this.ballRing.visible = false;
       trailMat.color.setHex(teamColor);
       if (sim.ball.ownerId === sim.humanId) {
@@ -562,17 +474,18 @@ export class SceneView {
       const pulse = 1 + Math.sin(this.pulse * 6) * 0.08;
       this.ballHalo.scale.setScalar(pulse);
     } else {
-      // Free ball: bright white + pulsing gold halo
-      ballMat.color.setHex(0xffffff);
       haloMat.color.setHex(0xffe066);
-      const pulse = 0.38 + Math.sin(this.pulse * 5) * 0.12;
+      const pulse = 0.1 + Math.sin(this.pulse * 5) * 0.04;
       haloMat.opacity = pulse;
-      ringMat.color.setHex(0xffffff);
+      ringMat.color.setHex(0xfff3b0);
+      ringMat.transparent = true;
+      ringMat.opacity = 0.45;
       this.ballRing.visible = true;
       trailMat.color.setHex(0xffe066);
+      trailMat.opacity = 0.55;
       pipMat.map = this.pipFree;
       pipMat.needsUpdate = true;
-      this.ballHalo.scale.setScalar(1.15 + Math.sin(this.pulse * 5) * 0.15);
+      this.ballHalo.scale.setScalar(1.1 + Math.sin(this.pulse * 5) * 0.12);
     }
 
     this.writeLine(this.ballTrail, this.trailPositions, sim.ball.trail, TRAIL_MAX);
@@ -601,6 +514,98 @@ export class SceneView {
     }
 
     this.syncAimCursor(sim);
+    this.syncCatchBeacon(sim);
+    this.syncBubbles(sim, dt);
+    this.water.update(this.pulse, this.camera.position);
+  }
+
+  private spinBall(sim: Simulation, dt: number): void {
+    const vel = sim.ball.velocity;
+    const speed = vel.length();
+    if (speed < 0.2) return;
+    this.spinAxis.crossVectors(this.bubbleUp, vel);
+    if (this.spinAxis.lengthSq() < 1e-6) this.spinAxis.set(1, 0, 0);
+    this.spinAxis.normalize();
+    const held = sim.ball.possession === 'held';
+    const curved = sim.ball.arc ? 1.45 : 1;
+    this.ballPivot.rotateOnWorldAxis(this.spinAxis, speed * dt * (held ? 0.12 : 0.55) * curved);
+  }
+
+  private syncCatchBeacon(sim: Simulation): void {
+    const beacon = sim.catchBeacon;
+    this.catchBeacon.visible = beacon.visible;
+    if (!beacon.visible) return;
+    this.catchBeacon.position.copy(beacon.position);
+    const pulse = 1 + Math.sin(this.pulse * 5) * 0.08;
+    this.catchBeacon.scale.setScalar(pulse);
+    const ring = this.catchBeacon.getObjectByName('catchRing');
+    const inner = this.catchBeacon.getObjectByName('catchRingInner');
+    if (ring) ring.rotation.z = this.pulse * 1.4;
+    if (inner) inner.rotation.z = -this.pulse * 2.1;
+    const core = this.catchBeacon.getObjectByName('catchCore');
+    if (core) {
+      core.rotation.y = this.pulse * 2.4;
+      core.position.y = 0.15 + Math.sin(this.pulse * 3) * 0.12;
+    }
+  }
+
+  private syncBubbles(sim: Simulation, dt: number): void {
+    const cruise = Math.max(4, sim.tunables.playerMaxSpeed);
+    for (const p of sim.players) {
+      if (!p.active || p.role === 'stub') continue;
+      const speed = p.velocity.length();
+      const sprint = p.sprinting ? 1.7 : 1;
+      const rate =
+        (speed > 0.8 ? (speed / cruise) * 28 * sprint : 0) + (p.burstPuff > 0 ? 40 + p.burstPuff * 30 : 0);
+      let acc = this.playerBubbleAcc[p.id] ?? 0;
+      acc += rate * dt;
+      const back = this.emitDir;
+      if (speed > 0.6) back.copy(p.velocity).multiplyScalar(-1 / speed);
+      else back.copy(p.facing).multiplyScalar(-1);
+      while (acc >= 1) {
+        this.emitOrigin.copy(p.position).addScaledVector(back, 0.7 + Math.random() * 1.6).addScaledVector(p.up, -0.05);
+        this.trails.emit({
+          origin: this.emitOrigin,
+          direction: back,
+          kick: p.burstPuff > 0 ? 1.8 : 0.45,
+          life: p.burstPuff > 0 ? 1.1 : 1.25,
+          size: p.burstPuff > 0 ? 0.18 : 0.1 + Math.min(0.04, speed * 0.0015),
+          rise: 0.65 + (p.sprinting ? 0.25 : 0),
+          spread: p.burstPuff > 0 ? 0.36 : 0.2,
+        });
+        acc -= 1;
+      }
+      this.playerBubbleAcc[p.id] = acc;
+    }
+
+    const ballSpeed = sim.ball.velocity.length();
+    const dir = this.emitDir;
+    if (ballSpeed > 0.4) dir.copy(sim.ball.velocity).multiplyScalar(1 / ballSpeed);
+    else dir.set(0, 0, 1);
+    const turning = 1 - THREE.MathUtils.clamp(this.prevBallDir.dot(dir), -1, 1);
+    this.prevBallDir.copy(dir);
+    const shot = Math.max(8, sim.tunables.shootSpeedMax);
+    const intensity = Math.min(1.4, ballSpeed / shot);
+    const heldBall = sim.ball.possession === 'held';
+    const ballRate = ballSpeed > 1.2 ? (heldBall ? 8 : 14 + intensity * 28 + turning * 36) : 0;
+    this.bubbleAcc += ballRate * dt;
+    this.emitOrigin.copy(sim.ball.position).addScaledVector(dir, -BALL.radius * 1.4);
+    const behind = this.spinAxis.copy(dir).multiplyScalar(-1);
+    while (this.bubbleAcc >= 1) {
+      this.trails.emit({
+        origin: this.emitOrigin,
+        direction: behind,
+        kick: 0.8 + intensity * 1.6,
+        life: 1.05 + intensity * 0.4,
+        size: 0.1 + intensity * 0.1 + turning * 0.06,
+        rise: 0.85,
+        spread: 0.12 + turning * 0.2,
+      });
+      this.bubbleAcc -= 1;
+    }
+
+    this.trails.update(dt, this.bubbleUp);
+    this.motes.driftMotes(dt, this.bubbleUp, ARENA_RADIUS * 0.9);
   }
 
   private syncAimCursor(sim: Simulation): void {
@@ -659,7 +664,7 @@ export class SceneView {
     if (!armL || !armR || !legL || !legR) return;
 
     const tun = sim.tunables;
-    const speed01 = Math.min(1, player.velocity.length() / (PLAYER.maxSpeed * PLAYER.sprintMult));
+    const speed01 = Math.min(1, player.velocity.length() / Math.max(4, tun.playerMaxSpeed * tun.sprintMult));
     const ud = mesh.userData as { swimPhase?: number };
     if (ud.swimPhase === undefined) ud.swimPhase = player.id * 0.37;
     const hz = tun.swimAnimRate * (0.3 + 0.7 * speed01);
@@ -668,8 +673,10 @@ export class SceneView {
     const amp = tun.swimAnim ? tun.swimAnimAmount * speed01 : 0;
 
     // Arms stick out along local X. Yaw swings them forward (+Z) and back.
-    let yL = 0.35 + wave * amp;
-    let yR = -0.35 - wave * amp;
+    // The base angle keeps a paddle pose so a slow swim is not a T-pose.
+    const stroke = 0.5 + amp * 1.1;
+    let yL = 1.0 + wave * stroke;
+    let yR = -1.0 - wave * stroke;
     let zL = 0.5;
     let zR = -0.5;
     let xLegL = -wave * amp * 0.9;
@@ -689,6 +696,21 @@ export class SceneView {
       zR = -0.55;
       xLegL *= 0.35;
       xLegR *= 0.35;
+    } else if (pose === 'burst') {
+      const follow = THREE.MathUtils.clamp(player.actionPoseTime / 0.08, 0, 1);
+      yL = THREE.MathUtils.lerp(yL, -1.05, follow);
+      yR = THREE.MathUtils.lerp(yR, 1.05, follow);
+      zL = 0.12;
+      zR = -0.12;
+      xLegL = THREE.MathUtils.lerp(xLegL, 1.2, follow);
+      xLegR = THREE.MathUtils.lerp(xLegR, -0.4, follow);
+    } else if (player.catchStance) {
+      yL = 1.35;
+      yR = -1.35;
+      zL = 0.08;
+      zR = -0.08;
+      xLegL *= 0.4;
+      xLegR *= 0.4;
     } else if (pose === 'claim') {
       yL = 1.4;
       yR = -1.4;

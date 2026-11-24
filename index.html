@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Blitzball — Phase 0 Greybox</title>
+    <title>Blitzball</title>
     <style>
       * {
         box-sizing: border-box;
@@ -166,7 +166,7 @@
         position: absolute;
         top: 16px;
         right: 16px;
-        width: 280px;
+        width: 300px;
         max-height: calc(100% - 32px);
         overflow: auto;
         padding: 12px 14px;
@@ -235,15 +235,16 @@
             <div class="team-b" id="score-b">0</div>
           </div>
         </div>
-        <div id="status">Greybox — claim, pass, shoot</div>
+        <div id="status">Swim, catch, pass, shoot</div>
         <div id="possession" class="free">Ball free</div>
         <div id="debug-stats"></div>
         <div id="hints">
           <div><kbd>WASD</kbd> swim with camera · <kbd>Space</kbd>/<kbd>C</kbd> camera up/down · <kbd>Shift</kbd> sprint</div>
           <div><kbd>Mouse</kbd> look (right/up) · click captures · <kbd>Esc</kbd> releases</div>
           <div><kbd>E</kbd> claim · <kbd>Q</kbd> drop · hold <kbd>F</kbd> charge pass</div>
-          <div>Hold <kbd>LMB</kbd> to aim: ball stays in hand, power meter oscillates, release locks it. <kbd>A</kbd>/<kbd>D</kbd> slide the marker, <kbd>W</kbd>/<kbd>S</kbd> raise and lower it, mouse bends the arc, wheel sets range.</div>
-          <div>Hold <kbd>RMB</kbd> to strafe. The reticle locks a shot onto a teammate (green). Release throws that arc to them.</div>
+          <div>With the ball, hold <kbd>LMB</kbd> to aim: it stays in hand, the power meter oscillates, release locks it. <kbd>A</kbd>/<kbd>D</kbd> slide the marker, <kbd>W</kbd>/<kbd>S</kbd> raise and lower it, mouse bends the arc, wheel sets range.</div>
+          <div>Without the ball, <kbd>LMB</kbd> lunges along your swim (or your look, if you are not steering). The click that captures the mouse does not lunge.</div>
+          <div>Hold <kbd>RMB</kbd> to strafe and reach for a catch. The aqua beacon is where a loose ball will settle. The reticle locks a shot onto a teammate (green).</div>
           <div><kbd>G</kbd> call for a pass. Green ring is your teammate. Orange holds unless Defense chases is on.</div>
           <div><kbd>V</kbd> zoom · <kbd>`</kbd> Dev (invert look) · <kbd>R</kbd> reset ball</div>
           <div>Gamepad: left stick move (while RT is held, stick X slides the marker and stick Y raises it; right stick bends the arc), RB/LT up/down, A claim, X pass, RT shoot, Y strafe, LB zoom</div>

@@ -14,6 +14,14 @@ export function defaultTunables(): Tunables {
     claimRadius: PLAYER.claimRadius,
     holdLag: BALL.holdLag,
     playerAccel: PLAYER.accel,
+    playerMaxSpeed: PLAYER.maxSpeed,
+    sprintMult: PLAYER.sprintMult,
+    passSpeed: BALL.passSpeed,
+    shootSpeedMin: BALL.shootSpeedMin,
+    shootSpeedMax: BALL.shootSpeedMax,
+    burstSpeed: PLAYER.burstSpeed,
+    burstDuration: PLAYER.burstDuration,
+    burstCooldown: PLAYER.burstCooldown,
     ballDrag: BALL.drag,
     aimAssist: 0.35,
     showChargeGhost: true,
@@ -81,6 +89,14 @@ export class DevPanel {
     this.range('Claim radius', 'claimRadius', 0.8, 3.5, 0.05);
     this.range('Hold lag', 'holdLag', 2, 20, 0.1);
     this.range('Player accel', 'playerAccel', 30, 170, 1);
+    this.range('Cruise speed', 'playerMaxSpeed', 8, 40, 0.5);
+    this.range('Sprint mult', 'sprintMult', 1, 2, 0.01);
+    this.range('Pass speed', 'passSpeed', 12, 80, 1);
+    this.range('Shot speed min', 'shootSpeedMin', 12, 70, 1);
+    this.range('Shot speed max', 'shootSpeedMax', 20, 110, 1);
+    this.range('Burst speed', 'burstSpeed', 16, 60, 0.5);
+    this.range('Burst length', 'burstDuration', 0.08, 0.5, 0.01);
+    this.range('Burst cooldown', 'burstCooldown', 0.1, 1.6, 0.01);
     this.range('Ball drag', 'ballDrag', 0.2, 3, 0.05);
     this.range('Aim assist', 'aimAssist', 0, 1, 0.05);
     this.range('Body turn rate', 'bodyTurnRate', 2, 16, 0.5);

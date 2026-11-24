@@ -55,6 +55,11 @@ function makePlayer(
     hasBall: false,
     tackleCooldown: 0,
     reclaimGrace: 0,
+    burstTime: 0,
+    burstCooldown: 0,
+    burstPuff: 0,
+    burstDir: new THREE.Vector3(0, 0, 1),
+    catchStance: false,
     active,
     actionPose: 'none',
     actionPoseTime: 0,
@@ -90,6 +95,14 @@ export class Simulation {
   private aimDistanceBias = 0;
   /** Smoothed lateral camera shift. Positive sits on the aim's right shoulder. */
   shoulderLateral = 0;
+  /**
+   * Where a loose ball will settle, or the end of its arc.
+   * Hidden while anyone is holding the ball.
+   */
+  readonly catchBeacon = {
+    visible: false,
+    position: new THREE.Vector3(),
+  };
   /** Right-click aim cursor. Hidden unless strafe is held. */
   readonly aimCursor: AimCursorState = {
     visible: false,
@@ -116,6 +129,9 @@ export class Simulation {
     faceTarget: new THREE.Vector3(),
     upHint: new THREE.Vector3(),
     side: new THREE.Vector3(),
+    predictPos: new THREE.Vector3(),
+    predictVel: new THREE.Vector3(),
+    burstLaunch: new THREE.Vector3(),
   };
 
   tunables: Tunables;
@@ -176,6 +192,10 @@ export class Simulation {
         p.hasBall = false;
         p.tackleCooldown = 0;
         p.reclaimGrace = 0;
+        p.burstTime = 0;
+        p.burstCooldown = 0;
+        p.burstPuff = 0;
+        p.catchStance = false;
         p.actionPose = 'none';
         p.actionPoseTime = 0;
       }
@@ -296,6 +316,9 @@ export class Simulation {
     for (const p of this.players) {
       if (p.tackleCooldown > 0) p.tackleCooldown -= dt;
       if (p.reclaimGrace > 0) p.reclaimGrace -= dt;
+      if (p.burstCooldown > 0) p.burstCooldown = Math.max(0, p.burstCooldown - dt);
+      if (p.burstTime > 0) p.burstTime = Math.max(0, p.burstTime - dt);
+      if (p.burstPuff > 0) p.burstPuff = Math.max(0, p.burstPuff - dt * 3.2);
       if (p.actionPoseTime > 0) {
         p.actionPoseTime -= dt;
         if (p.actionPoseTime <= 0) {
@@ -418,27 +441,55 @@ export class Simulation {
     const aimingShot = isHuman && player.hasBall && (intent.shootHeld || this.shotAim.active);
     if (aimingShot) wish.set(0, 0, 0);
 
+    const canBurst =
+      isHuman &&
+      intent.burst &&
+      !player.hasBall &&
+      !aimingShot &&
+      player.burstCooldown <= 0 &&
+      this.kickoffLock <= 0 &&
+      this.match.resetTimer <= 0;
+    if (canBurst) {
+      const dir = player.burstDir;
+      if (wish.lengthSq() > 1e-6) dir.copy(wish).normalize();
+      else if (aimDir.lengthSq() > 1e-8) dir.copy(aimDir).normalize();
+      else dir.set(0, 0, 1);
+      this.tmp.burstLaunch.copy(dir).multiplyScalar(Math.max(4, this.tunables.burstSpeed));
+      player.velocity.lerp(this.tmp.burstLaunch, 0.88);
+      player.burstTime = Math.max(0.05, this.tunables.burstDuration);
+      player.burstCooldown = Math.max(0.05, this.tunables.burstCooldown);
+      player.burstPuff = 1;
+      this.playPose(player, 'burst', player.burstTime + 0.06);
+    }
+
+    const bursting = player.burstTime > 0 && player.burstDir.lengthSq() > 1e-6;
+    if (bursting) wish.copy(player.burstDir).normalize();
+
     // Strafe glues facing to the camera. A shot hold does too, so the ball
     // stays in front of the chest, but it does not take the strafe speed tax.
+    // A lunge ignores that tax so the catch or tackle still closes.
     const aimLocked = isHuman && intent.strafe;
-    player.sprinting = intent.sprint && !player.hasBall;
-    let maxSpeed = PLAYER.maxSpeed;
-    const accel = this.tunables.playerAccel;
+    player.catchStance = aimLocked && !player.hasBall && !bursting && !aimingShot;
+    player.sprinting = intent.sprint && !player.hasBall && !bursting;
+    let maxSpeed = Math.max(4, this.tunables.playerMaxSpeed);
+    const accel = bursting ? this.tunables.playerAccel * 1.65 : this.tunables.playerAccel;
     if (player.hasBall) maxSpeed *= PLAYER.carrierSpeedMult;
-    if (player.sprinting) maxSpeed *= PLAYER.sprintMult;
-    if (aimLocked) maxSpeed *= this.tunables.strafeSpeedMult;
+    if (player.sprinting) maxSpeed *= Math.max(1, this.tunables.sprintMult);
+    if (aimLocked && !bursting) maxSpeed *= this.tunables.strafeSpeedMult;
+    if (bursting) maxSpeed = Math.max(4, this.tunables.burstSpeed);
 
     if (wish.lengthSq() > 1e-6) {
       const targetVel = wish.multiplyScalar(maxSpeed);
       player.velocity.lerp(targetVel, 1 - Math.exp(-accel * dt / maxSpeed));
     } else {
-      // Water drag when coasting
-      player.velocity.multiplyScalar(Math.exp(-PLAYER.drag * dt));
+      // Water drag when coasting. A lunge sheds speed more slowly so the click reads.
+      const drag = bursting ? PLAYER.drag * 0.35 : PLAYER.drag;
+      player.velocity.multiplyScalar(Math.exp(-drag * dt));
     }
 
     this.steerBody(player, aimDir, dt, aimLocked || aimingShot);
 
-    clampMagnitude(player.velocity, maxSpeed * 1.15);
+    clampMagnitude(player.velocity, maxSpeed * (bursting ? 1.02 : 1.15));
     player.position.addScaledVector(player.velocity, dt);
     constrainPlayerToSphere(player.position, player.velocity, PLAYER.radius);
   }
@@ -491,7 +542,8 @@ export class Simulation {
     else aim.normalize();
     this.placeRelease(player, aim);
     const dist = Math.max(3, player.position.distanceTo(human.position));
-    const speed = Math.min(BALL.passSpeed, Math.max(BALL.passSpeed * 0.45, dist * this.tunables.ballDrag * 1.25));
+    const passSpeed = Math.max(4, this.tunables.passSpeed);
+    const speed = Math.min(passSpeed, Math.max(passSpeed * 0.45, dist * this.tunables.ballDrag * 1.25));
     this.releaseBall(aim.multiplyScalar(speed).addScaledVector(player.velocity, 0.15));
     this.playPose(player, 'pass', 0.28);
     this.match.statusMessage = 'Pass back';
@@ -821,7 +873,7 @@ export class Simulation {
     const straight = Math.max(0.5, p0.distanceTo(p2));
     const via = p0.distanceTo(p1) + p1.distanceTo(p2);
     const length = Math.max(straight, (straight + via) * 0.5);
-    const speed = THREE.MathUtils.lerp(BALL.shootSpeedMin, BALL.shootSpeedMax, charge);
+    const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), charge);
     const duration = Math.max(SHOT_ARC.minDuration, length / speed);
     return { p0, p1, p2, duration };
   }
@@ -854,7 +906,7 @@ export class Simulation {
     }
     const aim = this.getAimDirection(player, false);
     this.placeRelease(player, aim);
-    const speed = THREE.MathUtils.lerp(BALL.shootSpeedMin, BALL.shootSpeedMax, charge);
+    const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), charge);
     const impulse = aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.35));
     this.releaseBall(impulse);
     this.playPose(player, 'shoot', 0.3);
@@ -926,7 +978,7 @@ export class Simulation {
     }
     if (best) aim = best.position.clone().sub(player.position).normalize();
     this.placeRelease(player, aim);
-    const speed = BALL.passSpeed * (0.65 + 0.35 * charge);
+    const speed = Math.max(4, this.tunables.passSpeed) * (0.65 + 0.35 * charge);
     this.releaseBall(aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.25)));
     this.playPose(player, 'pass', 0.28);
     this.match.statusMessage = best ? 'Pass' : 'Pass (no target)';
@@ -952,8 +1004,8 @@ export class Simulation {
     const aim = this.getAimDirection(player, isHuman).clone();
     const speed =
       this.charge.kind === 'pass'
-        ? BALL.passSpeed * (0.65 + 0.35 * this.charge.amount)
-        : THREE.MathUtils.lerp(BALL.shootSpeedMin, BALL.shootSpeedMax, this.charge.amount);
+        ? Math.max(4, this.tunables.passSpeed) * (0.65 + 0.35 * this.charge.amount)
+        : THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), this.charge.amount);
     const samples: THREE.Vector3[] = [];
     const pos = this.ball.position.clone();
     const vel = aim.multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.3));
@@ -1173,6 +1225,70 @@ export class Simulation {
     this.strafing = intent.strafe;
     this.updateShoulder(Math.max(0, dt));
     this.updateAimCursor();
+    this.updateCatchBeacon();
+  }
+
+  private shotSpeedMin(): number {
+    return Math.max(4, Math.min(this.tunables.shootSpeedMin, this.tunables.shootSpeedMax));
+  }
+
+  private shotSpeedMax(): number {
+    return Math.max(this.shotSpeedMin(), this.tunables.shootSpeedMax);
+  }
+
+  /** Loose ball: hide while held. Arc flights point at the end of the curve. */
+  private updateCatchBeacon(): void {
+    if (this.ball.possession === 'held') {
+      this.catchBeacon.visible = false;
+      return;
+    }
+    this.catchBeacon.visible = true;
+    if (this.ball.arc) {
+      this.catchBeacon.position.copy(this.ball.arc.p2);
+      const shell = ARENA_RADIUS - BALL.radius - 0.15;
+      if (this.catchBeacon.position.length() > shell) this.catchBeacon.position.setLength(shell);
+      return;
+    }
+    this.predictSettle(this.catchBeacon.position);
+  }
+
+  /**
+   * Drag the current free velocity forward, banking off the shell, until the
+   * ball is slow enough to meet. Player bumps are left out — they are not
+   * something you can swim toward ahead of time.
+   */
+  private predictSettle(out: THREE.Vector3): void {
+    const pos = this.tmp.predictPos.copy(this.ball.position);
+    const vel = this.tmp.predictVel.copy(this.ball.velocity);
+    if (vel.lengthSq() < 2.25) {
+      out.copy(pos);
+      return;
+    }
+    const dt = 1 / 30;
+    const drag = Math.exp(-Math.max(0, this.tunables.ballDrag) * dt);
+    const limit = ARENA_RADIUS - BALL.radius;
+    for (let i = 0; i < 72; i++) {
+      if (vel.lengthSq() < 2.25) break;
+      vel.multiplyScalar(drag);
+      pos.addScaledVector(vel, dt);
+      const dist = pos.length();
+      if (dist > limit && dist > 1e-6) {
+        pos.multiplyScalar(limit / dist);
+        const nx = pos.x / limit;
+        const ny = pos.y / limit;
+        const nz = pos.z / limit;
+        const vn = vel.x * nx + vel.y * ny + vel.z * nz;
+        if (vn > 0) {
+          const bounce = vn * 1.62;
+          vel.x -= nx * bounce;
+          vel.y -= ny * bounce;
+          vel.z -= nz * bounce;
+        }
+      }
+    }
+    const shell = limit - 0.15;
+    if (pos.length() > shell) pos.setLength(shell);
+    out.copy(pos);
   }
 
   /**
