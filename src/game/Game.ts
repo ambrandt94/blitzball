@@ -196,7 +196,9 @@ export class Game {
         `check ${h.burstCooldown > 0 ? h.burstCooldown.toFixed(2) + 's' : 'ready'}`,
         this.sim.catchBeacon.visible ? 'catch beacon on' : 'catch beacon off',
         `shoulder ${this.sim.shoulderLateral.toFixed(2)}`,
-        this.sim.aimCursor.visible ? `cursor ${this.sim.aimCursor.kind}` : 'cursor off',
+        this.sim.landingMarker.visible
+          ? `landing ${this.sim.landingMarker.lockId !== null ? 'mate' : 'free'}`
+          : 'landing off',
         this.sim.catchStance ? 'catch reach' : 'catch off',
         this.tunables.soloOpponent
           ? 'test opponent'

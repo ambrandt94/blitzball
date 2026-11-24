@@ -52,7 +52,6 @@ export function defaultTunables(): Tunables {
     teammatePassDelay: PRACTICE.passDelay,
     shoulderOffset: CAMERA.shoulderOffset,
     shoulderTransition: CAMERA.shoulderTransition,
-    aimCursorDistance: CAMERA.aimCursorDistance,
     showSunbeams: true,
     sunbeamIntensity: 0.7,
   };
@@ -124,7 +123,6 @@ export class DevPanel {
     this.range('Strafe speed', 'strafeSpeedMult', 0.25, 1, 0.01);
     this.range('Shoulder offset', 'shoulderOffset', 0, 3.2, 0.05);
     this.range('Shoulder transition', 'shoulderTransition', 1, 18, 0.1);
-    this.range('Aim cursor distance', 'aimCursorDistance', 6, 48, 0.5);
     this.range('Arc aim distance', 'arcAimDistance', 8, 90, 0.5);
     this.range('Arc aim speed', 'arcAimSpeed', 4, 70, 1);
     this.range('Arc bend speed', 'arcBendSpeed', 0, 140, 1);

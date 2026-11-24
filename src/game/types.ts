@@ -96,23 +96,18 @@ export interface Tunables {
   shoulderOffset: number;
   /** Ease rate for that shift (1/seconds). Higher is snappier. */
   shoulderTransition: number;
-  /** Fallback distance of the right-click aim cursor. */
-  aimCursorDistance: number;
   /** Stadium sunbeams. Off hides them; strength scales what is left at the shell. */
   showSunbeams: boolean;
   /** 0 hides the shafts. 1 is the tuned rim brightness. */
   sunbeamIntensity: number;
 }
 
-export type AimCursorKind = 'air' | 'wall' | 'player' | 'ball' | 'goal';
-
-/** World-space marker for the right-click look ray. */
-export interface AimCursorState {
+/** Yellow landing dot. RMB places it on the straight throw; LMB keeps it on the locked arc. */
+export interface LandingMarkerState {
   visible: boolean;
-  kind: AimCursorKind;
   position: THREE.Vector3;
-  /** Team tint for a player or the goal they score in. Null for air, wall, and ball. */
-  team: TeamId | null;
+  /** Teammate the point is on, or null for a free aim along the look. */
+  lockId: number | null;
 }
 
 export interface PlayerState {

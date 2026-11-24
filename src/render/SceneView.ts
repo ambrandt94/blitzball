@@ -17,6 +17,24 @@ const TEAM_COLORS = [0x2b9fff, 0xff6a3d];
 const TRAIL_MAX = 36;
 const GHOST_MAX = 36;
 
+/** Soft disc so the landing dot stays readable without a screen-space crosshair. */
+function makeLandingGlow(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  const glow = ctx.createRadialGradient(64, 64, 2, 64, 64, 64);
+  glow.addColorStop(0, 'rgba(255, 248, 220, 0.95)');
+  glow.addColorStop(0.22, 'rgba(255, 224, 102, 0.55)');
+  glow.addColorStop(0.5, 'rgba(255, 196, 70, 0.16)');
+  glow.addColorStop(1, 'rgba(255, 196, 70, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function makePipTexture(fill: string, stroke: string, mark?: string): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 128;
@@ -56,11 +74,11 @@ export class SceneView {
   private trailPositions: Float32Array;
   private chargeGhost!: THREE.Line;
   private ghostPositions: Float32Array;
-  private shotMarker!: THREE.Mesh;
+  private shotMarker!: THREE.Group;
+  private shotMarkerMat!: THREE.MeshBasicMaterial;
   private shotMarkerRing!: THREE.Mesh;
-  private aimCursor!: THREE.Group;
-  private aimCursorMat!: THREE.MeshBasicMaterial;
-  private aimCursorCore!: THREE.MeshBasicMaterial;
+  private shotMarkerRingMat!: THREE.MeshBasicMaterial;
+  private shotMarkerGlowMat!: THREE.SpriteMaterial;
   private pip!: THREE.Sprite;
   private pipFree: THREE.CanvasTexture;
   private pipYou: THREE.CanvasTexture;
@@ -122,7 +140,6 @@ export class SceneView {
     this.buildSplashRing();
     this.buildBall();
     this.buildGhosts();
-    this.buildAimCursor();
     this.catchBeacon = createCatchBeacon();
     this.scene.add(this.catchBeacon);
     this.trails = new BubblePool(this.scene, 420, 0xd7f6ff, 0.42);
@@ -283,51 +300,52 @@ export class SceneView {
     );
     this.scene.add(this.chargeGhost);
 
-    this.shotMarker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.32, 12, 10),
-      new THREE.MeshBasicMaterial({ color: 0xffe066 }),
-    );
-    this.shotMarkerRing = new THREE.Mesh(
-      new THREE.TorusGeometry(0.85, 0.055, 8, 28),
-      new THREE.MeshBasicMaterial({ color: 0xfff4cc }),
-    );
-    this.shotMarker.visible = false;
-    this.shotMarkerRing.visible = false;
-    this.scene.add(this.shotMarker);
-    this.scene.add(this.shotMarkerRing);
-  }
-
-  /** World-space reticle for the right-click look ray. Faces the camera each frame. */
-  private buildAimCursor(): void {
-    this.aimCursorMat = new THREE.MeshBasicMaterial({
-      color: 0x9af3ff,
+    const markerMat = new THREE.MeshBasicMaterial({
+      color: 0xffe066,
       transparent: true,
-      opacity: 1,
       depthTest: false,
       depthWrite: false,
       fog: false,
+      toneMapped: false,
     });
-    this.aimCursorCore = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xfff4cc,
+      transparent: true,
       depthTest: false,
       depthWrite: false,
       fog: false,
+      toneMapped: false,
+    });
+    const glowMat = new THREE.SpriteMaterial({
+      map: makeLandingGlow(),
+      color: 0xffe066,
+      transparent: true,
+      opacity: 0.85,
+      depthTest: false,
+      depthWrite: false,
+      fog: false,
+      toneMapped: false,
+      blending: THREE.AdditiveBlending,
     });
     const group = new THREE.Group();
-    group.renderOrder = 5;
-    group.add(new THREE.Mesh(new THREE.TorusGeometry(0.82, 0.09, 8, 32), this.aimCursorMat));
-    const core = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 8), this.aimCursorCore);
-    core.renderOrder = 6;
-    group.add(core);
-    for (let i = 0; i < 4; i++) {
-      const tick = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.1, 0.1), this.aimCursorMat);
-      const a = (i / 4) * Math.PI * 2;
-      tick.position.set(Math.cos(a) * 1.18, Math.sin(a) * 1.18, 0);
-      tick.rotation.z = a;
-      group.add(tick);
-    }
+    group.name = 'landingMarker';
+    group.renderOrder = 12;
     group.visible = false;
-    this.aimCursor = group;
+    const glow = new THREE.Sprite(glowMat);
+    glow.name = 'landingGlow';
+    glow.scale.set(3.1, 3.1, 1);
+    glow.renderOrder = 12;
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.78, 0.14, 10, 40), ringMat);
+    ring.name = 'landingRing';
+    ring.renderOrder = 13;
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), markerMat);
+    core.renderOrder = 14;
+    group.add(glow, ring, core);
+    this.shotMarker = group;
+    this.shotMarkerMat = markerMat;
+    this.shotMarkerRing = ring;
+    this.shotMarkerRingMat = ringMat;
+    this.shotMarkerGlowMat = glowMat;
     this.scene.add(group);
   }
 
@@ -462,7 +480,7 @@ export class SceneView {
         flash.visible = p.hitFlash > 0.02;
       }
       const ring = mesh.getObjectByName('carrierRing');
-      const locked = sim.shotAim.lockId === p.id;
+      const locked = sim.landingMarker.lockId === p.id || sim.shotAim.lockId === p.id;
       if (ring) {
         ring.visible = p.hasBall || locked;
         ring.rotation.z = this.pulse * 2.5;
@@ -532,23 +550,7 @@ export class SceneView {
     this.pip.scale.set(pipPulse, pipPulse, pipPulse);
 
     this.writeLine(this.chargeGhost, this.ghostPositions, sim.chargeGhost, GHOST_MAX);
-    const aiming = sim.shotAim.active;
-    this.shotMarker.visible = aiming;
-    this.shotMarkerRing.visible = aiming;
-    if (aiming) {
-      this.shotMarker.position.copy(sim.shotAim.target);
-      this.shotMarkerRing.position.copy(sim.shotAim.target);
-      this.shotMarkerRing.lookAt(this.camera.position);
-      const locked = sim.shotAim.lockId !== null;
-      const markerHex = locked ? 0xc6ff6a : 0xffe066;
-      (this.shotMarker.material as THREE.MeshBasicMaterial).color.setHex(markerHex);
-      (this.shotMarkerRing.material as THREE.MeshBasicMaterial).color.setHex(locked ? 0xf4ffe4 : 0xfff4cc);
-      const lockPulse = locked ? 1.2 + Math.sin(this.pulse * 9) * 0.12 : 1;
-      this.shotMarker.scale.setScalar(lockPulse);
-      this.shotMarkerRing.scale.setScalar(lockPulse);
-    }
-
-    this.syncAimCursor(sim);
+    this.syncLandingMarker(sim);
     this.syncCatchBeacon(sim);
     this.syncBubbles(sim, dt);
     this.syncGoalFlash(sim);
@@ -742,34 +744,32 @@ export class SceneView {
     this.motes.driftMotes(dt, this.bubbleUp, ARENA_RADIUS * 0.9);
   }
 
-  private syncAimCursor(sim: Simulation): void {
-    const cursor = sim.aimCursor;
-    this.aimCursor.visible = cursor.visible;
-    if (!cursor.visible) return;
+  /**
+   * Landing dot for a straight aim or a curved hold. Scale tracks distance so
+   * the ring stays a similar size on screen, and depth is off so a swimmer
+   * between the camera and the point cannot cover it.
+   */
+  private syncLandingMarker(sim: Simulation): void {
+    const mark = sim.landingMarker;
+    this.shotMarker.visible = mark.visible;
+    if (!mark.visible) return;
 
-    this.aimCursor.position.copy(cursor.position);
-    const toCam = this.camScratch.view.copy(this.camera.position).sub(cursor.position);
+    this.shotMarker.position.copy(mark.position);
+    const toCam = this.camScratch.view.copy(this.camera.position).sub(mark.position);
     if (toCam.lengthSq() > 1e-4) {
-      this.aimCursor.position.addScaledVector(toCam.normalize(), 0.28);
+      this.shotMarker.position.addScaledVector(toCam.normalize(), 0.85);
     }
-    this.aimCursor.quaternion.copy(this.camera.quaternion);
+    const dist = Math.max(0.5, this.camera.position.distanceTo(this.shotMarker.position));
+    const locked = mark.lockId !== null;
+    const pulse = locked ? 1 + Math.sin(this.pulse * 9) * 0.08 : 1;
+    this.shotMarker.scale.setScalar(THREE.MathUtils.clamp(dist * 0.034, 0.45, 3.4) * pulse);
+    this.shotMarkerRing.lookAt(this.camera.position);
 
-    const dist = Math.max(1, this.camera.position.distanceTo(this.aimCursor.position));
-    const acquired = cursor.kind === 'player' || cursor.kind === 'ball' || cursor.kind === 'goal';
-    const pulse = acquired ? 1 + Math.sin(this.pulse * 7) * 0.07 : 1;
-    const scale = THREE.MathUtils.clamp(dist * 0.055, 1.05, 3.2) * pulse;
-    this.aimCursor.scale.setScalar(scale);
-
-    let color = 0x9af3ff;
-    if (cursor.kind === 'wall') color = 0xd5e6f2;
-    else if (cursor.kind === 'ball') color = 0xffe066;
-    else if (cursor.kind === 'goal') color = 0xc8ff9a;
-    else if (cursor.kind === 'player') {
-      const lockedOn = sim.shotAim.lockId !== null && sim.shotAim.active;
-      color = lockedOn ? 0xc6ff6a : (TEAM_COLORS[cursor.team ?? 0] ?? 0x9af3ff);
-    }
-    this.aimCursorMat.color.setHex(color);
-    this.aimCursorMat.opacity = acquired ? 1 : 0.95;
+    const markerHex = locked ? 0xc6ff6a : 0xffe066;
+    const ringHex = locked ? 0xf4ffe4 : 0xfff4cc;
+    this.shotMarkerMat.color.setHex(markerHex);
+    this.shotMarkerRingMat.color.setHex(ringHex);
+    this.shotMarkerGlowMat.color.setHex(markerHex);
   }
 
   /** Point local +Z along facing and local +Y along up, with no lookAt branch. */
