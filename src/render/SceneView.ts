@@ -6,7 +6,7 @@ import { goalPlaneZ } from '../sim/goal';
 import type { Simulation } from '../sim/Simulation';
 import { authoritativeUp, rotateToward, stabilizeUp } from '../sim/math';
 import { buildArenaDressing, type WaterRig } from './arenaDressing';
-import { createBlitzball } from './blitzball';
+import { createBlitzball, fitBallModel, tuneUnderwaterBallMaterials } from './blitzball';
 import { BubblePool } from './bubbles';
 import { createCatchBeacon } from './catchBeacon';
 import { blendLimbPose, swimLimbPose } from './limbs';
@@ -128,29 +128,24 @@ export class SceneView {
   }
 
   /**
-   * Optional swap: if public/models/blitzball.glb is present it replaces the
-   * procedural ball. A missing file keeps the built-in mesh.
+   * If public/models/blitzball.glb loads, it replaces the procedural ball.
+   * The file is modeled sitting on Y=0, so it is recentered and scaled to the
+   * gameplay radius before it is parented to the physics pivot. A failed load
+   * leaves the built-in mesh in place.
    */
   private async tryLoadCustomBall(): Promise<void> {
     const url = `${import.meta.env.BASE_URL}models/blitzball.glb`;
     try {
-      const head = await fetch(url, { method: 'HEAD' });
-      if (!head.ok) return;
-      const gltf = await new GLTFLoader().loadAsync(url);
+      const response = await fetch(url);
+      if (!response.ok) return;
+      const gltf = await new GLTFLoader().parseAsync(await response.arrayBuffer(), '');
       const model = gltf.scene;
-      const box = new THREE.Box3().setFromObject(model);
-      const size = new THREE.Vector3();
-      const center = new THREE.Vector3();
-      box.getSize(size);
-      box.getCenter(center);
-      const span = Math.max(size.x, size.y, size.z);
-      if (span < 1e-4) return;
-      model.position.sub(center);
-      model.scale.setScalar((BALL.radius * 2) / span);
+      if (!fitBallModel(model, BALL.radius)) return;
+      tuneUnderwaterBallMaterials(model);
       for (const child of [...this.ballPivot.children]) this.ballPivot.remove(child);
       this.ballPivot.add(model);
     } catch {
-      // Procedural ball stays. A 404 or a bad file should not break the match.
+      // Procedural ball stays.
     }
   }
 
@@ -547,7 +542,8 @@ export class SceneView {
     this.spinAxis.normalize();
     const held = sim.ball.possession === 'held';
     const curved = sim.ball.arc ? 1.45 : 1;
-    this.ballPivot.rotateOnWorldAxis(this.spinAxis, speed * dt * (held ? 0.12 : 0.55) * curved);
+    // Cups and the stripe sheet need a clear roll or the ball reads as a static sphere.
+    this.ballPivot.rotateOnWorldAxis(this.spinAxis, speed * dt * (held ? 0.12 : 0.9) * curved);
   }
 
   private syncCatchBeacon(sim: Simulation): void {

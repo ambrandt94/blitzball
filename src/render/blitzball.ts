@@ -5,7 +5,7 @@ const TEX_H = 512;
 
 /**
  * Original procedural Blitzball: royal blue, gold swirl, silver/teal panels,
- * recessed seams, and an equatorial trim. Not a ripped game texture.
+ * recessed seams, and an equatorial trim. Used when `public/models/blitzball.glb` is missing.
  */
 export function createBlitzball(radius: number): THREE.Group {
   const { albedo, normal, roughness } = makeBlitzballTextures();
@@ -249,4 +249,109 @@ function heightToNormal(height: HTMLCanvasElement, strength: number): HTMLCanvas
   }
   out.getContext('2d')!.putImageData(dst, 0, 0);
   return out;
+}
+
+const _fitBox = new THREE.Box3();
+const _fitCenter = new THREE.Vector3();
+const _fitPoint = new THREE.Vector3();
+
+/**
+ * Move `root` so its bounds center sits on the local origin, and scale it so the
+ * outermost vertex is `radius` away. The GLB is modeled standing on Y=0, so the
+ * raw pivot is not the physics ball.
+ */
+export function fitBallModel(root: THREE.Object3D, radius: number): boolean {
+  root.updateMatrixWorld(true);
+  const box = _fitBox.setFromObject(root);
+  if (box.isEmpty()) return false;
+  const center = _fitCenter.copy(box.getCenter(_fitPoint));
+  let maxRadius = 0;
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const attr = mesh.geometry?.getAttribute('position');
+    if (!attr) return;
+    for (let i = 0; i < attr.count; i++) {
+      _fitPoint.fromBufferAttribute(attr as THREE.BufferAttribute, i);
+      mesh.localToWorld(_fitPoint);
+      maxRadius = Math.max(maxRadius, _fitPoint.distanceTo(center));
+    }
+  });
+  if (maxRadius < 1e-5 || radius <= 0) return false;
+  const scale = radius / maxRadius;
+  // Root matrix is T * R * S, so the translation is not scaled. Shift by -center * scale.
+  root.scale.multiplyScalar(scale);
+  root.position.addScaledVector(center, -scale);
+  root.updateMatrixWorld(true);
+  return true;
+}
+
+/**
+ * The atlas leaves about half its texels transparent black. Drawn as-is, the
+ * sphere turns into a cage. Fill those texels with the ball's navy so the
+ * stripes and lettering sit on a solid shell.
+ */
+function solidifyBallMap(map: THREE.Texture): THREE.Texture {
+  const image = map.image as CanvasImageSource & { width?: number; height?: number };
+  const width = image?.width ?? 0;
+  const height = image?.height ?? 0;
+  if (!width || !height || typeof document === 'undefined') return map;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return map;
+  ctx.drawImage(image, 0, 0);
+  const pixels = ctx.getImageData(0, 0, width, height);
+  const data = pixels.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const empty = data[i + 3] === 0 || data[i]! + data[i + 1]! + data[i + 2]! < 12;
+    if (!empty) continue;
+    data[i] = 0x0b;
+    data[i + 1] = 0x17;
+    data[i + 2] = 0x34;
+    data[i + 3] = 255;
+  }
+  ctx.putImageData(pixels, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.flipY = map.flipY;
+  tex.wrapS = map.wrapS;
+  tex.wrapT = map.wrapT;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** The atlas is a small nearest-filtered stripe sheet. A little self-light keeps the bands readable in blue water. */
+export function tuneUnderwaterBallMaterials(root: THREE.Object3D): void {
+  const solidified = new Map<THREE.Texture, THREE.Texture>();
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const material of list) {
+      if (!(material instanceof THREE.MeshStandardMaterial)) continue;
+      material.metalness = 0.04;
+      material.roughness = THREE.MathUtils.clamp(material.roughness, 0.32, 0.5);
+      material.envMapIntensity = 0.3;
+      material.transparent = false;
+      material.opacity = 1;
+      material.depthWrite = true;
+      if (material.map) {
+        let map = solidified.get(material.map);
+        if (!map) {
+          map = solidifyBallMap(material.map);
+          solidified.set(material.map, map);
+        }
+        material.map = map;
+        material.emissive.set(0xffffff);
+        material.emissiveMap = map;
+        material.emissiveIntensity = 0.38;
+      }
+      material.needsUpdate = true;
+    }
+  });
 }

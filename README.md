@@ -49,7 +49,7 @@ Cruise and sprint are slower than the first greybox so a trip across the sphere 
 
 While the ball is loose or in flight, an aqua ring and beam mark where it will settle, or the end of a curved shot, including a carry into the net. The marker hides while someone is holding the ball. Bubbles trail swimmers (thicker in a sprint or a lunge) and the ball (thicker on a fast or bending flight).
 
-Drop a `public/models/blitzball.glb` in place to replace the built-in ball. The procedural ball stays if that file is missing. Do not commit a ripped game asset.
+`public/models/blitzball.glb` is the ball. It is recentered on the physics pivot and scaled to the gameplay radius on load. The procedural ball stays if that file fails to load.
 
 While a shot is held, you coast: `WASD` and `Space` / `C` do not swim. `A`/`D` slide the marker left and right, `W`/`S` (and `Space` / `C`) raise and lower it, the wheel sets range, and the mouse bends the arc instead of looking. That still works while right-click aim is held. Let go of the mouse button to swim and look again. The dev panel can stay open; pointer lock takes the keys back from its sliders.
 

@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, SHOT_ARC } from '../game/constants';
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
+import { fitBallModel } from '../render/blitzball';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { defaultTunables } from '../ui/DevPanel';
 import { Simulation } from './Simulation';
@@ -1107,6 +1108,24 @@ function solo(sim: Simulation): ReturnType<Simulation['getHuman']> {
   return sim.getHuman();
 }
 
+function checkBallFit(): void {
+  const root = new THREE.Group();
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(2, 10, 8));
+  // Same situation as the GLB: the mesh center is not the group origin.
+  mesh.position.set(3, -4, 1.5);
+  root.add(mesh);
+  if (!fitBallModel(root, BALL.radius)) fail('fit rejected a sphere');
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const center = box.getCenter(new THREE.Vector3());
+  if (center.length() > 0.02) {
+    fail(`fitted ball was not on the pivot (${center.toArray().map((n) => n.toFixed(3)).join(',')})`);
+  }
+  const radius = box.getSize(new THREE.Vector3()).length() / 2;
+  const expect = BALL.radius * Math.sqrt(3);
+  if (Math.abs(radius - expect) > 0.04) fail(`fitted ball radius ${radius.toFixed(3)} != ${expect.toFixed(3)}`);
+}
+
 function checkSpeeds(): void {
   if (PLAYER.maxSpeed >= 24) fail(`cruise speed was not lowered (${PLAYER.maxSpeed})`);
   if (BALL.passSpeed >= 42) fail(`pass speed was not lowered (${BALL.passSpeed})`);
@@ -1349,6 +1368,7 @@ export function runRotationChecks(): void {
   checkGoalMouth();
   checkShotIntoGoal();
   checkShotSteer();
+  checkBallFit();
   checkSpeeds();
   checkBurst();
   checkPointerLockGuard();
