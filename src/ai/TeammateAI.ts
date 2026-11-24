@@ -39,7 +39,7 @@ export class TeammateAI {
         intent.move.copy(to).multiplyScalar(1 / dist);
         intent.sprint = dist > 4;
       }
-      if (dist < 1.7) intent.claim = true;
+      if (dist < tunables.catchReach + tunables.claimRadius) intent.claim = true;
       return intent;
     }
 

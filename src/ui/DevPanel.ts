@@ -12,6 +12,10 @@ export function defaultTunables(): Tunables {
     wallEscapeSpeed: WALL.escapeSpeed,
     wallEscapeAngle: WALL.escapeAngle,
     claimRadius: PLAYER.claimRadius,
+    catchReach: PLAYER.claimReach,
+    catchStanceReach: PLAYER.catchStanceReach,
+    catchStanceWidth: PLAYER.catchStanceWidth,
+    catchPull: PLAYER.catchPull,
     holdLag: BALL.holdLag,
     playerAccel: PLAYER.accel,
     ballDrag: BALL.drag,
@@ -33,6 +37,7 @@ export function defaultTunables(): Tunables {
     shotPowerRate: SHOT_ARC.powerRate,
     shotPowerAngle: SHOT_ARC.powerAngle,
     teammateLockRadius: SHOT_ARC.teammateLockRadius,
+    shotCarry: SHOT_ARC.carry,
     defenseActive: false,
     teammatePassDelay: PRACTICE.passDelay,
     shoulderOffset: CAMERA.shoulderOffset,
@@ -78,7 +83,11 @@ export class DevPanel {
     this.bool('Defense chases', 'defenseActive');
     this.range('Wall escape speed', 'wallEscapeSpeed', 20, 110, 0.5);
     this.range('Wall escape angle', 'wallEscapeAngle', 0.1, 1.2, 0.01);
-    this.range('Claim radius', 'claimRadius', 0.8, 3.5, 0.05);
+    this.range('Claim radius', 'claimRadius', 0.6, 4, 0.05);
+    this.range('Catch reach', 'catchReach', 0.8, 6, 0.05);
+    this.range('Catch stance reach', 'catchStanceReach', 1, 2.4, 0.05);
+    this.range('Catch stance width', 'catchStanceWidth', 1, 2.4, 0.05);
+    this.range('Catch pull', 'catchPull', 0, 60, 0.5);
     this.range('Hold lag', 'holdLag', 2, 20, 0.1);
     this.range('Player accel', 'playerAccel', 30, 170, 1);
     this.range('Ball drag', 'ballDrag', 0.2, 3, 0.05);
@@ -101,6 +110,7 @@ export class DevPanel {
     this.range('Power fill rate', 'shotPowerRate', 0.2, 4, 0.05);
     this.range('Power angle', 'shotPowerAngle', 0, 0.4, 0.01);
     this.range('Teammate lock radius', 'teammateLockRadius', 0.3, 3, 0.05);
+    this.range('Shot carry', 'shotCarry', 0, 60, 0.5);
     this.range('Teammate pass delay', 'teammatePassDelay', 0.3, 3, 0.05);
   }
 
