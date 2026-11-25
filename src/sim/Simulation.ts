@@ -49,7 +49,7 @@ import {
   resolveGoalRim,
   segmentScores,
 } from './goal';
-import { clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
+import { cappedBend, clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
 import { throwPoseSeconds } from '../render/throwPose';
 import { PULL_FULL_TRAVEL, TARGET_DISTANCE_SPEED } from './shotPower';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
@@ -881,7 +881,10 @@ export class Simulation {
         this.shotAim.bendUp += -intent.lookDelta.y * sy * this.tunables.arcBendSpeed;
       }
       this.clampStoredBend();
-      if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(this.getHuman());
+      if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') {
+        this.refreshShotTarget();
+        this.updateChargeGhost(this.getHuman());
+      }
       return;
     }
     this.yaw += intent.lookDelta.x * sx;
@@ -1886,6 +1889,39 @@ export class Simulation {
     clampAimMarker(out, raw, origin, SHOT_ARC.minRange, this.markerLimit());
   }
 
+  /**
+   * Slide a landing opposite the mouse bend so the ball arcs out and comes back.
+   * `curveAimOffset` 0 leaves the spot on the aim ray. Kicks use `kickCurve`, same as the arc.
+   */
+  private applyCurveAimOffset(origin: THREE.Vector3, target: THREE.Vector3): void {
+    const gain = Math.max(0, this.tunables.curveAimOffset);
+    if (gain <= 1e-4 || this.shotAim.lockId !== null) return;
+    const chord = this.tmp.predictPos.copy(target).sub(origin);
+    const chordLen = chord.length();
+    if (chordLen < 1e-3) return;
+    chord.multiplyScalar(1 / chordLen);
+    const curve = this.kickingDelivery() ? Math.max(0, this.tunables.kickCurve) : 1;
+    const capped = cappedBend(
+      this.shotAim.bendRight * curve,
+      this.shotAim.bendUp * curve,
+      chordLen,
+      this.tunables.arcBendLimit,
+    );
+    if (capped.right * capped.right + capped.up * capped.up < 1e-6) return;
+    const basis = this.cameraBasis();
+    const axisUp = this.tmp.predictVel.copy(basis.up).addScaledVector(chord, -basis.up.dot(chord));
+    if (axisUp.lengthSq() < 1e-6) return;
+    axisUp.normalize();
+    const axisRight = this.tmp.aim.copy(basis.right).addScaledVector(chord, -basis.right.dot(chord));
+    axisRight.addScaledVector(axisUp, -axisRight.dot(axisUp));
+    if (axisRight.lengthSq() < 1e-6) axisRight.crossVectors(chord, axisUp);
+    if (axisRight.lengthSq() < 1e-6) return;
+    axisRight.normalize();
+    target.addScaledVector(axisRight, -capped.right * gain);
+    target.addScaledVector(axisUp, -capped.up * gain);
+    clampAimMarker(target, target, origin, SHOT_ARC.minRange, this.markerLimit());
+  }
+
   /** Point `distance` from the hand along the locked aim, kept inside the shell. */
   private pointAlongAim(out: THREE.Vector3, distance: number): void {
     this.pointFrom(this.ball.position, out, distance);
@@ -1907,8 +1943,13 @@ export class Simulation {
     const aimingTarget = this.tunables.powerMode === 'target' && this.shotAim.active;
     if (this.shotAim.lockId === null) {
       this.pointFrom(origin, this.shotAim.target, this.shotReach(power));
-      if (aimingTarget) this.pointFrom(origin, this.markerShown, this.targetReach);
-      else this.markerShown.copy(this.shotAim.target);
+      this.applyCurveAimOffset(origin, this.shotAim.target);
+      if (aimingTarget) {
+        this.pointFrom(origin, this.markerShown, this.targetReach);
+        this.applyCurveAimOffset(origin, this.markerShown);
+      } else {
+        this.markerShown.copy(this.shotAim.target);
+      }
     } else {
       this.markerShown.copy(this.shotAim.target);
     }
@@ -2151,6 +2192,7 @@ export class Simulation {
     this.charge.kind = 'kick';
     this.charge.amount = power;
     this.pointAlongAim(this.shotAim.target, this.shotReach(power));
+    this.applyCurveAimOffset(this.ball.position, this.shotAim.target);
     const arc = this.plannedArc(power);
     this.ball.arc = {
       p0: arc.p0,

@@ -9,6 +9,28 @@ const _axisRight = new THREE.Vector3();
 const _offset = new THREE.Vector3();
 const _end = new THREE.Vector3();
 
+/**
+ * Mouse bend after the same chord cap `shapedControl` uses, before hand bias.
+ * `maxBendFrac` is a fraction of `chordLen`.
+ */
+export function cappedBend(
+  bendRight: number,
+  bendUp: number,
+  chordLen: number,
+  maxBendFrac: number,
+): { right: number; up: number } {
+  let right = bendRight;
+  let up = bendUp;
+  const len = Math.hypot(right, up);
+  const max = Math.max(0, maxBendFrac) * Math.max(0, chordLen);
+  if (len > max && len > 1e-8) {
+    const scale = max / len;
+    right *= scale;
+    up *= scale;
+  }
+  return { right, up };
+}
+
 /** Point on the quadratic Bezier p0, p1, p2 at parameter t in [0, 1]. */
 export function quadraticPoint(
   out: THREE.Vector3,
@@ -111,6 +133,7 @@ export function shapedControl(
 
   // Hand bias is part of the same capped offset as the mouse, so a strong
   // bend still owns the shape. With no mouse input the bias is the whole curve.
+  // The landing stays on `target`. The sim slides that point first when curve aim offset is on.
   let br = bendRight + handFrac * len;
   let bu = bendUp;
   const mouseLen = Math.hypot(br, bu);

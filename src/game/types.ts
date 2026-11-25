@@ -129,6 +129,11 @@ export interface Tunables {
   arcBendSpeed: number;
   /** Cap on mouse bend as a fraction of the hand→marker chord. */
   arcBendLimit: number;
+  /**
+   * How far the landing slides opposite the mouse bend, as a fraction of that bend.
+   * Zero keeps the end on the aim ray. Throws and kicks both use it.
+   */
+  curveAimOffset: number;
   /** Resting lob height as a fraction of the hand→marker chord. */
   arcHeight: number;
   /**

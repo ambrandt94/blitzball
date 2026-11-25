@@ -10,7 +10,7 @@ import { fitBallModel } from '../render/blitzball';
 import { aimPosturePitch, spring1, stepAimPosture, updateSwimmerRig, wantsAimPosture, type SwimmerRig } from '../render/swimmerModel';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
-import { defaultTunables } from '../ui/DevPanel';
+import { defaultTunables, parseCurveAimOffset } from '../ui/DevPanel';
 import { applyCameraPreset, cameraSettingsBlob, noteCameraEdit, parseCameraSettings } from '../ui/cameraSettings';
 import { parseRoster } from '../ui/rosterStorage';
 import { matchRoster } from '../ui/matchPresets';
@@ -235,6 +235,114 @@ function checkPreviewMatchesFlight(): void {
   match('throw', false);
   match('kick', true);
   checkFlightReach();
+  checkCurveAimOffset();
+}
+
+/** Bending left slides the landing right, and the other way around. Zero offset does not. */
+function checkCurveAimOffset(): void {
+  if (parseCurveAimOffset(null) !== null) fail('empty curve offset parsed');
+  if (parseCurveAimOffset('nope') !== null) fail('broken curve offset parsed');
+  if (parseCurveAimOffset('0') !== 0) fail('zero curve offset did not load');
+  const stored = parseCurveAimOffset('4');
+  if (stored !== 1.25) fail(`curve offset was not clamped (${stored})`);
+
+  const arm = (kick: boolean) => {
+    const sim = new Simulation(defaultTunables());
+    sim.setSoloOpponent(false);
+    sim.kickoffLock = 0;
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = 8;
+    sim.tunables.shotCarry = 0;
+    sim.tunables.arcHandCurve = 0;
+    sim.tunables.arcHeight = 0;
+    sim.tunables.shotPowerAngle = 0;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.lastOwnerId = human.id;
+    sim.yaw = 0;
+    sim.pitch = 0;
+    sim.ball.position.copy(holdPoint(sim));
+    const intent = blankIntent();
+    intent.strafe = kick;
+    if (kick) intent.kickHeld = true;
+    else intent.shootHeld = true;
+    sim.armShotAim(intent);
+    for (let i = 0; i < 20 && sim.charge.amount < 0.98; i++) sim.step(1 / 60, intent);
+    return { sim, intent };
+  };
+
+  const bend = (sim: Simulation, kick: boolean, x: number) => {
+    const look = blankIntent();
+    look.strafe = kick;
+    if (kick) look.kickHeld = true;
+    else look.shootHeld = true;
+    look.lookDelta.x = x;
+    sim.applyFrameLook(look);
+    sim.updateAimPresentation(look, 1 / 60);
+  };
+
+  const lateral = (sim: Simulation): number => {
+    const ghost = sim.chargeGhost;
+    if (ghost.length < 4) fail('curve offset hid the preview');
+    const right = lookBasis(sim.yaw, sim.pitch, false).right;
+    return ghost[ghost.length - 1]!.clone().sub(ghost[0]!).dot(right);
+  };
+
+  const held = arm(false);
+  held.sim.tunables.curveAimOffset = 0;
+  bend(held.sim, false, 0.22);
+  if (Math.abs(lateral(held.sim)) > 0.2) fail('zero curve offset still moved the landing');
+
+  const expectSide = (label: string, kick: boolean, x: number, sign: number) => {
+    const { sim } = arm(kick);
+    bend(sim, kick, x);
+    const side = lateral(sim);
+    if (side * sign <= 0.8) fail(`${label} landing did not cross the aim (${side.toFixed(2)})`);
+    const ghost = sim.chargeGhost;
+    const origin = ghost[0]!;
+    const end = ghost[ghost.length - 1]!;
+    const mid = ghost[Math.floor(ghost.length / 2)]!;
+    const right = lookBasis(sim.yaw, sim.pitch, false).right;
+    const bow = mid.clone().sub(origin).dot(right);
+    if (bow * sign >= -0.4) fail(`${label} did not arc out before coming back (${bow.toFixed(2)})`);
+    if (end.distanceTo(sim.shotAim.target) > 0.2) fail(`${label} preview left the cursor`);
+    if (Math.abs(sim.landingMarker.distance - origin.distanceTo(end)) > 0.35) {
+      fail(`${label} distance did not match the flight`);
+    }
+    if (sim.landingMarker.position.distanceTo(end) > 0.25) fail(`${label} cursor left the end of the line`);
+    const release = blankIntent();
+    release.strafe = kick;
+    const ghostEnd = end.clone();
+    sim.step(1 / 60, release);
+    let waited = 0;
+    while (!sim.ball.arc && waited < 12) {
+      sim.step(1 / 60, release);
+      waited++;
+    }
+    const arc = sim.ball.arc;
+    if (!arc) fail(`${label} release did not fly`);
+    if (arc.p2.distanceTo(ghostEnd) > 0.45) {
+      fail(`${label} ball finished ${arc.p2.distanceTo(ghostEnd).toFixed(2)} off the preview`);
+    }
+    return side;
+  };
+
+  const thrown = expectSide('right throw', false, 0.22, -1);
+  const kicked = expectSide('right kick', true, 0.22, -1);
+  const ratio = thrown < -1e-3 ? kicked / thrown : 0;
+  if (ratio < 0.35 || ratio > 0.7) {
+    fail(`kick aim offset ${kicked.toFixed(2)} is not half the throw ${thrown.toFixed(2)}`);
+  }
+  expectSide('left throw', false, -0.22, 1);
 }
 
 /** Full, soft, and heavy-drag landings end where the preview says they will. */
@@ -580,6 +688,7 @@ function checkArcHand(): void {
 function checkArcBend(): void {
   const { sim, hold } = aimingSim();
   sim.tunables.shotCarry = 0;
+  sim.tunables.curveAimOffset = 0;
   sim.step(1 / 60, hold);
   if (sim.chargeGhost.length < 4) fail('arc preview missing');
   const start = sim.chargeGhost[0];
@@ -1684,6 +1793,7 @@ function checkShotIntoGoal(): void {
   bent.sim.pitch = 0;
   bent.sim.tunables.arcHandCurve = 0.12;
   bent.sim.tunables.shotPowerAngle = 0;
+  bent.sim.tunables.curveAimOffset = 0;
   bent.sim.ball.position.copy(holdPoint(bent.sim));
   bent.sim.step(1 / 60, bent.hold);
   fillThrow(bent.sim, bent.hold);

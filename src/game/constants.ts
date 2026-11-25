@@ -130,6 +130,12 @@ export const SHOT_ARC = {
   bendSpeed: 42,
   /** Max mouse bend as a fraction of the origin→target chord. */
   bendLimit: 0.85,
+  /**
+   * Landing shift opposite the mouse bend, as a fraction of that bend.
+   * About a third puts the outward bow and the return landing on equal footing.
+   * Zero keeps the spot on the aim ray.
+   */
+  curveAimOffset: 0.35,
   height: 0.06,
   /** Fraction of the chord, toward camera-right / the right hand. 0 throws straight. */
   handCurve: 0,
