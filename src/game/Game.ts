@@ -91,6 +91,7 @@ export class Game {
       document.getElementById('dev-panel')!,
       this.tunables,
       (key) => {
+        if (key === 'showHelp') this.applyHelp();
         if (key === 'goalAxisUp') this.sim.orientAfterUpToggle();
         if (key === 'arenaRadius') {
           this.sim.resizeArena(this.tunables.arenaRadius);
@@ -143,6 +144,7 @@ export class Game {
       },
     );
     this.scaleEase = createScaleEase(this.tunables.timeScale);
+    this.applyHelp();
     this.view.setCharacters(loadCharacterSettings());
     this.view.setIndicators(loadIndicatorSettings());
     const shot = new URLSearchParams(location.search).get('shot');
@@ -256,6 +258,7 @@ export class Game {
     const playback = this.input.takePlayback();
     if (playback.pause) this.togglePause();
     if (playback.step) this.stepOnce = true;
+    if (playback.help) this.dev.setShowHelp(!this.tunables.showHelp);
     if (fresh.toggleDev) this.dev.toggle();
     // Mouse look is a per-frame distance, not a per-tick rate. Arm the shot
     // first so this sample is the curve's origin: it does not bend the arc
@@ -297,6 +300,14 @@ export class Game {
 
     requestAnimationFrame(this.frame);
   };
+
+  private applyHelp(): void {
+    const hints = document.getElementById('hints');
+    const mark = document.getElementById('help-hint');
+    const shown = this.tunables.showHelp;
+    if (hints) hints.hidden = !shown;
+    if (mark) mark.hidden = shown;
+  }
 
   private togglePause(): void {
     this.paused = !this.paused;
