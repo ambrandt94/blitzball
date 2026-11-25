@@ -204,6 +204,9 @@ export function defaultTunables(): Tunables {
     kickSpeed: 1.25,
     kickCurve: 0.5,
     kickWindup: 0.15,
+    kickPower: 18,
+    kickSweet: 0.14,
+    kickReach: 0.62,
     volleyCone: 0.6,
     volleySpread: 0.38,
     throwSpeedScale: 0.88,
@@ -382,6 +385,9 @@ export class DevPanel {
       this.range('Kick speed', 'kickSpeed', 1, 1.8, 0.01);
       this.range('Kick curve', 'kickCurve', 0, 1, 0.01);
       this.range('Kick windup', 'kickWindup', 0, 0.45, 0.01);
+      this.range('Kick power', 'kickPower', 6, 40, 0.5);
+      this.range('Sweet-spot width', 'kickSweet', 0.04, 0.4, 0.01);
+      this.range('Kick reach', 'kickReach', 0.25, 1.3, 0.01);
       this.range('Volley cone', 'volleyCone', 0.15, 1.2, 0.01);
       this.range('Volley spread', 'volleySpread', 0, 0.9, 0.01);
       this.range('Throw speed scale', 'throwSpeedScale', 0.5, 1.2, 0.01);

@@ -17,6 +17,7 @@ import { parseRoster } from '../ui/rosterStorage';
 import { matchRoster } from '../ui/matchPresets';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalMouthZ, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
+import { kickFootPoint } from './kick';
 import { authoritativeUp, lookBasis, rotateToward, stabilizeUp, transportUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
@@ -1355,6 +1356,7 @@ function checkKick(): void {
   if (cancel.ball.velocity.length() > 8) fail('cancelled kick launched the ball');
 
   const volley = setup();
+  volley.kickoffLock = 0;
   volley.yaw = 0;
   const human = volley.getHuman();
   human.facing.set(0, 0, 1);
@@ -1364,13 +1366,62 @@ function checkKick(): void {
   volley.ball.lastOwnerId = null;
   volley.ball.claimLock = 0;
   volley.ball.arc = null;
-  volley.ball.position.set(0, 0.1, 1.15);
-  volley.ball.velocity.set(0, 0, -2);
+  const foot = kickFootPoint(new THREE.Vector3(), human.position, human.facing, human.up, 0.5);
+  volley.ball.position.copy(foot);
+  volley.ball.velocity.set(0, 0, 0);
+  volley.ball.claimLock = 1;
+  volley.ball.lastOwnerId = human.id;
   const flick = blankIntent();
   flick.kickHeld = true;
   volley.step(1 / 60, flick);
-  if (human.hasBall || volley.ball.possession !== 'free') fail('volley took possession');
-  if (volley.ball.velocity.z < 8) fail(`volley did not send the ball along the aim (${volley.ball.velocity.z.toFixed(1)})`);
+  const releaseFlick = blankIntent();
+  volley.step(1 / 60, releaseFlick);
+  for (let i = 0; i < 24 && volley.ball.velocity.z < 8; i++) volley.step(1 / 60, releaseFlick);
+  if (human.hasBall || volley.ball.possession !== 'free') fail('kick took possession');
+  if (volley.ball.velocity.z < 8) fail(`kick did not send the ball along the aim (${volley.ball.velocity.z.toFixed(1)})`);
+}
+
+/** A running strike outruns a standing one, and a mistimed foot is weaker. */
+function checkKickStrike(): void {
+  const speedOf = (moving: boolean, phase: number): number => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.setSoloOpponent(false);
+    sim.tunables.ballDrag = 0;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.velocity.set(0, 0, moving ? 18 : 0);
+    sim.yaw = 0;
+    sim.pitch = 0;
+    const foot = kickFootPoint(new THREE.Vector3(), human.position, human.facing, human.up, phase);
+    sim.ball.possession = 'free';
+    sim.ball.ownerId = null;
+    sim.ball.lastOwnerId = human.id;
+    sim.ball.claimLock = 1.2;
+    sim.ball.arc = null;
+    sim.ball.position.copy(foot);
+    sim.ball.velocity.set(0, 0, moving ? 18 : 0);
+    const hold = blankIntent();
+    hold.kickHeld = true;
+    if (moving) hold.move.set(0, 0, 1);
+    sim.step(1 / 60, hold);
+    const release = blankIntent();
+    if (moving) release.move.set(0, 0, 1);
+    sim.step(1 / 60, release);
+    for (let i = 0; i < 24; i++) sim.step(1 / 60, release);
+    return sim.ball.velocity.length();
+  };
+  const standing = speedOf(false, 0.5);
+  const running = speedOf(true, 0.5);
+  const scuffed = speedOf(false, 0.34);
+  if (standing < 8) fail(`standing kick was too soft (${standing.toFixed(1)})`);
+  if (running < standing + 4) fail(`running kick ${running.toFixed(1)} was not faster than standing ${standing.toFixed(1)}`);
+  if (scuffed > standing * 0.72) fail(`mistimed kick ${scuffed.toFixed(1)} was not weaker than ${standing.toFixed(1)}`);
 }
 
 function checkCatchReadyPass(): void {
@@ -4079,6 +4130,7 @@ export function runRotationChecks(): void {
   checkCatchReadyPass();
   checkDeflect();
   checkKick();
+  checkKickStrike();
   checkTeammatePassReachesPlayer();
   checkOpponentInterceptsPass();
   checkTackleStillStrips();

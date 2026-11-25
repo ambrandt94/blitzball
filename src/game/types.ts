@@ -198,6 +198,12 @@ export interface Tunables {
   kickCurve: number;
   /** Extra seconds after release before the foot meets the ball. */
   kickWindup: number;
+  /** Metres per second added to a fully charged clean strike. */
+  kickPower: number;
+  /** How wide the clean part of the swing is, in swing-phase units. */
+  kickSweet: number;
+  /** Radius of the foot's hit volume, in metres. */
+  kickReach: number;
   /** Half-angle of the first-time volley, in radians off the aim. */
   volleyCone: number;
   /** Radians of aim error at full approach speed. */
