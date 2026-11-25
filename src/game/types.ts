@@ -116,6 +116,8 @@ export interface Tunables {
   shoulderOffset: number;
   /** Ease rate for that shift (1/seconds). Higher is snappier. */
   shoulderTransition: number;
+  /** Seconds to settle into the upright aim tread, and back to the swim. */
+  aimPostureBlend: number;
   /** Stadium sunbeams. Off hides them; strength scales what is left at the shell. */
   showSunbeams: boolean;
   /** 0 hides the shafts. 1 is the tuned rim brightness. */

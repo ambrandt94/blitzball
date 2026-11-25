@@ -7,6 +7,7 @@ import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, SHOT_ARC, setArenaRadius } fr
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
+import { aimPosturePitch, stepAimPosture, wantsAimPosture } from '../render/swimmerModel';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
 import { defaultTunables } from '../ui/DevPanel';
@@ -2477,6 +2478,51 @@ function checkAimPowerModes(): void {
   if (!taps.human.hasBall) fail('a cancelled tap window threw when it would have closed');
 }
 
+function checkAimPosture(): void {
+  const base = {
+    human: true,
+    strafing: false,
+    hasBall: false,
+    catchStance: false,
+    throwing: false,
+    burst: false,
+    pose: 'none' as const,
+  };
+  if (!wantsAimPosture({ ...base, strafing: true, hasBall: true, pose: 'hold' })) {
+    fail('right-click aim should stand up into the tread');
+  }
+  if (wantsAimPosture({ ...base, strafing: true, catchStance: true })) {
+    fail('off-ball catch should stay on the swim blend');
+  }
+  if (wantsAimPosture({ ...base, hasBall: true, pose: 'hold' })) {
+    fail('carrying without aim should stay on the speed swim');
+  }
+  if (!wantsAimPosture({ ...base, throwing: true, pose: 'shoot' })) {
+    fail('a throw should keep the tread until it ends');
+  }
+  if (wantsAimPosture({ ...base, strafing: true, hasBall: true, burst: true, pose: 'burst' })) {
+    fail('a shoulder check should not tread');
+  }
+  if (!wantsAimPosture({ ...base, human: false, hasBall: true, pose: 'hold' })) {
+    fail('an AI carrier should tread');
+  }
+  if (!wantsAimPosture({ ...base, human: false, hasBall: true, throwing: true, pose: 'pass' })) {
+    fail('an AI pass should tread');
+  }
+
+  let blend = 0;
+  for (let i = 0; i < 15; i++) blend = stepAimPosture(blend, true, 0.25, 1 / 60);
+  if (blend < 0.9) fail(`aim posture did not settle in 0.25s (${blend.toFixed(2)})`);
+  for (let i = 0; i < 15; i++) blend = stepAimPosture(blend, false, 0.25, 1 / 60);
+  if (blend > 0.1) fail(`aim posture did not release in 0.25s (${blend.toFixed(2)})`);
+
+  const level = aimPosturePitch(0, 1);
+  if (level < 0.12 || level > 0.35) fail(`level aim should lean slightly (${level.toFixed(2)})`);
+  const raised = aimPosturePitch(Math.sin(0.8), 1);
+  if (raised < level + 0.5) fail('an upward aim should pitch the visual body back toward vertical');
+  if (aimPosturePitch(0.4, 0) !== 0) fail('the swim posture should not take the aim pitch');
+}
+
 function checkWideCamera(): void {
   const sim = new Simulation(defaultTunables());
   if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
@@ -2543,6 +2589,7 @@ export function runRotationChecks(): void {
   checkCarryPalm();
   checkThrowPoses();
   checkAimPowerModes();
+  checkAimPosture();
   checkWideCamera();
   checkBallFit();
   checkSpeeds();

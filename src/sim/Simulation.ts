@@ -177,7 +177,8 @@ export class Simulation {
     from: new THREE.Vector3(),
     to: new THREE.Vector3(),
   };
-  private strafing = false;
+  /** Right-click aim is held. The view reads this; movement already slowed in the step. */
+  strafing = false;
   /** Seconds of extra reach left after a claim press. */
   private claimLatch = 0;
   /** Ball position at the start of this step's integration, for sweep catches and goal crossings. */

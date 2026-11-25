@@ -4,6 +4,7 @@ import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js
 import { BALL, PLAYER } from '../game/constants';
 import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
+import { authoritativeUp } from '../sim/math';
 import { TEAM } from './swimmer';
 import { sampleThrowPose } from './throwPose';
 
@@ -73,6 +74,51 @@ export interface SwimmerRig {
   throwShown: number;
   curveRightShown: number;
   curveUpShown: number;
+  /** Speed-based swim weight, before the aim posture pulls it toward tread. */
+  speedSwim: number;
+  /** 0 swim, 1 upright tread. Eased by the aim posture blend time. */
+  aimPosture: number;
+}
+
+/** A few degrees of forward lean so an upright tread still faces the aim. */
+export const AIM_POSTURE_LEAN = 0.2;
+
+export interface AimPostureInput {
+  human: boolean;
+  strafing: boolean;
+  hasBall: boolean;
+  catchStance: boolean;
+  throwing: boolean;
+  burst: boolean;
+  pose: PlayerState['actionPose'];
+}
+
+/**
+ * Right-click aim, and the throw that follows it, stand the body up.
+ * Off-ball catch stays in the swim. An AI carrier treads while they hold or throw.
+ */
+export function wantsAimPosture(input: AimPostureInput): boolean {
+  if (input.burst) return false;
+  if (input.throwing) return true;
+  if (input.human) return input.strafing && input.hasBall && !input.catchStance;
+  return input.hasBall && (input.pose === 'hold' || input.pose === 'pass' || input.pose === 'shoot');
+}
+
+/** Ease toward 1 while aiming and back to 0 after. `blendSeconds` is the settle time. */
+export function stepAimPosture(current: number, active: boolean, blendSeconds: number, dt: number): number {
+  const target = active ? 1 : 0;
+  const rate = 3 / Math.max(0.05, blendSeconds);
+  return current + (target - current) * (1 - Math.exp(-rate * dt));
+}
+
+/**
+ * Pitch of the visual rig, in its parent (facing/up) space.
+ * Cancels the aim's pitch so the tread stands near vertical, then leans a little toward the aim.
+ * Zero while swimming, so the swim clip's own pitch is left alone. The physics facing is not touched.
+ */
+export function aimPosturePitch(facingDotUp: number, aimBlend: number): number {
+  const aimPitch = Math.asin(Math.max(-1, Math.min(1, facingDotUp)));
+  return aimBlend * (aimPitch + AIM_POSTURE_LEAN);
 }
 
 const _goalL = new THREE.Vector3();
@@ -289,6 +335,8 @@ export function attachSwimmerModel(
       throwShown: 0,
       curveRightShown: 0,
       curveUpShown: 0,
+      speedSwim: 0,
+      aimPosture: 0,
     };
     disposeProcedural(group);
     group.add(wrapper);
@@ -480,9 +528,10 @@ function solveArm(
 }
 
 /**
- * Swim when moving, tread when slow. The group stays on facing/up — Swim already
- * lays the body along +Z around `Trans`, and Tread stays upright, so a second
- * root pitch would fold the swimmer. Gameplay poses are bone offsets after the mixer.
+ * Swim when moving, tread when slow or aiming. The group stays on facing/up.
+ * Swim lays the body along +Z around `Trans`. Tread stands upright, and the aim
+ * posture pitches only the visual rig so the camera aim is unchanged.
+ * Gameplay poses are bone offsets after the mixer, so the throw arms still win.
  */
 export function updateSwimmerRig(
   rig: SwimmerRig,
@@ -497,15 +546,10 @@ export function updateSwimmerRig(
   const speed01 = Math.min(1, speed / cruise);
   const slow = Math.max(0.4, tun.bodyIdleSpeed);
   const swimTarget = THREE.MathUtils.smoothstep(speed, slow * 0.45, slow * 1.25);
-  rig.swimWeight = THREE.MathUtils.damp(rig.swimWeight, swimTarget, 5.5, dt);
+  rig.speedSwim = THREE.MathUtils.damp(rig.speedSwim, swimTarget, 5.5, dt);
 
   const amount = tun.swimAnim ? tun.swimAnimAmount / Math.max(0.05, PLAYER.swimAnimAmount) : 0;
   const hz = tun.swimAnimRate * (0.45 + 0.55 * speed01) * amount;
-  rig.swim.setEffectiveWeight(rig.swimWeight);
-  rig.tread.setEffectiveWeight(1 - rig.swimWeight);
-  rig.swim.setEffectiveTimeScale(hz * SWIM_CLIP_SECONDS);
-  rig.tread.setEffectiveTimeScale(amount > 0 ? 1 : 0);
-  rig.mixer.update(dt);
 
   const pose = player.actionPose;
   const aimingShot = sim.shotAim.active && player.id === sim.humanId;
@@ -559,6 +603,28 @@ export function updateSwimmerRig(
   throwLive.curveRight = rig.curveRightShown;
   throwLive.curveUp = rig.curveUpShown;
   throwLive.throwRight = player.throwArm !== 'left';
+
+  const aiming = wantsAimPosture({
+    human: humanThrow,
+    strafing: sim.strafing,
+    hasBall: player.hasBall,
+    catchStance: sim.catchStance,
+    throwing,
+    burst: pose === 'burst',
+    pose,
+  });
+  rig.aimPosture = stepAimPosture(rig.aimPosture, aiming, tun.aimPostureBlend, dt);
+  // Speed still picks swim vs tread. Aim pulls that all the way to the tread clip.
+  rig.swimWeight = rig.speedSwim * (1 - rig.aimPosture);
+  rig.swim.setEffectiveWeight(rig.swimWeight);
+  rig.tread.setEffectiveWeight(1 - rig.swimWeight);
+  rig.swim.setEffectiveTimeScale(hz * SWIM_CLIP_SECONDS);
+  const treadRate = amount > 0 ? 1 : 0;
+  rig.tread.setEffectiveTimeScale(THREE.MathUtils.lerp(treadRate, 1.15, rig.aimPosture));
+  rig.mixer.update(dt);
+
+  const up = authoritativeUp(tun.goalAxisUp);
+  rig.model.rotation.set(aimPosturePitch(player.facing.dot(up), rig.aimPosture), 0, 0);
 
   fillGoal(player, sim, rig.swimWeight, rig.catchBlend, rig.holdBlend);
   if (goal.lean > 0.001) {
