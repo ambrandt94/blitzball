@@ -2122,47 +2122,183 @@ function checkStraightHold(): void {
   }
 }
 
-/** A saturated bend parks the cursor on the focus circle, on the side opposite the curve. */
+/**
+ * A saturated bend parks the hit spot on the big focus ring, opposite the bow.
+ * Mouse right bows right and lands on the left edge. Mouse up bows up and
+ * lands on the bottom edge. Left and down mirror that. A diagonal stays on
+ * the ring. Kicks use the same edges when kick curve is 1.
+ */
 function checkCurveCircle(): void {
-  const sim = new Simulation(defaultTunables());
-  sim.kickoffLock = 0;
-  sim.setSoloOpponent(false);
-  sim.tunables.powerMode = 'hold';
-  sim.tunables.shotPowerRate = 0;
-  sim.tunables.shotCarry = 0;
-  for (const p of sim.players) {
-    if (p.id !== sim.humanId) p.active = false;
-  }
-  const human = sim.getHuman();
-  human.position.set(0, 1, -8);
-  human.velocity.set(0, 0, 0);
-  human.facing.set(0, 0, 1);
-  human.up.set(0, 1, 0);
-  human.hasBall = true;
-  sim.ball.possession = 'held';
-  sim.ball.ownerId = human.id;
-  sim.ball.position.copy(holdPoint(sim));
-  sim.yaw = 0;
-  sim.pitch = 0;
-  const hold = blankIntent();
-  hold.shootHeld = true;
-  sim.armShotAim(hold);
-  sim.applyFrameLook(hold);
-  sim.step(1 / 60, hold);
+  const offChord = (point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): THREE.Vector3 => {
+    const ab = b.clone().sub(a);
+    const len2 = ab.lengthSq();
+    const t = len2 > 1e-6 ? point.clone().sub(a).dot(ab) / len2 : 0;
+    return point.clone().sub(a).addScaledVector(ab, -t);
+  };
+  const arm = (kick: boolean) => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.setSoloOpponent(false);
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = 0;
+    sim.tunables.shotCarry = 0;
+    sim.tunables.arcHandCurve = 0;
+    sim.tunables.kickCurve = 1;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 1, -8);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.position.copy(holdPoint(sim));
+    sim.yaw = 0;
+    sim.pitch = 0;
+    const hold = blankIntent();
+    hold.strafe = kick;
+    if (kick) hold.kickHeld = true;
+    else hold.shootHeld = true;
+    sim.armShotAim(hold);
+    sim.applyFrameLook(hold);
+    sim.step(1 / 60, hold);
+    return sim;
+  };
+  const cases: { label: string; x: number; y: number; axis: 'right' | 'up'; sign: number }[] = [
+    { label: 'right', x: 0.8, y: 0, axis: 'right', sign: -1 },
+    { label: 'left', x: -0.8, y: 0, axis: 'right', sign: 1 },
+    { label: 'up', x: 0, y: -0.8, axis: 'up', sign: -1 },
+    { label: 'down', x: 0, y: 0.8, axis: 'up', sign: 1 },
+  ];
+  const run = (label: string, kick: boolean, x: number, y: number, axis: 'right' | 'up', sign: number) => {
+    const sim = arm(kick);
+    const drag = blankIntent();
+    drag.strafe = kick;
+    if (kick) drag.kickHeld = true;
+    else drag.shootHeld = true;
+    drag.lookDelta.x = x;
+    drag.lookDelta.y = y;
+    sim.applyFrameLook(drag);
+    sim.updateAimPresentation(drag, 1 / 60);
+    const radius = sim.landingMarker.focusRadius;
+    if (radius < 0.8) fail(`${label} big ring collapsed (${radius.toFixed(3)})`);
+    const shift = sim.landingMarker.position.clone().sub(sim.landingMarker.straightPosition);
+    if (Math.abs(shift.length() - radius) > radius * 0.12) {
+      fail(`${label} landed ${shift.length().toFixed(3)} from center, ring is ${radius.toFixed(3)}`);
+    }
+    const basis = lookBasis(sim.yaw, sim.pitch, false);
+    const along = shift.dot(axis === 'right' ? basis.right : basis.up);
+    if (along * sign < radius * 0.85) {
+      fail(`${label} hit spot is ${along.toFixed(3)} along ${axis}, ring is ${radius.toFixed(3)}`);
+    }
+    const ghost = sim.chargeGhost;
+    if (ghost.length < 4) fail(`${label} hid the preview`);
+    const bow = offChord(ghost[Math.floor(ghost.length / 2)]!, ghost[0]!, ghost[ghost.length - 1]!);
+    const bowAlong = bow.dot(axis === 'right' ? basis.right : basis.up);
+    if (bowAlong * sign > -radius * 0.08) {
+      fail(`${label} did not bow opposite the hit spot (${bowAlong.toFixed(3)})`);
+    }
+    return sim;
+  };
+  for (const c of cases) run(c.label, false, c.x, c.y, c.axis, c.sign);
+  run('kick right', true, 0.8, 0, 'right', -1);
+  run('kick up', true, 0, -0.8, 'up', -1);
+
+  const diagonal = arm(false);
   const drag = blankIntent();
   drag.shootHeld = true;
-  drag.lookDelta.x = 4;
-  sim.applyFrameLook(drag);
-  sim.updateAimPresentation(drag, 1 / 60);
-  const radius = sim.landingMarker.focusRadius;
-  const shift = sim.landingMarker.position.distanceTo(sim.landingMarker.straightPosition);
-  if (radius < 0.1) fail(`focus circle collapsed (${radius.toFixed(3)})`);
-  if (Math.abs(shift - radius) > 0.08) {
-    fail(`full curve landed ${shift.toFixed(3)} from center, circle is ${radius.toFixed(3)}`);
+  drag.lookDelta.x = -0.7;
+  drag.lookDelta.y = -0.7;
+  diagonal.applyFrameLook(drag);
+  diagonal.updateAimPresentation(drag, 1 / 60);
+  const radius = diagonal.landingMarker.focusRadius;
+  const shift = diagonal.landingMarker.position.clone().sub(diagonal.landingMarker.straightPosition);
+  if (Math.abs(shift.length() - radius) > radius * 0.12) {
+    fail(`diagonal left the ring (${shift.length().toFixed(3)} vs ${radius.toFixed(3)})`);
   }
-  const right = lookBasis(sim.yaw, sim.pitch, false).right;
-  const along = sim.landingMarker.position.clone().sub(sim.landingMarker.straightPosition).dot(right);
-  if (along > -radius * 0.85) fail(`full right curve did not sit on the left edge (${along.toFixed(3)})`);
+  const basis = lookBasis(diagonal.yaw, diagonal.pitch, false);
+  if (shift.dot(basis.right) < radius * 0.45) fail('diagonal did not shift right');
+  if (shift.dot(basis.up) > -radius * 0.45) fail('diagonal did not shift down');
+
+  const flown = run('flight', false, 0.8, 0, 'right', -1);
+  const ghost = flown.chargeGhost.map((p) => p.clone());
+  const landing = flown.landingMarker.position.clone();
+  flown.step(1 / 60, blankIntent());
+  const arc = flown.ball.arc;
+  if (!arc) fail('curved throw did not fly');
+  const point = new THREE.Vector3();
+  let worst = 0;
+  const n = Math.min(ghost.length, SHOT_ARC.samples + 1);
+  for (let i = 0; i < n; i++) {
+    quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
+    worst = Math.max(worst, point.distanceTo(ghost[i]!));
+  }
+  if (worst > 0.35) fail(`curved preview left the flight by ${worst.toFixed(2)}`);
+  if (arc.p2.distanceTo(landing) > 0.45) fail('flight missed the hit spot');
+}
+
+/** Zero look input stays straight at every distance and charge, with no jump. */
+function checkStraightContinuity(): void {
+  const bowOf = (sim: Simulation): number => {
+    const ghost = sim.chargeGhost;
+    if (ghost.length < 4) fail('straight sweep hid the preview');
+    const a = ghost[0]!;
+    const b = ghost[ghost.length - 1]!;
+    const ab = b.clone().sub(a);
+    const len = ab.length();
+    if (len < 1e-4) return 0;
+    let worst = 0;
+    for (const point of ghost) {
+      const t = THREE.MathUtils.clamp(point.clone().sub(a).dot(ab) / (len * len), 0, 1);
+      worst = Math.max(worst, point.distanceTo(a.clone().addScaledVector(ab, t)));
+    }
+    return worst;
+  };
+  for (const kick of [false, true]) {
+    for (const aim of [8, 18, 32, 60]) {
+      const sim = new Simulation(defaultTunables());
+      sim.kickoffLock = 0;
+      sim.setSoloOpponent(false);
+      sim.tunables.powerMode = 'hold';
+      sim.tunables.shotPowerRate = 1;
+      sim.tunables.arcAimDistance = aim;
+      sim.tunables.kickWindup = 0.05;
+      for (const p of sim.players) {
+        if (p.id !== sim.humanId) p.active = false;
+      }
+      const human = sim.getHuman();
+      human.position.set(0, 1, 0);
+      human.velocity.set(0, 0, 0);
+      human.facing.set(1, 0, 0);
+      human.up.set(0, 1, 0);
+      human.hasBall = true;
+      sim.ball.possession = 'held';
+      sim.ball.ownerId = human.id;
+      sim.ball.position.copy(holdPoint(sim));
+      sim.yaw = Math.PI / 2;
+      sim.pitch = 0;
+      const hold = blankIntent();
+      hold.strafe = kick;
+      if (kick) hold.kickHeld = true;
+      else hold.shootHeld = true;
+      sim.armShotAim(hold);
+      sim.applyFrameLook(hold);
+      const label = `${kick ? 'kick' : 'throw'} @${aim}`;
+      let previous = 0;
+      for (let i = 0; i < 70; i++) {
+        sim.step(1 / 60, hold);
+        const bow = bowOf(sim);
+        if (bow > 0.05) fail(`${label} bent ${bow.toFixed(3)} at charge ${sim.charge.amount.toFixed(2)}`);
+        if (Math.abs(bow - previous) > 0.03) {
+          fail(`${label} snapped ${Math.abs(bow - previous).toFixed(3)} as charge grew`);
+        }
+        previous = bow;
+      }
+    }
+  }
 }
 
 function checkHoldLookOrder(): void {
@@ -4366,6 +4502,7 @@ export function runRotationChecks(): void {
   checkHoldLookOrder();
   checkHoldStartsStraight();
   checkStraightHold();
+  checkStraightContinuity();
   checkCurveCircle();
   checkPowerMeter();
   checkTeammateLock();

@@ -117,11 +117,13 @@ export const PLAYER = {
  * Underwater shots are not gravity arcs. The ball stays in the hand while
  * aiming and flies a quadratic Bezier from that hand to the marker.
  * `height` is a small resting lob as a fraction of the chord, along camera up.
- * `handCurve` is an optional side bias. It defaults to 0 so a click with no
- * mouse movement throws straight. Mouse bend is added on top, in world units,
- * capped at `bendLimit` × chord. `powerRate` drives the meter and the hold
- * charge. Power also slides the landing distance from `minRange` out to the
- * aim distance. `powerAngle` is extra loft at full power.
+ * It blends in with the vertical mouse bend, so a hold with no mouse movement
+ * stays straight at every distance and charge. `handCurve` is an optional side
+ * bias. It defaults to 0. Mouse bend slides the hit spot across the big focus
+ * ring; a full bend lands on the ring's edge and does not pass it. `powerRate`
+ * drives the meter and the hold charge. Power also slides the landing distance
+ * from `minRange` out to the aim distance. `powerAngle` is extra loft at full
+ * power, blended the same way as the resting lob.
  */
 export const SHOT_ARC = {
   /** Look-ray distance to the marker when the aim starts. */
@@ -133,9 +135,9 @@ export const SHOT_ARC = {
   /** Max mouse bend as a fraction of the origin→target chord. */
   bendLimit: 0.85,
   /**
-   * How far a full bend slides the landing across the focus circle.
-   * 1 puts a max curve on the circle's edge. 0 keeps the spot on the aim ray.
-   * The shift never goes past the circle.
+   * How far a full bend slides the landing across the big focus ring.
+   * 1 puts a max curve on that ring's edge. 0 keeps the spot on the aim ray.
+   * The shift never goes past the ring.
    */
   curveAimOffset: 1,
   height: 0.06,
