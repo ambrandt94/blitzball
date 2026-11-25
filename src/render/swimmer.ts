@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const TEAM = {
+export const TEAM = {
   0: {
     suit: 0x1c6fe0,
     armor: 0xd7f4ff,
@@ -19,9 +19,16 @@ const TEAM = {
   },
 } as const;
 
-/** Athletic wetsuit swimmer. Limb pivots stay named so the procedural poses still drive them. */
+/**
+ * Athletic wetsuit swimmer. Limb pivots stay named so the procedural poses still drive them.
+ * Body meshes live under `proceduralBody` so a loaded GLB can replace them and leave the
+ * rings, badge, and hit flash in place.
+ */
 export function createSwimmer(team: 0 | 1, marker: 'you' | 'mate' | 'none'): THREE.Group {
   const group = new THREE.Group();
+  const body = new THREE.Group();
+  body.name = 'proceduralBody';
+  group.add(body);
   const palette = TEAM[team];
   const suit = new THREE.MeshStandardMaterial({
     color: palette.suit,
@@ -58,44 +65,44 @@ export function createSwimmer(team: 0 | 1, marker: 'you' | 'mate' | 'none'): THR
   const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.5, 5, 10), suit);
   torso.rotation.x = Math.PI / 2;
   torso.position.set(0, 0.02, 0.06);
-  group.add(torso);
+  body.add(torso);
 
   const chest = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.14, 0.32), armor);
   chest.position.set(0, 0.16, 0.2);
-  group.add(chest);
+  body.add(chest);
   const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.04, 0.34), gold);
   stripe.position.set(0, 0.2, 0.2);
-  group.add(stripe);
+  body.add(stripe);
 
   const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 0.42), gold);
   ridge.position.set(0, 0.26, -0.02);
-  group.add(ridge);
+  body.add(ridge);
 
   const hips = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), suit);
   hips.scale.set(1.15, 0.82, 0.95);
   hips.position.set(0, -0.02, -0.28);
-  group.add(hips);
+  body.add(hips);
 
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.27, 16, 12), suit);
   head.scale.set(1, 0.94, 1.05);
   head.position.set(0, 0.1, 0.7);
-  group.add(head);
+  body.add(head);
 
   const visorMesh = new THREE.Mesh(new THREE.SphereGeometry(0.18, 14, 10), visor);
   visorMesh.scale.set(1.45, 0.55, 0.42);
   visorMesh.position.set(0, 0.12, 0.88);
-  group.add(visorMesh);
+  body.add(visorMesh);
 
   const nose = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.05, 0.08), visor);
   nose.position.set(0, 0.12, 1.0);
   nose.name = 'facingChevron';
-  group.add(nose);
+  body.add(nose);
 
   for (const side of [-1, 1] as const) {
     const pad = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 8), armor);
     pad.scale.set(1.15, 0.8, 0.95);
     pad.position.set(side * 0.32, 0.12, 0.26);
-    group.add(pad);
+    body.add(pad);
 
     const pivot = new THREE.Group();
     pivot.name = side < 0 ? 'armL' : 'armR';
@@ -118,7 +125,7 @@ export function createSwimmer(team: 0 | 1, marker: 'you' | 'mate' | 'none'): THR
     const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.045, 0.07), gold);
     thumb.position.set(side * 0.6, side * 0.02, 0.07);
     pivot.add(thumb);
-    group.add(pivot);
+    body.add(pivot);
   }
 
   for (const side of [-1, 1] as const) {
@@ -140,7 +147,7 @@ export function createSwimmer(team: 0 | 1, marker: 'you' | 'mate' | 'none'): THR
     const finEdge = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.018, 0.07), gold);
     finEdge.position.set(0, 0.03, -0.66);
     pivot.add(finEdge);
-    group.add(pivot);
+    body.add(pivot);
   }
 
   if (marker === 'you' || marker === 'mate') {
