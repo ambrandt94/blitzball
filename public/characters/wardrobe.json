@@ -1,0 +1,296 @@
+{
+ "format": "cf-swimwear/1",
+ "generator": "Character Forge v2 (blitzball_swimmer/build_wardrobe.py)",
+ "rig": {
+  "joints": [
+   "Root",
+   "Trans",
+   "Hips",
+   "Pelvis",
+   "Thigh_L",
+   "Knee_L",
+   "Shin_L",
+   "Foot_L",
+   "Thigh_R",
+   "Knee_R",
+   "Shin_R",
+   "Foot_R",
+   "Tail_1",
+   "Tail_2",
+   "Tail_3",
+   "Spine",
+   "Chest",
+   "Neck",
+   "Head",
+   "Clavicle_L",
+   "UpperArm_L",
+   "LowerArm_L",
+   "Hand_L",
+   "Wing_L",
+   "Clavicle_R",
+   "UpperArm_R",
+   "LowerArm_R",
+   "Hand_R",
+   "Wing_R"
+  ],
+  "root": "Root",
+  "heightM": 0.9463,
+  "up": "+Y",
+  "forward": "+Z",
+  "units": "metres",
+  "hands": [
+   "Hand_L",
+   "Hand_R"
+  ],
+  "spine": [
+   "Hips",
+   "Spine",
+   "Chest",
+   "Neck",
+   "Head"
+  ],
+  "note": "identical joint order, rest TRS and inverseBindMatrices in every file; bind garments by bone name"
+ },
+ "base": {
+  "file": "swimmer_base.glb",
+  "material": "Skin",
+  "texture": "tex_body.png",
+  "hair": {
+   "node": "Hair",
+   "material": "Hair",
+   "texture": "tex_hair.png"
+  },
+  "segments": {
+   "body:rest": "Body_rest",
+   "body:pelvis": "Body_pelvis",
+   "body:torso": "Body_torso",
+   "body:thigh_L": "Body_thigh_L",
+   "body:thigh_R": "Body_thigh_R"
+  },
+  "clips": {
+   "Idle": 2.0417,
+   "Swim": 1.2,
+   "Tread": 1.6
+  },
+  "tris": {
+   "Body_rest": 2490,
+   "Body_pelvis": 402,
+   "Body_torso": 182,
+   "Body_thigh_L": 104,
+   "Body_thigh_R": 104,
+   "Hair": 198
+  }
+ },
+ "bands": [
+  "under",
+  "base",
+  "mid",
+  "armor",
+  "outer"
+ ],
+ "slots": {
+  "smallclothes": {
+   "band": "under",
+   "region": "torso"
+  },
+  "torso_inner": {
+   "band": "base",
+   "region": "torso"
+  },
+  "legs": {
+   "band": "base",
+   "region": "legs"
+  }
+ },
+ "hideRules": {
+  "body:<segment>": "set the base node named in base.segments invisible",
+  "<garmentId>": "do not show that garment at all",
+  "<garmentId>:<segment>": "set that garment's segment node invisible (garments[id].segments)",
+  "order": "apply hides of every worn garment; layer/band order is under < base < mid < armor < outer; displaces = cannot be worn together (same slot alternatives)"
+ },
+ "tint": {
+  "material": "TeamTint (one per garment file)",
+  "how": "material.color.set(team) multiplies the neutral light-grey texture; trims are darker greys so they read as a darker shade of the team colour",
+  "mask": "optional: <id>_tintmask.png (same UVs as the garment texture), white = tint, black = keep the trim colour: final = mix(tex, tex*team, mask)"
+ },
+ "garments": {
+  "trunks": {
+   "slot": "smallclothes",
+   "band": "under",
+   "layer": 0,
+   "kind": "mesh",
+   "label": "Square-leg trunks",
+   "shellOffsetM": 0.002,
+   "hides": [
+    "body:pelvis"
+   ],
+   "hiddenBy": [
+    "onepiece",
+    "boardshorts"
+   ],
+   "displaces": [],
+   "file": "garment_trunks.glb",
+   "material": "TeamTint",
+   "texture": "trunks_tex.png",
+   "mask": "trunks_tintmask.png",
+   "nodes": [
+    "Garment_trunks_leg_L",
+    "Garment_trunks_leg_R",
+    "Garment_trunks_upper"
+   ],
+   "segments": {
+    "trunks:leg_L": "Garment_trunks_leg_L",
+    "trunks:leg_R": "Garment_trunks_leg_R",
+    "trunks:upper": "Garment_trunks_upper"
+   },
+   "tris": 534,
+   "textureSize": 256,
+   "texelsPerMetre": 280.0
+  },
+  "onepiece": {
+   "slot": "torso_inner",
+   "band": "base",
+   "layer": 1,
+   "kind": "mesh",
+   "label": "One-piece racer",
+   "shellOffsetM": 0.0025,
+   "hides": [
+    "body:pelvis",
+    "body:torso",
+    "trunks"
+   ],
+   "hiddenBy": [],
+   "displaces": [],
+   "file": "garment_onepiece.glb",
+   "material": "TeamTint",
+   "texture": "onepiece_tex.png",
+   "mask": "onepiece_tintmask.png",
+   "nodes": [
+    "Garment_onepiece"
+   ],
+   "segments": {},
+   "tris": 999,
+   "textureSize": 256,
+   "texelsPerMetre": 280.0
+  },
+  "boardshorts": {
+   "slot": "legs",
+   "band": "base",
+   "layer": 1,
+   "kind": "mesh",
+   "label": "Board shorts (knee)",
+   "shellOffsetM": [
+    0.005,
+    0.023
+   ],
+   "hides": [
+    "body:pelvis",
+    "body:thigh_L",
+    "body:thigh_R",
+    "trunks"
+   ],
+   "hiddenBy": [],
+   "displaces": [
+    "boardshorts_asym"
+   ],
+   "file": "garment_boardshorts.glb",
+   "material": "TeamTint",
+   "texture": "boardshorts_tex.png",
+   "mask": "boardshorts_tintmask.png",
+   "nodes": [
+    "Garment_boardshorts"
+   ],
+   "segments": {},
+   "tris": 512,
+   "textureSize": 256,
+   "texelsPerMetre": 280.0
+  },
+  "boardshorts_asym": {
+   "slot": "legs",
+   "band": "base",
+   "layer": 1,
+   "kind": "mesh",
+   "label": "Board shorts (asymmetric: L below knee, R mid-thigh)",
+   "shellOffsetM": [
+    0.005,
+    0.023
+   ],
+   "hides": [
+    "body:pelvis",
+    "body:thigh_L",
+    "trunks:upper",
+    "trunks:leg_L"
+   ],
+   "hiddenBy": [],
+   "displaces": [
+    "boardshorts"
+   ],
+   "wornOver": [
+    "trunks"
+   ],
+   "file": "garment_boardshorts_asym.glb",
+   "material": "TeamTint",
+   "texture": "boardshorts_asym_tex.png",
+   "mask": "boardshorts_asym_tintmask.png",
+   "nodes": [
+    "Garment_boardshorts_asym"
+   ],
+   "segments": {},
+   "tris": 468,
+   "textureSize": 256,
+   "texelsPerMetre": 280.0
+  }
+ },
+ "looks": {
+  "onepiece": {
+   "file": "swimmer_onepiece.glb",
+   "garments": [
+    "onepiece"
+   ],
+   "tris": 3895,
+   "materials": [
+    "Skin",
+    "Hair",
+    "TeamTint"
+   ]
+  },
+  "trunks": {
+   "file": "swimmer_trunks.glb",
+   "garments": [
+    "trunks"
+   ],
+   "tris": 3612,
+   "materials": [
+    "Skin",
+    "Hair",
+    "TeamTint"
+   ]
+  },
+  "boardshorts": {
+   "file": "swimmer_boardshorts.glb",
+   "garments": [
+    "boardshorts"
+   ],
+   "tris": 3382,
+   "materials": [
+    "Skin",
+    "Hair",
+    "TeamTint"
+   ]
+  },
+  "boardshorts_asym": {
+   "file": "swimmer_boardshorts_asym.glb",
+   "garments": [
+    "trunks",
+    "boardshorts_asym"
+   ],
+   "tris": 3550,
+   "materials": [
+    "Skin",
+    "Hair",
+    "TeamTint_under",
+    "TeamTint"
+   ]
+  }
+ }
+}

@@ -1,6 +1,12 @@
 import { ARENA_RADIUS, BALL, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
 import type { BotBehavior, CameraPresetId, MatchPresetId, PowerMode, RosterSpec, Tunables } from '../game/types';
 import { loadRoster, saveRoster } from './rosterStorage';
+import {
+  defaultCharacterSettings,
+  loadCharacterSettings,
+  saveCharacterSettings,
+  type CharacterSettings,
+} from './characterSettings';
 import { matchRoster, presetAllowsGoalieToggle } from './matchPresets';
 import {
   applyCameraPreset,
@@ -45,6 +51,11 @@ export interface RosterControl {
   setBotBehavior(id: number, behavior: BotBehavior): void;
   applyRoster(spec: RosterSpec): void;
   exportRoster(): RosterSpec;
+}
+
+export interface CharacterMenu {
+  outfits: { id: string; label: string }[];
+  onChange: (settings: CharacterSettings) => void;
 }
 
 function loadPowerMode(): PowerMode | null {
@@ -234,6 +245,8 @@ export class DevPanel {
   private waterFogInput: HTMLInputElement | null = null;
   private matchPreset: MatchPresetId = 'custom';
   private withGoalies = true;
+  private character: CharacterMenu | null = null;
+  private characterSettings: CharacterSettings = defaultCharacterSettings();
   visible = true;
 
   constructor(
@@ -241,11 +254,14 @@ export class DevPanel {
     tunables: Tunables,
     onChange: (key: keyof Tunables) => void,
     roster: RosterControl,
+    character?: CharacterMenu,
   ) {
     this.root = root;
     this.tunables = tunables;
     this.onChange = onChange;
     this.roster = roster;
+    this.character = character ?? null;
+    this.characterSettings = loadCharacterSettings();
     this.mount = root;
     const saved = loadPowerMode();
     if (saved) this.tunables.powerMode = saved;
@@ -277,6 +293,56 @@ export class DevPanel {
     this.setVisible(!this.visible);
   }
 
+  private renderCharacter(): void {
+    const menu = this.character;
+    if (!menu) return;
+    this.section('Character', 'character', () => {
+      const outfits = menu.outfits;
+      const pick = (label: string, current: string, apply: (id: string) => void) => {
+        const row = document.createElement('div');
+        row.className = 'row';
+        const lab = document.createElement('label');
+        lab.style.flex = '1';
+        lab.textContent = label;
+        const input = document.createElement('select');
+        for (const outfit of outfits) {
+          const item = document.createElement('option');
+          item.value = outfit.id;
+          item.textContent = outfit.label;
+          input.append(item);
+        }
+        input.value = current;
+        input.addEventListener('change', () => apply(input.value));
+        row.append(lab, input);
+        this.mount.append(row);
+      };
+      pick('You', this.characterSettings.human, (id) => {
+        if (!outfits.some((outfit) => outfit.id === id)) return;
+        this.characterSettings = { ...this.characterSettings, human: id as CharacterSettings['human'] };
+        saveCharacterSettings(this.characterSettings);
+        menu.onChange(this.characterSettings);
+      });
+      pick('Blue team', this.characterSettings.team[0], (id) => {
+        if (!outfits.some((outfit) => outfit.id === id)) return;
+        this.characterSettings = {
+          ...this.characterSettings,
+          team: [id as CharacterSettings['human'], this.characterSettings.team[1]],
+        };
+        saveCharacterSettings(this.characterSettings);
+        menu.onChange(this.characterSettings);
+      });
+      pick('Orange team', this.characterSettings.team[1], (id) => {
+        if (!outfits.some((outfit) => outfit.id === id)) return;
+        this.characterSettings = {
+          ...this.characterSettings,
+          team: [this.characterSettings.team[0], id as CharacterSettings['human']],
+        };
+        saveCharacterSettings(this.characterSettings);
+        menu.onChange(this.characterSettings);
+      });
+    });
+  }
+
   private render(): void {
     this.root.innerHTML = '';
     this.mount = this.root;
@@ -284,6 +350,7 @@ export class DevPanel {
     h.textContent = 'Dev toggles';
     this.root.appendChild(h);
     this.renderRosterCard();
+    this.renderCharacter();
 
     this.section('Throwing / Power', 'throwing', () => {
       this.choice('Power mode', 'powerMode', [
