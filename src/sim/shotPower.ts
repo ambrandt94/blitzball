@@ -28,6 +28,11 @@ export interface PowerStrategy {
   tick(dt: number, tuning: PowerTuning): boolean;
   /** 0..1 power the shot will use. */
   amount(): number;
+  /**
+   * Target and pull write power from the mouse. Meter, tap, and hold ignore it
+   * so a stray write cannot fight their own clocks.
+   */
+  setAmount(value: number): void;
   /** Extra clicks belong here, not to a shoulder check or a new aim. */
   capturing(): boolean;
   taps(): number;
@@ -40,9 +45,16 @@ export interface PowerStrategy {
 /** Zero taps. A lob, not a dead ball. */
 export const TAP_SOFT = 0.12;
 
+/** World units of landing distance per unit of look delta in target mode. */
+export const TARGET_DISTANCE_SPEED = 42;
+/** Look-delta units of backward drag that fill pull mode. */
+export const PULL_FULL_TRAVEL = 1.15;
+
 export function createPowerStrategy(mode: PowerMode): PowerStrategy {
   if (mode === 'tap') return new TapPower();
   if (mode === 'hold') return new HoldPower();
+  if (mode === 'target') return new TargetPower();
+  if (mode === 'pull') return new PullPower();
   return new MeterPower();
 }
 
@@ -79,6 +91,8 @@ class MeterPower implements PowerStrategy {
   amount(): number {
     return this.value;
   }
+
+  setAmount(): void {}
 
   capturing(): boolean {
     return false;
@@ -130,6 +144,8 @@ class HoldPower implements PowerStrategy {
   amount(): number {
     return this.value;
   }
+
+  setAmount(): void {}
 
   capturing(): boolean {
     return false;
@@ -209,6 +225,8 @@ class TapPower implements PowerStrategy {
     return this.value;
   }
 
+  setAmount(): void {}
+
   capturing(): boolean {
     return this.open;
   }
@@ -223,6 +241,110 @@ class TapPower implements PowerStrategy {
 
   windowLeft(): number {
     return this.open ? Math.max(0, this.left) : 0;
+  }
+
+  reset(): void {
+    this.begin();
+  }
+}
+
+/** Power is whatever throw reaches the chosen landing distance. Release throws there. */
+class TargetPower implements PowerStrategy {
+  readonly mode = 'target' as const;
+  private value = 0;
+
+  begin(): void {
+    this.value = 0;
+  }
+
+  hold(): void {}
+
+  release(): boolean {
+    return true;
+  }
+
+  tap(): boolean {
+    return false;
+  }
+
+  tick(): boolean {
+    return false;
+  }
+
+  amount(): number {
+    return this.value;
+  }
+
+  setAmount(value: number): void {
+    this.value = Math.min(1, Math.max(0, value));
+  }
+
+  capturing(): boolean {
+    return false;
+  }
+
+  taps(): number {
+    return 0;
+  }
+
+  maxTaps(): number {
+    return 0;
+  }
+
+  windowLeft(): number {
+    return 0;
+  }
+
+  reset(): void {
+    this.begin();
+  }
+}
+
+/** Dragging back fills power. A short drag stays a soft toss. Release throws. */
+class PullPower implements PowerStrategy {
+  readonly mode = 'pull' as const;
+  private value = 0;
+
+  begin(): void {
+    this.value = 0;
+  }
+
+  hold(): void {}
+
+  release(): boolean {
+    return true;
+  }
+
+  tap(): boolean {
+    return false;
+  }
+
+  tick(): boolean {
+    return false;
+  }
+
+  amount(): number {
+    return this.value;
+  }
+
+  setAmount(value: number): void {
+    this.value = Math.min(1, Math.max(0, value));
+  }
+
+  capturing(): boolean {
+    return false;
+  }
+
+  taps(): number {
+    return 0;
+  }
+
+  maxTaps(): number {
+    return 0;
+  }
+
+  windowLeft(): number {
+    return 0;
   }
 
   reset(): void {

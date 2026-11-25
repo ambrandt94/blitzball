@@ -8,6 +8,7 @@ import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
+import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
 import { defaultTunables } from '../ui/DevPanel';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
@@ -39,6 +40,7 @@ function blankIntent(zoom = false): InputIntent {
     pass: false,
     shoot: false,
     shootHeld: false,
+    aimCancel: false,
     burst: false,
     passHeld: false,
     zoomOut: zoom,
@@ -2182,6 +2184,299 @@ function checkThrowPower(): void {
   if (tapFire > 8) fail('5 taps waited for the window');
 }
 
+/** A reported palm owns the carry point. Procedural swimmers keep the chest offset. */
+function checkCarryPalm(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  quietRoster(sim);
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  human.throwArm = 'right';
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.lastOwnerId = human.id;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.set(0, 0.15, 0.85);
+
+  const palm = new THREE.Vector3(-0.4, 0.95, 0.35);
+  const gap = sim.ball.position.distanceTo(palm);
+  sim.setCarryPalm(human.id, palm);
+  if (sim.ball.position.distanceTo(palm) < gap * 0.5) fail('setting the palm snapped the ball');
+
+  sim.step(1 / 60, blankIntent());
+  const afterOne = sim.ball.position.distanceTo(palm);
+  if (afterOne > gap - 0.02) fail('catch did not ease toward the palm');
+  if (afterOne < gap * 0.5) fail(`catch lerp snapped (${afterOne.toFixed(2)} of ${gap.toFixed(2)})`);
+
+  for (let i = 0; i < 4; i++) sim.step(1 / 60, blankIntent());
+  if (sim.ball.position.distanceTo(palm) > 0.05) {
+    fail(`ball did not settle in the palm (${sim.ball.position.distanceTo(palm).toFixed(2)})`);
+  }
+
+  human.position.set(2, -1, 0.5);
+  sim.step(1 / 60, blankIntent());
+  const followed = palm.clone().add(new THREE.Vector3(2, -1, 0.5));
+  if (sim.ball.position.distanceTo(followed) > 0.08) {
+    fail(`ball did not follow the hand (${sim.ball.position.distanceTo(followed).toFixed(2)})`);
+  }
+
+  const atRelease = sim.ball.position.clone();
+  const pass = blankIntent();
+  pass.pass = true;
+  sim.step(1 / 60, pass);
+  const released: string = sim.ball.possession;
+  if (human.hasBall || released !== 'free') fail('palm pass did not release');
+  if (Math.abs(sim.ball.position.y - atRelease.y) > 0.35) {
+    fail(`pass left the palm height (${sim.ball.position.y.toFixed(2)} vs ${atRelease.y.toFixed(2)})`);
+  }
+  if (sim.ball.position.distanceTo(atRelease) > 1.1) fail('pass teleported off the palm');
+  if (sim.ball.velocity.z < 8) fail('pass did not leave along the aim');
+  for (let i = 0; i < 30; i++) {
+    sim.step(1 / 60, blankIntent());
+    if (human.hasBall) fail('thrower reclaimed a pass that started in the palm');
+  }
+
+  const plain = new Simulation(defaultTunables());
+  plain.kickoffLock = 0;
+  quietRoster(plain);
+  const swimmer = plain.getHuman();
+  swimmer.position.set(0, 0, 0);
+  swimmer.velocity.set(0, 0, 0);
+  swimmer.facing.set(0, 0, 1);
+  swimmer.up.set(0, 1, 0);
+  swimmer.hasBall = true;
+  plain.yaw = 0;
+  plain.pitch = 0;
+  plain.ball.possession = 'held';
+  plain.ball.ownerId = swimmer.id;
+  plain.ball.lastOwnerId = swimmer.id;
+  plain.ball.velocity.set(0, 0, 0);
+  plain.ball.position.set(0, 0.15, 0.85);
+  const plainPass = blankIntent();
+  plainPass.pass = true;
+  plain.step(1 / 60, plainPass);
+  if (plain.ball.position.y > 0.35) fail('offset pass stayed up on a palm that was never reported');
+  const gapRelease = PLAYER.radius + BALL.radius + 0.2;
+  if (plain.ball.position.z < gapRelease * 0.8) fail('offset pass did not start in front of the body');
+
+  const checkSim = new Simulation(defaultTunables());
+  checkSim.setSoloOpponent(false);
+  checkSim.kickoffLock = 0;
+  checkSim.tunables.defenseActive = false;
+  const you = checkSim.getHuman();
+  const enemy = checkSim.players.find((p) => p.team === 1 && p.role === 'ai');
+  if (!enemy) fail('missing a carrier to check');
+  you.position.set(0, 0, -4);
+  you.velocity.set(0, 0, 0);
+  you.facing.set(0, 0, 1);
+  you.up.set(0, 1, 0);
+  you.burstCooldown = 0;
+  checkSim.yaw = 0;
+  checkSim.pitch = 0;
+  enemy.position.set(0, 0, 6);
+  enemy.velocity.set(0, 0, 0);
+  enemy.facing.set(0, 0, 1);
+  enemy.up.set(0, 1, 0);
+  enemy.hasBall = true;
+  enemy.active = true;
+  checkSim.ball.possession = 'held';
+  checkSim.ball.ownerId = enemy.id;
+  checkSim.ball.lastOwnerId = enemy.id;
+  checkSim.ball.velocity.set(0, 0, 0);
+  checkSim.ball.position.copy(enemy.position);
+  checkSim.setCarryPalm(enemy.id, enemy.position.clone().add(new THREE.Vector3(0, 1.05, 0.3)));
+  for (let i = 0; i < 5; i++) checkSim.step(1 / 60, blankIntent());
+  you.position.set(0, 0, 0);
+  enemy.position.set(0, 0, 0.85);
+  const check = blankIntent();
+  check.burst = true;
+  check.move.set(0, 0, 1);
+  checkSim.step(1 / 60, check);
+  const loose: string = checkSim.ball.possession;
+  if (enemy.hasBall || loose !== 'free') fail('check did not knock the palmed ball loose');
+  if (checkSim.ball.position.y < 0.7) {
+    fail(`check teleported the ball off the palm (${checkSim.ball.position.y.toFixed(2)})`);
+  }
+  if (checkSim.ball.velocity.z < 6) fail('checked palm ball was not thrown forward');
+}
+
+/** Soft and full throws are different poses, and the release starts on the windup. */
+function checkThrowPoses(): void {
+  const low = sampleThrowPose(0, -1, false, 0, 0, true);
+  const high = sampleThrowPose(1, -1, false, 0, 0, true);
+  const cradle = Math.hypot(low.handX + 0.16, low.handY - 0.2, low.handZ - 0.5);
+  if (cradle > 0.28) fail(`soft windup left the cradle (${cradle.toFixed(2)})`);
+  if (!(high.handZ < low.handZ - 0.2)) fail('full windup did not cock the hand back');
+  if (Math.abs(high.chestYaw) < Math.abs(low.chestYaw) + 0.2) fail('full windup did not twist the chest');
+  if (high.offWeight < 0.6) fail('full windup did not bring the off arm in');
+  if (low.offWeight > 0.35) fail('soft windup pulled the off arm off the stroke');
+
+  const letGo = sampleThrowPose(1, 0, false, 0, 0, true);
+  const popped = Math.hypot(letGo.handX - high.handX, letGo.handY - high.handY, letGo.handZ - high.handZ);
+  if (popped > 0.02) fail(`release popped off the windup (${popped.toFixed(3)})`);
+
+  const snap = sampleThrowPose(1, 0.25, false, 0, 0, true);
+  if (snap.handZ < high.handZ + 0.15) fail('full throw did not snap the hand forward');
+  const softSnap = sampleThrowPose(0, 0.25, false, 0, 0, true);
+  const fullArc = Math.hypot(snap.handX - high.handX, snap.handY - high.handY, snap.handZ - high.handZ);
+  const softArc = Math.hypot(softSnap.handX - low.handX, softSnap.handY - low.handY, softSnap.handZ - low.handZ);
+  if (fullArc < softArc + 0.15) fail('full throw arc was not larger than the soft flick');
+
+  const done = sampleThrowPose(1, 1, false, 0, 0, true);
+  if (done.armWeight > 0.02) fail('follow-through did not blend back into the stroke');
+
+  const pass = sampleThrowPose(1, -1, true, 0, 0, true);
+  if (pass.handZ < high.handZ + 0.2) fail('a pass windup was as cocked as a full shot');
+
+  const straight = sampleThrowPose(0.8, -1, false, 0, 0, true);
+  const curved = sampleThrowPose(0.8, -1, false, 1, 0, true);
+  if (!(curved.handX < straight.handX - 0.02)) fail('curve did not lead the throwing hand');
+  const left = sampleThrowPose(1, -1, false, 0, 0, false);
+  if (left.handX <= 0.02) fail('left throw arm did not mirror');
+  if (left.chestYaw < 0.2) fail('left throw did not mirror the chest');
+
+  if (Math.abs(throwPoseSeconds(0) - 0.25) > 0.001) fail('soft throw was not a short follow-through');
+  if (Math.abs(throwPoseSeconds(1) - 0.45) > 0.001) fail('full throw was not a long follow-through');
+  if (throwPoseSeconds(1, true) >= throwPoseSeconds(1)) fail('a pass follow-through was not lighter');
+
+  const soft = new Simulation(defaultTunables());
+  soft.kickoffLock = 0;
+  soft.tunables.powerMode = 'hold';
+  quietRoster(soft);
+  const swimmer = soft.getHuman();
+  swimmer.position.set(0, 0, 0);
+  swimmer.velocity.set(0, 0, 0);
+  swimmer.facing.set(0, 0, 1);
+  swimmer.up.set(0, 1, 0);
+  swimmer.hasBall = true;
+  soft.ball.possession = 'held';
+  soft.ball.ownerId = swimmer.id;
+  soft.ball.lastOwnerId = swimmer.id;
+  soft.ball.position.set(0, 0.15, 0.85);
+  const press = blankIntent();
+  press.shootHeld = true;
+  soft.step(1 / 60, press);
+  soft.step(1 / 60, blankIntent());
+  if (swimmer.actionPose !== 'shoot') fail('soft release did not play the throw');
+  if (swimmer.actionPoseDuration < 0.24 || swimmer.actionPoseDuration > 0.32) {
+    fail(`soft follow-through was ${swimmer.actionPoseDuration.toFixed(3)}s`);
+  }
+
+  const { sim, human, hold } = aimingSim();
+  sim.tunables.powerMode = 'hold';
+  sim.tunables.shotPowerRate = 4;
+  fillThrow(sim, hold);
+  if (human.actionPose !== 'hold') fail('a full charge left the carry pose');
+  sim.step(1 / 60, blankIntent());
+  const posed: string = human.actionPose;
+  if (posed !== 'shoot') fail('full release did not play the throw');
+  if (human.actionPoseDuration < 0.42) fail(`full follow-through was short (${human.actionPoseDuration.toFixed(3)}s)`);
+  if (human.hasBall) fail('full release did not leave the hand');
+}
+
+/** Target picks a spot, pull scales with the drag, and right-click drops the throw. */
+function checkAimPowerModes(): void {
+  const aimed = aimingSim();
+  aimed.sim.tunables.powerMode = 'target';
+  aimed.hold.shootHeld = true;
+  aimed.sim.step(1 / 60, aimed.hold);
+  const started = aimed.sim.landingMarker.distance;
+  if (Math.abs(started - aimed.sim.tunables.arcAimDistance) > 2) {
+    fail(`target mode did not start on the aim point (${started.toFixed(1)})`);
+  }
+  const pullIn = blankIntent();
+  pullIn.shootHeld = true;
+  pullIn.lookDelta.y = 0.45;
+  aimed.sim.applyFrameLook(pullIn);
+  if (aimed.sim.landingMarker.distance > started - 4) fail('mouse down did not bring the target in');
+  const bendBefore = aimed.sim.shotAim.bendRight;
+  const slide = blankIntent();
+  slide.shootHeld = true;
+  slide.lookDelta.x = 0.25;
+  aimed.sim.applyFrameLook(slide);
+  if (aimed.sim.shotAim.bendRight <= bendBefore + 0.5) fail('target mode ignored sideways curve');
+  const spot = aimed.sim.shotAim.target.clone();
+  aimed.sim.step(1 / 60, blankIntent());
+  if (aimed.human.hasBall) fail('target release did not throw');
+  let best = aimed.sim.ball.position.distanceTo(spot);
+  for (let i = 0; i < 150; i++) {
+    aimed.sim.step(1 / 60, blankIntent());
+    best = Math.min(best, aimed.sim.ball.position.distanceTo(spot));
+  }
+  if (best > 2.5) fail(`target shot missed the chosen spot (${best.toFixed(2)})`);
+
+  const pushed = aimingSim();
+  pushed.sim.tunables.powerMode = 'target';
+  pushed.hold.shootHeld = true;
+  pushed.sim.step(1 / 60, pushed.hold);
+  const past = blankIntent();
+  past.shootHeld = true;
+  past.lookDelta.y = -0.8;
+  pushed.sim.applyFrameLook(past);
+  if (!pushed.sim.landingMarker.outOfReach) fail('a spot past full power did not dim the marker');
+  if (pushed.sim.charge.amount < 0.98) fail('an out-of-reach target did not clamp power');
+
+  const sling = aimingSim();
+  sling.sim.tunables.powerMode = 'pull';
+  sling.hold.shootHeld = true;
+  sling.sim.step(1 / 60, sling.hold);
+  if (sling.sim.charge.amount > 0.08) fail('pull mode did not start as a soft toss');
+  const back = blankIntent();
+  back.shootHeld = true;
+  back.lookDelta.y = 0.4;
+  sling.sim.applyFrameLook(back);
+  const mid = sling.sim.charge.amount;
+  sling.sim.applyFrameLook(back);
+  if (sling.sim.charge.amount < mid + 0.15) fail('a longer pull did not add power');
+  if (!sling.sim.pullBand.visible) fail('pull mode hid the stretch');
+  const side = blankIntent();
+  side.shootHeld = true;
+  side.lookDelta.x = 0.35;
+  sling.sim.applyFrameLook(side);
+  if (Math.abs(sling.sim.shotAim.bendRight) < 1) fail('sideways drift did not curve the pull');
+  if (sling.sim.landingMarker.distance < 6) fail('pull power did not slide the marker out');
+
+  const held = aimingSim();
+  held.sim.tunables.powerMode = 'hold';
+  held.hold.shootHeld = true;
+  for (let i = 0; i < 20; i++) held.sim.step(1 / 60, held.hold);
+  if (!held.sim.shotAim.active || held.sim.charge.amount < 0.2) fail('cancel setup never started a throw');
+  const drop = blankIntent();
+  drop.shootHeld = true;
+  drop.aimCancel = true;
+  drop.strafe = true;
+  held.sim.step(1 / 60, drop);
+  if (!held.human.hasBall || held.sim.ball.possession !== 'held') fail('right-click released the held throw');
+  if (held.sim.shotAim.active || held.sim.charge.active) fail('right-click left the throw armed');
+  const still = blankIntent();
+  still.shootHeld = true;
+  held.sim.armShotAim(still);
+  held.sim.step(1 / 60, still);
+  if (held.sim.shotAim.active) fail('the held button started a new throw after cancel');
+  held.sim.step(1 / 60, blankIntent());
+  if (!held.human.hasBall) fail('letting go after cancel threw the ball');
+
+  const taps = aimingSim();
+  taps.sim.tunables.powerMode = 'tap';
+  taps.hold.shootHeld = true;
+  taps.sim.step(1 / 60, taps.hold);
+  taps.sim.step(1 / 60, blankIntent());
+  if (!taps.human.hasBall || !taps.sim.shotAim.active) fail('tap window did not stay armed');
+  const abort = blankIntent();
+  abort.aimCancel = true;
+  taps.sim.step(1 / 60, abort);
+  if (!taps.human.hasBall) fail('right-click during the tap window released the ball');
+  if (taps.sim.shotAim.active || taps.sim.charge.active) fail('the tap window stayed open after cancel');
+  for (let i = 0; i < 40; i++) taps.sim.step(1 / 60, blankIntent());
+  if (!taps.human.hasBall) fail('a cancelled tap window threw when it would have closed');
+}
+
 function checkWideCamera(): void {
   const sim = new Simulation(defaultTunables());
   if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
@@ -2245,6 +2540,9 @@ export function runRotationChecks(): void {
   checkShotSteer();
   checkThrowAim();
   checkThrowPower();
+  checkCarryPalm();
+  checkThrowPoses();
+  checkAimPowerModes();
   checkWideCamera();
   checkBallFit();
   checkSpeeds();

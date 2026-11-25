@@ -33,9 +33,10 @@ npm run preview  # serve the build
 | Shoulder check along your swim, or your facing if you are not steering (only when you do not have the ball). Knocks any swimmer back, staggers them, and pops a held ball loose | LMB | — |
 | Throw an arc. The aim direction locks to you, the ball stays in the hand, and the marker slides with power. Meter and Hold throw on release. Tap waits for extra clicks | Hold LMB while carrying | RT |
 | While throwing: creep (about 30% speed). The trajectory and the marker move with you | `WASD` and `Space` / `C` | Left stick, RB / LT |
-| Bend the arc, while throwing. Starts at 0; only movement during the hold adds curve | Mouse | Right stick |
-| Full-power reach, while throwing. The wheel sets how far a full-power shot lands | Mouse wheel | — |
-| Power mode: Meter (default, oscillates), Tap (clicks after release), or Hold (fills while held). Saved in the browser | Dev panel, Power mode | — |
+| Bend the arc, while throwing. Meter, Hold, and Tap: both mouse axes bend. Target and Pull: horizontal bends, vertical sets distance or pull | Mouse | Right stick |
+| Full-power reach, while throwing. The wheel sets how far a full-power shot lands. In Target mode the wheel slides the landing spot instead | Mouse wheel | — |
+| Power mode: Meter, Tap, Hold, Target (aim the landing spot), or Pull (drag back to charge). Saved in the browser | Dev panel, Power mode | — |
+| Cancel a throw, including the Tap window. The ball stays in the hand and letting go of LMB does not fire | `RMB` while the throw is held | — |
 | Throw the arc to a teammate | Put the landing marker on them, then hold LMB and release | — |
 | Wide / overview camera | Middle mouse toggles. `V` still zooms (hold, or toggle when Dev says so) | LB |
 | Call for a pass | `G` | — |
@@ -71,6 +72,10 @@ The body snaps to the camera on the press, so the arc does not drop or ease in. 
 - **Meter** (default). **Power fill rate** runs the meter empty-to-full-to-empty while the button is held. Release throws at the current value, and the marker is sliding the whole time.
 - **Hold**. Power rises linearly while the button is held, stops at full, and release throws. No oscillation.
 - **Tap**. The hold still aims and bends. Release opens a **Tap window** (about 0.45s). Each extra click adds power: zero taps is a soft touch, and **Max taps** (about 5) is full power and throws immediately. The marker pulses and jumps outward, a pip lights in the HUD, and a short click plays. Those clicks do not shoulder-check or start a new aim. The throw fires when the window closes if you have not filled it.
+- **Target**. You pick the landing spot and power follows it. On the press the marker starts at the current aim distance, clamped between the short lob and full reach. Mouse left/right still bends the curve. Mouse up pushes the marker out along that aim, mouse down brings it in, and the wheel does the same. Power is whatever throw reaches that spot, clamped at full reach. A spot past full power leaves the marker red and dim, and the throw stops at the far ring. Release throws to the chosen in-range spot.
+- **Pull**. Drag the mouse down, back toward you, to draw the sling. Power is the pull length up to a max, so a small drag is a soft toss. Sideways drift bends the curve. A faint band stretches back from the hand, and the landing marker slides out as the pull grows. Release throws.
+
+Right-click while the throw is held, in every mode and during the Tap window, cancels it. The ball stays in the hand, power resets, the windup eases back to the carry, and the curve preview goes away (or back to the straight right-click aim if that button is still down). Letting go of left-click afterward does not fire, and that right-click does not shoulder-check or start a catch.
 
 Power lerps shot speed from min to max, slides the landing distance from the short lob out to the aim range, and adds up to **Power angle** × chord of extra loft. It does not replace the mouse bend.
 
@@ -89,7 +94,7 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 - **Test opponent** (on by default): one orange swimmer slowly chases the ball, well under cruise speed. With the ball they wander and never pass or shoot, so a shoulder check can pop it loose. The teammate and any other enemy stay parked. Turn the toggle off to restore practice.
 - Practice, with the test opponent off: one green-ring teammate who gets open, receives a pass, and passes back after **Teammate pass delay** or when you press `G`. The orange defender holds position unless **Defense chases** is on.
 - **3v3 scaffolding**: six roster slots (human + teammate + one defender active; three stubs inactive)
-- Dev toggles: goal-axis vs world-up, V/LB zoom hold vs toggle, invert look X/Y, test opponent, arena radius, sunbeams and sunbeam strength, shoulder offset / transition, arc hand curve, power mode (meter / tap / hold, saved in the browser) with fill rate, tap window, max taps, and power angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs
+- Dev toggles: goal-axis vs world-up, V/LB zoom hold vs toggle, invert look X/Y, test opponent, arena radius, sunbeams and sunbeam strength, shoulder offset / transition, arc hand curve, power mode (meter / tap / hold / target / pull, saved in the browser) with fill rate, tap window, max taps, and power angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs
 
 ## Not in Phase 0
 

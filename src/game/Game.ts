@@ -13,6 +13,7 @@ function orEdges(pending: InputIntent, fresh: InputIntent): InputIntent {
     drop: pending.drop || fresh.drop,
     pass: pending.pass || fresh.pass,
     shoot: pending.shoot || fresh.shoot,
+    aimCancel: pending.aimCancel || fresh.aimCancel,
     burst: pending.burst || fresh.burst,
     resetBall: pending.resetBall || fresh.resetBall,
     callForPass: pending.callForPass || fresh.callForPass,
@@ -28,6 +29,7 @@ function withoutEdges(intent: InputIntent): InputIntent {
     drop: false,
     pass: false,
     shoot: false,
+    aimCancel: false,
     burst: false,
     resetBall: false,
     zoomTogglePressed: false,
@@ -187,9 +189,14 @@ export class Game {
       const dist =
         shooting && this.sim.landingMarker.visible ? Math.round(this.sim.landingMarker.distance) : 0;
       const tapMode = shooting && this.tunables.powerMode === 'tap';
+      const mode = this.tunables.powerMode;
       this.syncPips(tapMode ? Math.max(1, readout.tapMax) : 0, readout.taps);
       if (tapMode) {
         this.chargeLabel.textContent = dist > 0 ? `Tap ${readout.taps}/${readout.tapMax} · ${dist}u` : `Tap ${readout.taps}/${readout.tapMax}`;
+      } else if (shooting && mode === 'target') {
+        this.chargeLabel.textContent = this.sim.landingMarker.outOfReach ? `Out of reach · ${dist}u` : `Target ${dist}u`;
+      } else if (shooting && mode === 'pull') {
+        this.chargeLabel.textContent = dist > 0 ? `Pull ${pct} · ${dist}u` : `Pull ${pct}`;
       } else if (shooting && dist > 0) {
         this.chargeLabel.textContent = `Power ${pct} · ${dist}u`;
       } else {

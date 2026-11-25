@@ -42,7 +42,12 @@ import {
   segmentScores,
 } from './goal';
 import { clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
+import { throwPoseSeconds } from '../render/throwPose';
+import { PULL_FULL_TRAVEL, TARGET_DISTANCE_SPEED } from './shotPower';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
+
+/** Fresh catches ease into the palm instead of popping onto the hand bone. */
+const CARRY_BLEND_SECONDS = 0.08;
 
 function makePlayer(
   id: number,
@@ -62,6 +67,7 @@ function makePlayer(
     up: new THREE.Vector3(0, 1, 0),
     sprinting: false,
     hasBall: false,
+    throwArm: 'right',
     tackleCooldown: 0,
     reclaimGrace: 0,
     selfCatchLock: false,
@@ -79,6 +85,10 @@ function makePlayer(
     active,
     actionPose: 'none',
     actionPoseTime: 0,
+    actionPoseDuration: 0,
+    throwPosePower: 0,
+    throwCurveRight: 0,
+    throwCurveUp: 0,
   };
 }
 
@@ -148,6 +158,24 @@ export class Simulation {
     minPosition: new THREE.Vector3(),
     maxPosition: new THREE.Vector3(),
     pulse: 0,
+    outOfReach: false,
+  };
+  /** Where the landing dot is drawn. Target mode can place this past full power. */
+  private markerShown = new THREE.Vector3();
+  /** Chosen landing distance in target mode. May sit past full reach. */
+  private targetReach = 0;
+  /** Accumulated backward drag in pull mode, in look-delta units. */
+  private pullTravel = 0;
+  /**
+   * Set when a throw is cancelled while the button is still down, so letting
+   * go does not fire and the held button does not start a new aim.
+   */
+  private shotBlocked = false;
+  /** Slingshot band from the hand back along the aim. Only pull mode draws it. */
+  readonly pullBand = {
+    visible: false,
+    from: new THREE.Vector3(),
+    to: new THREE.Vector3(),
   };
   private strafing = false;
   /** Seconds of extra reach left after a claim press. */
@@ -197,6 +225,18 @@ export class Simulation {
     predictVel: new THREE.Vector3(),
     burstLaunch: new THREE.Vector3(),
   };
+  /**
+   * Palm center in the carrier's body basis (right, up, facing), written by the
+   * view after the mixer and pose offsets. Missing means the procedural offset.
+   */
+  private carryPalm = new Map<number, THREE.Vector3>();
+  /** 0 at the catch, 1 once the ball has settled into the palm. */
+  private carryBlend = 1;
+  private carryFrom = new THREE.Vector3();
+  private palmRight = new THREE.Vector3();
+  private palmUp = new THREE.Vector3();
+  private palmForward = new THREE.Vector3();
+  private palmDelta = new THREE.Vector3();
 
   tunables: Tunables;
 
@@ -269,6 +309,10 @@ export class Simulation {
         p.catchStance = false;
         p.actionPose = 'none';
         p.actionPoseTime = 0;
+        p.actionPoseDuration = 0;
+        p.throwPosePower = 0;
+        p.throwCurveRight = 0;
+        p.throwCurveUp = 0;
       }
     }
 
@@ -288,6 +332,11 @@ export class Simulation {
     this.shotAim.lockId = null;
     this.shotAimManual = false;
     this.power.reset();
+    this.shotBlocked = false;
+    this.pullTravel = 0;
+    this.targetReach = 0;
+    this.pullBand.visible = false;
+    this.landingMarker.outOfReach = false;
     this.syncThrowReadout();
     this.match.resetTimer = 0;
     this.kickoffLock = 2.2;
@@ -535,6 +584,8 @@ export class Simulation {
    */
   armShotAim(intent: InputIntent): void {
     if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
+    if (this.shotBlocked) return;
+    if (intent.aimCancel) return;
     const human = this.getHuman();
     if (!human.hasBall || !intent.shootHeld) return;
     if (!this.shotAim.active) this.beginShotAim();
@@ -546,8 +597,19 @@ export class Simulation {
     // While a shot is held the view stays put so the marker doesn't swim,
     // and the same mouse deltas bend the Bezier control point instead.
     if (this.shotAim.active) {
-      this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
-      this.shotAim.bendUp += -intent.lookDelta.y * sy * this.tunables.arcBendSpeed;
+      const mode = this.tunables.powerMode;
+      if (mode === 'target') {
+        // Horizontal bends the arc. Vertical, and the wheel, slide the landing spot.
+        this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
+        this.nudgeTargetReach(-intent.lookDelta.y * sy * TARGET_DISTANCE_SPEED);
+      } else if (mode === 'pull') {
+        // Sideways drift is the curve. Dragging down, toward the player, is the pull.
+        this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
+        this.nudgePull(intent.lookDelta.y * sy);
+      } else {
+        this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
+        this.shotAim.bendUp += -intent.lookDelta.y * sy * this.tunables.arcBendSpeed;
+      }
       this.clampStoredBend();
       if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
       return;
@@ -561,6 +623,10 @@ export class Simulation {
   /** Mouse-wheel aim range. Call once per rendered frame, not per physics step. */
   nudgeAimDistance(delta: number): void {
     if (delta === 0) return;
+    if (this.tunables.powerMode === 'target' && this.shotAim.active) {
+      this.nudgeTargetReach(delta);
+      return;
+    }
     const before = this.aimDistanceBias;
     this.aimDistanceBias = THREE.MathUtils.clamp(this.aimDistanceBias + delta, -40, 48);
     const applied = this.aimDistanceBias - before;
@@ -720,8 +786,20 @@ export class Simulation {
   }
 
   private playPose(player: PlayerState, pose: ActionPose, seconds: number): void {
+    const switching = player.actionPose !== pose;
     player.actionPose = pose;
     player.actionPoseTime = Math.max(player.actionPoseTime, seconds);
+    if (switching || player.actionPoseDuration < player.actionPoseTime) {
+      player.actionPoseDuration = player.actionPoseTime;
+    }
+  }
+
+  /** Remember the power and the curve so the follow-through matches the throw that just left the hand. */
+  private rememberThrow(player: PlayerState, power: number): void {
+    player.throwPosePower = THREE.MathUtils.clamp(power, 0, 1);
+    const aimed = player.id === this.humanId && this.shotAim.active;
+    player.throwCurveRight = aimed ? THREE.MathUtils.clamp(this.shotAim.bendRight / 22, -1, 1) : 0;
+    player.throwCurveUp = aimed ? THREE.MathUtils.clamp(this.shotAim.bendUp / 22, -1, 1) : 0;
   }
 
   private resolveTeammate(player: PlayerState, intent: InputIntent): void {
@@ -735,13 +813,14 @@ export class Simulation {
     const aim = human.position.clone().addScaledVector(human.velocity, 0.28).sub(player.position);
     if (aim.lengthSq() < 0.25) aim.copy(player.facing);
     else aim.normalize();
-    this.placeRelease(player, aim);
+    this.releaseAtHand(player, aim);
     const dist = Math.max(3, player.position.distanceTo(human.position));
     const passSpeed = Math.max(4, this.tunables.passSpeed);
     const speed = Math.min(passSpeed, Math.max(passSpeed * 0.45, dist * this.tunables.ballDrag * 1.25));
     this.noteThrow(player);
     this.releaseBall(aim.multiplyScalar(speed).addScaledVector(player.velocity, 0.15));
-    this.playPose(player, 'pass', 0.28);
+    this.rememberThrow(player, 0.4);
+    this.playPose(player, 'pass', throwPoseSeconds(0.4, true));
     this.match.statusMessage = 'Pass back';
   }
 
@@ -759,10 +838,14 @@ export class Simulation {
   private updatePossession(human: PlayerState, intent: InputIntent, dt: number): void {
     // Charge shoot / pass for human
     if (human.hasBall) {
-      if (intent.drop) {
+      if (intent.aimCancel && this.throwInProgress()) {
+        this.cancelAimedThrow(human, intent.shootHeld);
+      } else if (this.shotBlocked) {
+        if (!intent.shootHeld) this.shotBlocked = false;
+      } else if (intent.drop) {
         this.clearShotAim();
         const toss = this.lookForward(human);
-        this.placeRelease(human, toss);
+        this.releaseAtHand(human, toss);
         this.releaseBall(toss.multiplyScalar(4).add(human.velocity));
         human.reclaimGrace = PLAYER.reclaimCoyote;
         this.match.statusMessage = 'Ball dropped';
@@ -893,6 +976,14 @@ export class Simulation {
     const sep = PLAYER.radius + BALL.radius;
     for (const player of this.players) {
       if (!player.active) continue;
+      // A pass, shot, drop, or check leaves from the palm, which overlaps the
+      // body sphere. Pushing it out here would pop it off the hand.
+      if (
+        player.id === this.ball.lastOwnerId &&
+        (player.selfCatchLock || player.reclaimGrace > 0 || this.ball.claimLock > 0.15)
+      ) {
+        continue;
+      }
       const delta = this.ball.position.clone().sub(player.position);
       const dist = delta.length();
       if (dist >= sep || dist <= 1e-5) continue;
@@ -944,6 +1035,8 @@ export class Simulation {
     this.ball.ownerId = player.id;
     this.ball.lastOwnerId = player.id;
     this.ball.velocity.set(0, 0, 0);
+    this.carryFrom.copy(this.ball.position);
+    this.carryBlend = 0;
     this.playPose(player, 'claim', 0.34);
   }
 
@@ -1013,7 +1106,26 @@ export class Simulation {
     this.power.reset();
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
+    this.pullBand.visible = false;
+    this.landingMarker.outOfReach = false;
     this.syncThrowReadout();
+  }
+
+  /** A held throw or an open tap window. Right-click drops it without releasing. */
+  private throwInProgress(): boolean {
+    return this.shotAim.active || this.power.capturing() || (this.charge.active && this.charge.kind === 'shoot');
+  }
+
+  private cancelAimedThrow(human: PlayerState, buttonStillDown: boolean): void {
+    this.clearShotAim();
+    this.pullTravel = 0;
+    this.targetReach = 0;
+    this.shotBlocked = buttonStillDown;
+    if (human.hasBall) {
+      human.actionPose = 'hold';
+      human.actionPoseTime = 0;
+    }
+    this.match.statusMessage = 'Throw cancelled';
   }
 
   private powerTuning(): PowerTuning {
@@ -1042,6 +1154,8 @@ export class Simulation {
     }
     if (this.power.mode === 'tap') return 'Aim locked — release, then tap for power';
     if (this.power.mode === 'hold') return 'Hold to charge — release throws';
+    if (this.power.mode === 'target') return 'Mouse up/down sets distance, left/right bends — release throws';
+    if (this.power.mode === 'pull') return 'Drag down to pull, sideways bends — release throws';
     return 'Throwing — power slides the marker, mouse bends the arc';
   }
 
@@ -1073,7 +1187,8 @@ export class Simulation {
       this.fireAimedShot(human);
       return;
     }
-    // Stay in the carry pose. A shoot windup pulls the arms off the ball.
+    // Stay in the hold pose so the ball remains in the palm. The view cocks
+    // that hand from the live power without leaving the carry.
     human.actionPose = 'hold';
     human.actionPoseTime = 0;
     this.refreshShotTarget();
@@ -1142,10 +1257,66 @@ export class Simulation {
     this.power.begin();
     this.charge.active = true;
     this.charge.kind = 'shoot';
+    this.seedAimPower();
     this.charge.amount = this.power.amount();
     this.syncThrowReadout();
     this.acquireTeammate();
     this.refreshShotTarget();
+  }
+
+  /**
+   * Target mode starts on the current aim point. Pull mode starts as a soft toss.
+   * Other modes keep whatever their strategy begins at.
+   */
+  private seedAimPower(): void {
+    const mode = this.tunables.powerMode;
+    if (mode === 'pull') {
+      this.pullTravel = 0;
+      this.power.setAmount(0);
+      return;
+    }
+    if (mode !== 'target') return;
+    const minD = SHOT_ARC.minRange;
+    const maxD = Math.max(minD, this.aimDistance());
+    this.targetReach = THREE.MathUtils.clamp(this.straightAimDistance(), minD, maxD);
+    const span = Math.max(0.001, maxD - minD);
+    this.power.setAmount((this.targetReach - minD) / span);
+  }
+
+  /** Distance from the hand to the straight-throw aim point, after the shell clamp. */
+  private straightAimDistance(): number {
+    const human = this.getHuman();
+    const hand = this.lookCarryPoint(human, this.tmp.holdTarget);
+    const raw = this.tmp.predictPos.copy(hand).addScaledVector(this.cameraBasis().forward, this.aimDistance());
+    const out = this.tmp.predictVel;
+    clampAimMarker(out, raw, hand, SHOT_ARC.minRange, this.markerLimit());
+    return Math.max(SHOT_ARC.minRange, out.distanceTo(hand));
+  }
+
+  /** Slide the chosen landing distance. Past full power the marker goes red and the throw clamps. */
+  private nudgeTargetReach(delta: number): void {
+    if (!this.shotAim.active || delta === 0) return;
+    this.breakShotLock();
+    const minD = SHOT_ARC.minRange;
+    const maxD = Math.max(minD, this.aimDistance());
+    const past = maxD + 24;
+    this.targetReach = THREE.MathUtils.clamp(this.targetReach + delta, minD, past);
+    const span = Math.max(0.001, maxD - minD);
+    this.power.setAmount((this.targetReach - minD) / span);
+    this.charge.amount = this.power.amount();
+    this.refreshShotTarget();
+    if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
+  }
+
+  /** Mouse-down lengthens the pull. Mouse-up gives some of it back. */
+  private nudgePull(delta: number): void {
+    if (!this.shotAim.active || delta === 0) return;
+    const full = Math.max(0.2, PULL_FULL_TRAVEL);
+    this.pullTravel = THREE.MathUtils.clamp(this.pullTravel + delta, 0, full);
+    this.power.setAmount(this.pullTravel / full);
+    this.charge.amount = this.power.amount();
+    this.refreshShotTarget();
+    if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
   }
 
   /** Landing distance for a power in 0..1, from a short lob out to the aim range. */
@@ -1169,12 +1340,31 @@ export class Simulation {
    */
   private refreshShotTarget(): void {
     const power = THREE.MathUtils.clamp(this.charge.amount, 0, 1);
-    this.pointAlongAim(this.landingMarker.minPosition, this.shotReach(0));
-    this.pointAlongAim(this.landingMarker.maxPosition, this.shotReach(1));
+    const minD = SHOT_ARC.minRange;
+    const maxD = Math.max(minD, this.aimDistance());
+    this.pointAlongAim(this.landingMarker.minPosition, minD);
+    this.pointAlongAim(this.landingMarker.maxPosition, maxD);
+    const aimingTarget = this.tunables.powerMode === 'target' && this.shotAim.active;
     if (this.shotAim.lockId === null) {
       this.pointAlongAim(this.shotAim.target, this.shotReach(power));
+      if (aimingTarget) this.pointAlongAim(this.markerShown, this.targetReach);
+      else this.markerShown.copy(this.shotAim.target);
+    } else {
+      this.markerShown.copy(this.shotAim.target);
     }
-    this.landingMarker.distance = this.ball.position.distanceTo(this.shotAim.target);
+    this.landingMarker.outOfReach = aimingTarget && this.shotAim.lockId === null && this.targetReach > maxD + 0.35;
+    this.landingMarker.distance = this.ball.position.distanceTo(this.markerShown);
+    this.syncPullBand();
+  }
+
+  /** A short band from the hand back along the aim. Length follows the pull. */
+  private syncPullBand(): void {
+    const show = this.shotAim.active && this.tunables.powerMode === 'pull' && this.charge.kind === 'shoot';
+    this.pullBand.visible = show;
+    if (!show) return;
+    const len = 0.4 + THREE.MathUtils.clamp(this.charge.amount, 0, 1) * 2.2;
+    this.pullBand.from.copy(this.ball.position);
+    this.pullBand.to.copy(this.ball.position).addScaledVector(this.lockedAim, -len);
   }
 
   private breakShotLock(): void {
@@ -1343,12 +1533,13 @@ export class Simulation {
       return;
     }
     const aim = this.getAimDirection(player, false);
-    this.placeRelease(player, aim);
+    this.releaseAtHand(player, aim);
     const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), charge);
     const impulse = aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.35));
     this.noteThrow(player);
     this.releaseBall(impulse);
-    this.playPose(player, 'shoot', 0.3);
+    this.rememberThrow(player, charge);
+    this.playPose(player, 'shoot', throwPoseSeconds(charge));
     this.match.statusMessage = charge > 0.7 ? 'Charged shot!' : 'Shot';
   }
 
@@ -1379,29 +1570,125 @@ export class Simulation {
     };
     quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 0, arc.duration);
     const thrownToMate = this.shotAim.lockId !== null;
+    this.rememberThrow(player, charge);
     this.shotAim.active = false;
     this.shotAim.bendRight = 0;
     this.shotAim.bendUp = 0;
     this.shotAim.lockId = null;
     this.shotAimManual = false;
     this.power.reset();
-    this.playPose(player, 'shoot', 0.3);
+    this.playPose(player, 'shoot', throwPoseSeconds(charge));
     this.match.statusMessage = thrownToMate ? 'Throw to teammate' : charge > 0.7 ? 'High power!' : 'Arc shot';
   }
 
-  /** Carry point: in front of the chest, along facing. No lag. */
+  /** Carry point: the rig's palm when the view has reported one, otherwise the chest offset. */
   private stickBallToHand(owner: PlayerState): void {
-    this.ball.position
-      .copy(owner.position)
-      .addScaledVector(owner.facing, BALL.holdOffset)
-      .addScaledVector(owner.up, 0.15);
+    this.carriedPoint(owner, this.ball.position);
     this.ball.velocity.copy(owner.velocity);
+  }
+
+  /**
+   * Passes, shots, drops, and checks leave from the palm when a rig reported
+   * one. The procedural swimmer keeps the offset just outside the body.
+   */
+  private releaseAtHand(player: PlayerState, aim: THREE.Vector3): void {
+    if (this.carryPalm.has(player.id)) {
+      this.stickBallToHand(player);
+      return;
+    }
+    this.placeRelease(player, aim);
   }
 
   /** Put a released ball just outside the body along `aim` so the carrier doesn't block it. */
   private placeRelease(player: PlayerState, aim: THREE.Vector3): void {
     const gap = PLAYER.radius + BALL.radius + 0.2;
     this.ball.position.copy(player.position).addScaledVector(aim, gap);
+  }
+
+  /**
+   * The view calls this after the mixer and the pose offsets, once per swimmer
+   * that has a rig. The ball then tracks that palm, including through the
+   * catch blend. Procedural swimmers never call it and keep the chest offset.
+   */
+  setCarryPalm(playerId: number, worldPoint: THREE.Vector3): void {
+    const player = this.players[playerId];
+    if (!player || !this.writePalmLocal(player, worldPoint)) return;
+    if (this.ball.possession !== 'held' || this.ball.ownerId !== playerId) return;
+    this.ball.position.copy(this.carriedPoint(player, this.tmp.holdTarget));
+    const tail = this.ball.trail[this.ball.trail.length - 1];
+    if (tail) tail.copy(this.ball.position);
+  }
+
+  /** Drop a rig's palm so the procedural offset takes over again. */
+  clearCarryPalm(playerId: number): void {
+    this.carryPalm.delete(playerId);
+  }
+
+  private writePalmLocal(player: PlayerState, worldPoint: THREE.Vector3): boolean {
+    if (!this.prepareBodyAxes(player)) return false;
+    let local = this.carryPalm.get(player.id);
+    const fresh = !local;
+    if (!local) {
+      local = new THREE.Vector3();
+      this.carryPalm.set(player.id, local);
+    }
+    this.palmDelta.copy(worldPoint).sub(player.position);
+    local.set(this.palmDelta.dot(this.palmRight), this.palmDelta.dot(this.palmUp), this.palmDelta.dot(this.palmForward));
+    if (fresh && this.ball.possession === 'held' && this.ball.ownerId === player.id && this.carryBlend >= 1) {
+      this.carryFrom.copy(this.ball.position);
+      this.carryBlend = 0;
+    }
+    return true;
+  }
+
+  private prepareBodyAxes(player: PlayerState): boolean {
+    this.palmForward.copy(player.facing);
+    if (this.palmForward.lengthSq() < 1e-8) return false;
+    this.palmForward.normalize();
+    this.palmUp.copy(player.up).addScaledVector(this.palmForward, -player.up.dot(this.palmForward));
+    if (this.palmUp.lengthSq() < 1e-6) {
+      this.palmUp.set(0, 1, 0).addScaledVector(this.palmForward, -this.palmForward.y);
+      if (this.palmUp.lengthSq() < 1e-6) this.palmUp.set(1, 0, 0);
+    }
+    this.palmUp.normalize();
+    this.palmRight.crossVectors(this.palmUp, this.palmForward).normalize();
+    return true;
+  }
+
+  private readPalmWorld(player: PlayerState, local: THREE.Vector3, out: THREE.Vector3): boolean {
+    if (!this.prepareBodyAxes(player)) return false;
+    out
+      .copy(player.position)
+      .addScaledVector(this.palmRight, local.x)
+      .addScaledVector(this.palmUp, local.y)
+      .addScaledVector(this.palmForward, local.z);
+    return true;
+  }
+
+  /** Palm center, or the chest offset when this swimmer has no rig sample. */
+  private carriedPoint(owner: PlayerState, out: THREE.Vector3): THREE.Vector3 {
+    const local = this.carryPalm.get(owner.id);
+    if (local && this.readPalmWorld(owner, local, out)) {
+      if (this.carryBlend < 1) {
+        const t = this.carryBlend;
+        const eased = t * t * (3 - 2 * t);
+        out.lerp(this.carryFrom, 1 - eased);
+      }
+      return out;
+    }
+    return out
+      .copy(owner.position)
+      .addScaledVector(owner.facing, BALL.holdOffset)
+      .addScaledVector(owner.up, 0.15);
+  }
+
+  /** Look-ray carry point. A reported palm replaces the fixed chest offset. */
+  private lookCarryPoint(player: PlayerState, out: THREE.Vector3): THREE.Vector3 {
+    if (this.carryPalm.has(player.id) && this.ball.possession === 'held' && this.ball.ownerId === player.id) {
+      return this.carriedPoint(player, out);
+    }
+    const basis = this.cameraBasis();
+    return out.copy(player.position).addScaledVector(basis.forward, BALL.holdOffset).addScaledVector(basis.up, 0.15);
   }
 
   private releasePass(player: PlayerState, charge: number): void {
@@ -1422,11 +1709,12 @@ export class Simulation {
       }
     }
     if (best) aim = best.position.clone().sub(player.position).normalize();
-    this.placeRelease(player, aim);
+    this.releaseAtHand(player, aim);
     const speed = Math.max(4, this.tunables.passSpeed) * (0.65 + 0.35 * charge);
     this.noteThrow(player);
     this.releaseBall(aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.25)));
-    this.playPose(player, 'pass', 0.28);
+    this.rememberThrow(player, charge);
+    this.playPose(player, 'pass', throwPoseSeconds(charge, true));
     this.match.statusMessage = best ? 'Pass' : 'Pass (no target)';
   }
 
@@ -1494,6 +1782,14 @@ export class Simulation {
     if (this.ball.possession === 'held' && this.ball.ownerId !== null) {
       const owner = this.players[this.ball.ownerId];
       if (!owner) return;
+      if (this.carryPalm.has(owner.id)) {
+        // The view writes the palm after the pose. Stick to it, easing in for
+        // the first fraction of a second so a catch does not pop.
+        this.carryBlend = Math.min(1, this.carryBlend + dt / CARRY_BLEND_SECONDS);
+        this.stickBallToHand(owner);
+        return;
+      }
+      this.carryBlend = 1;
       if (this.shotAim.active && owner.id === this.humanId) {
         // The carry lag is enough to leave the ball hanging in the water
         // while the body coasts. During an aim it stays on the hold point.
@@ -1771,8 +2067,12 @@ export class Simulation {
     if (checker.id === this.humanId || target.id === this.humanId) this.cameraShake = 1;
     if (target.id === this.humanId && this.shotAim.active) this.clearShotAim();
     if (target.hasBall && this.ball.ownerId === target.id) {
+      const fromPalm = this.carryPalm.has(target.id);
+      if (fromPalm) this.stickBallToHand(target);
       this.releaseBall(dir.clone().multiplyScalar(PLAYER.checkPop));
-      this.ball.position.copy(target.position).addScaledVector(dir, PLAYER.radius + BALL.radius + 0.4);
+      if (!fromPalm) {
+        this.ball.position.copy(target.position).addScaledVector(dir, PLAYER.radius + BALL.radius + 0.4);
+      }
       this.ball.claimLock = 0.45;
       target.actionPose = 'none';
       target.actionPoseTime = 0;
@@ -2004,10 +2304,7 @@ export class Simulation {
   private placeStraightLanding(out: THREE.Vector3): number | null {
     const human = this.getHuman();
     const basis = this.cameraBasis();
-    const hand = this.tmp.holdTarget
-      .copy(human.position)
-      .addScaledVector(basis.forward, BALL.holdOffset)
-      .addScaledVector(basis.up, 0.15);
+    const hand = this.lookCarryPoint(human, this.tmp.holdTarget);
     const raw = this.tmp.predictPos.copy(hand).addScaledVector(basis.forward, this.aimDistance());
     clampAimMarker(out, raw, hand, SHOT_ARC.minRange, this.markerLimit());
     const mate = this.teammateOnLook();
@@ -2025,7 +2322,7 @@ export class Simulation {
       this.refreshShotTarget();
       if (this.charge.kind === 'shoot') this.updateChargeGhost(human);
       this.landingMarker.visible = true;
-      this.landingMarker.position.copy(this.shotAim.target);
+      this.landingMarker.position.copy(this.markerShown);
       this.landingMarker.lockId = this.shotAim.lockId;
       this.landingMarker.showReach = this.shotAim.lockId === null;
       return;
@@ -2033,6 +2330,8 @@ export class Simulation {
     this.landingMarker.showReach = false;
     // Off-ball reach has no aim mark. Right-click with the ball shows the
     // straight landing point and does not build a curve.
+    this.landingMarker.outOfReach = false;
+    this.pullBand.visible = false;
     if (!(this.strafing && holding)) {
       this.landingMarker.visible = false;
       this.landingMarker.lockId = null;
@@ -2041,11 +2340,7 @@ export class Simulation {
     }
     this.landingMarker.lockId = this.placeStraightLanding(this.landingMarker.position);
     this.landingMarker.visible = true;
-    const basis = this.cameraBasis();
-    const hand = this.tmp.predictVel
-      .copy(human.position)
-      .addScaledVector(basis.forward, BALL.holdOffset)
-      .addScaledVector(basis.up, 0.15);
+    const hand = this.lookCarryPoint(human, this.tmp.predictVel);
     this.landingMarker.distance = this.landingMarker.position.distanceTo(hand);
   }
 }

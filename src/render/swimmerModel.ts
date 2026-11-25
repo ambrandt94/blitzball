@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { PLAYER } from '../game/constants';
+import { BALL, PLAYER } from '../game/constants';
 import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
 import { TEAM } from './swimmer';
+import { sampleThrowPose } from './throwPose';
 
 /**
  * The file is about a metre tall and 0.27 m thick, feet on Y=0.
@@ -19,18 +20,25 @@ const SWIM_CLIP_SECONDS = 1.2;
 const CATCH_L = new THREE.Vector3(0.42, 0.42, 0.72);
 const CATCH_R = new THREE.Vector3(-0.42, 0.42, 0.72);
 /**
- * Carry point is facing×0.85 + up×0.15, and the ball radius is 0.42.
- * Wrists sit on the near face, right hand on the ball, so the head does not
- * have to dive through it.
+ * One-handed cradle. The throw hand stays forward and out to the side so a
+ * swim stroke cannot swing the ball through the chest. The other arm keeps
+ * the clip. The ball is placed on the palm after this solve, about a ball
+ * radius along the palm normal.
  */
-const HOLD_L = new THREE.Vector3(0.26, 0.16, 0.5);
-const HOLD_R = new THREE.Vector3(-0.2, 0.3, 0.54);
-const WIND_L = new THREE.Vector3(0.36, 0.42, -0.02);
-const WIND_R = new THREE.Vector3(-0.4, 0.5, -0.22);
-const PASS_L = new THREE.Vector3(0.3, 0.18, 0.28);
-const PASS_R = new THREE.Vector3(-0.12, 0.3, 1.02);
-const FOLLOW_L = new THREE.Vector3(0.26, 0.2, 0.98);
-const FOLLOW_R = new THREE.Vector3(-0.2, 0.24, 1.12);
+const HOLD_L = new THREE.Vector3(0.16, 0.2, 0.5);
+const HOLD_R = new THREE.Vector3(-0.16, 0.2, 0.5);
+/**
+ * Thin axis of the hand mesh in bone-local space (the palm normal). Measured
+ * from Hand_R / Hand_L at rest. Positive points out of the palm face.
+ */
+const PALM_AXIS_L = new THREE.Vector3(0.706, 0.137, 0.695).normalize();
+const PALM_AXIS_R = new THREE.Vector3(-0.706, 0.134, 0.696).normalize();
+/**
+ * Preferred palm direction in the swimmer group: out to the throw side.
+ * The roll is around the forearm, so a sideways reach leaves the ball on top of the hand.
+ */
+const PALM_DIR_L = new THREE.Vector3(0.96, 0.16, 0.22).normalize();
+const PALM_DIR_R = new THREE.Vector3(-0.96, 0.16, 0.22).normalize();
 const BURST_L = new THREE.Vector3(0.42, 0.14, -0.08);
 const BURST_R = new THREE.Vector3(-0.16, 0.18, 1.05);
 
@@ -60,6 +68,10 @@ export interface SwimmerRig {
   swimWeight: number;
   catchBlend: number;
   holdBlend: number;
+  /** Eased power so a meter swing or a tap doesn't pop the arm. */
+  throwShown: number;
+  curveRightShown: number;
+  curveUpShown: number;
 }
 
 const _goalL = new THREE.Vector3();
@@ -94,6 +106,30 @@ const goal = {
   lean: 0,
   chestYaw: 0,
   cock: 0,
+  driven: false,
+  weightL: 0,
+  weightR: 0,
+  palm: 0,
+  palmX: 0,
+  palmY: 0,
+  palmZ: 1,
+  poleLX: 0.85,
+  poleLY: -0.2,
+  poleLZ: 0.2,
+  poleRX: -0.85,
+  poleRY: -0.2,
+  poleRZ: 0.2,
+};
+
+/** Filled just before `fillGoal`. Charging and the release playback share it. */
+const throwLive = {
+  active: false,
+  power: 0,
+  release: -1,
+  pass: false,
+  curveRight: 0,
+  curveUp: 0,
+  throwRight: true,
 };
 
 function materialList(mesh: THREE.Mesh): THREE.Material[] {
@@ -247,6 +283,9 @@ export function attachSwimmerModel(
       swimWeight: 0,
       catchBlend: 0,
       holdBlend: 0,
+      throwShown: 0,
+      curveRightShown: 0,
+      curveUpShown: 0,
     };
     disposeProcedural(group);
     group.add(wrapper);
@@ -278,16 +317,15 @@ export function swimmerRig(group: THREE.Object3D): SwimmerRig | null {
   return (group.userData.swimmerRig as SwimmerRig | undefined) ?? null;
 }
 
-function fillGoal(player: PlayerState, sim: Simulation, swimWeight: number, catchBlend: number, holdBlend: number): void {
+function fillGoal(player: PlayerState, _sim: Simulation, swimWeight: number, catchBlend: number, holdBlend: number): void {
   goal.weight = 0;
   goal.lean = 0;
   goal.chestYaw = 0;
   goal.cock = 0;
+  goal.driven = false;
+  goal.palm = 0;
   const upright = 1 - swimWeight;
   const pose = player.actionPose;
-  const humanCharge =
-    player.role === 'human' && player.id === sim.humanId && sim.charge.active ? sim.charge : null;
-  const aimingShot = sim.shotAim.active && player.id === sim.humanId;
 
   if (pose === 'burst') {
     const follow = THREE.MathUtils.clamp(player.actionPoseTime / 0.12, 0, 1);
@@ -298,28 +336,54 @@ function fillGoal(player: PlayerState, sim: Simulation, swimWeight: number, catc
     goal.lean = 0.2 * follow * upright;
     return;
   }
-  if (!aimingShot && (pose === 'pass' || humanCharge?.kind === 'pass')) {
-    const ext =
-      humanCharge?.kind === 'pass' ? 0.3 + 0.7 * humanCharge.amount : Math.min(1, player.actionPoseTime / 0.22);
-    _goalL.copy(PASS_L);
-    _goalR.copy(PASS_R);
-    goal.weight = ext;
-    goal.lean = 0.4 * ext * upright;
-    return;
-  }
-  if (!aimingShot && (pose === 'shoot' || humanCharge?.kind === 'shoot')) {
-    if (humanCharge?.kind === 'shoot') {
-      _goalL.copy(WIND_L);
-      _goalR.copy(WIND_R);
-      goal.weight = Math.max(0.35, humanCharge.amount);
-      goal.cock = humanCharge.amount;
-      return;
+
+  if (throwLive.active) {
+    const sample = sampleThrowPose(
+      throwLive.power,
+      throwLive.release,
+      throwLive.pass,
+      throwLive.curveRight,
+      throwLive.curveUp,
+      throwLive.throwRight,
+    );
+    // Swim is already horizontal around Trans, so a full pitch would fold the body.
+    // The twist still reads. Tread gets the whole lunge.
+    const leanScale = 0.4 + 0.6 * upright;
+    const yawScale = 0.62 + 0.38 * upright;
+    const fade = sample.armWeight;
+    _goalL.set(sample.offX, sample.offY, sample.offZ);
+    _goalR.set(sample.handX, sample.handY, sample.handZ);
+    // sampleThrowPose already mirrored for a left throw, so hand is always the throw side's numbers
+    // and off is the other side. Map them onto L/R by which arm throws.
+    if (throwLive.throwRight) {
+      goal.weightL = sample.offWeight;
+      goal.weightR = sample.armWeight;
+      goal.poleLX = 0.8;
+      goal.poleLY = -0.15;
+      goal.poleLZ = 0.2;
+      goal.poleRX = sample.poleX;
+      goal.poleRY = sample.poleY;
+      goal.poleRZ = sample.poleZ;
+    } else {
+      _goalL.set(sample.handX, sample.handY, sample.handZ);
+      _goalR.set(sample.offX, sample.offY, sample.offZ);
+      goal.weightL = sample.armWeight;
+      goal.weightR = sample.offWeight;
+      goal.poleRX = -0.8;
+      goal.poleRY = -0.15;
+      goal.poleRZ = 0.2;
+      goal.poleLX = sample.poleX;
+      goal.poleLY = sample.poleY;
+      goal.poleLZ = sample.poleZ;
     }
-    const follow = Math.min(1, player.actionPoseTime / 0.26);
-    _goalL.copy(FOLLOW_L);
-    _goalR.copy(FOLLOW_R);
-    goal.weight = follow;
-    goal.lean = 0.3 * follow * upright;
+    goal.chestYaw = sample.chestYaw * yawScale * fade;
+    goal.lean = sample.lean * leanScale * fade;
+    goal.weight = Math.max(sample.armWeight, sample.offWeight);
+    goal.driven = true;
+    goal.palm = fade;
+    goal.palmX = sample.palmX;
+    goal.palmY = sample.palmY;
+    goal.palmZ = sample.palmZ;
     return;
   }
 
@@ -333,7 +397,6 @@ function fillGoal(player: PlayerState, sim: Simulation, swimWeight: number, catc
   // Tread is upright and the carry point is in front of the hips. Lean the spine
   // toward it. Swim is already horizontal around Trans, so this lean fades out.
   goal.lean = (0.28 * reach + 0.42 * hold) * upright;
-  if (aimingShot && humanCharge?.kind === 'shoot') goal.cock = humanCharge.amount;
 }
 
 /**
@@ -456,7 +519,43 @@ export function updateSwimmerRig(
   const ease = (current: number, target: number, rate: number) =>
     current + (target - current) * (1 - Math.exp(-rate * dt));
   rig.catchBlend = ease(rig.catchBlend, catchTarget, 8.5);
-  rig.holdBlend = ease(rig.holdBlend, holdTarget, 11);
+  rig.holdBlend = ease(rig.holdBlend, holdTarget, holdTarget > rig.holdBlend ? 18 : 11);
+
+  const humanThrow = player.id === sim.humanId && player.role === 'human';
+  const chargingShot =
+    humanThrow && sim.charge.active && sim.charge.kind === 'shoot' && (sim.shotAim.active || pose === 'hold');
+  const chargingPass = humanThrow && sim.charge.active && sim.charge.kind === 'pass';
+  const releasingShot = pose === 'shoot' && !chargingShot;
+  const releasingPass = pose === 'pass' && !chargingPass;
+  const throwing = chargingShot || chargingPass || releasingShot || releasingPass;
+  let targetPower = 0;
+  let release = -1;
+  let curveR = 0;
+  let curveU = 0;
+  if (chargingShot) {
+    targetPower = sim.charge.amount;
+    curveR = THREE.MathUtils.clamp(sim.shotAim.bendRight / 22, -1, 1);
+    curveU = THREE.MathUtils.clamp(sim.shotAim.bendUp / 22, -1, 1);
+  } else if (chargingPass) {
+    targetPower = sim.charge.amount;
+  } else if (releasingShot || releasingPass) {
+    targetPower = player.throwPosePower;
+    const duration = Math.max(0.05, player.actionPoseDuration);
+    release = 1 - THREE.MathUtils.clamp(player.actionPoseTime / duration, 0, 1);
+    curveR = player.throwCurveRight;
+    curveU = player.throwCurveUp;
+  }
+  const dampRate = throwing ? 9 : 6;
+  rig.throwShown = THREE.MathUtils.damp(rig.throwShown, throwing ? targetPower : 0, dampRate, dt);
+  rig.curveRightShown = THREE.MathUtils.damp(rig.curveRightShown, throwing ? curveR : 0, 8, dt);
+  rig.curveUpShown = THREE.MathUtils.damp(rig.curveUpShown, throwing ? curveU : 0, 8, dt);
+  throwLive.active = throwing;
+  throwLive.power = rig.throwShown;
+  throwLive.release = release;
+  throwLive.pass = chargingPass || releasingPass;
+  throwLive.curveRight = rig.curveRightShown;
+  throwLive.curveUp = rig.curveUpShown;
+  throwLive.throwRight = player.throwArm !== 'left';
 
   fillGoal(player, sim, rig.swimWeight, rig.catchBlend, rig.holdBlend);
   if (goal.lean > 0.001) {
@@ -467,15 +566,23 @@ export function updateSwimmerRig(
     _yawQ.setFromAxisAngle(_yawAxis, goal.chestYaw);
     rig.chest.quaternion.multiply(_yawQ);
   }
-  if (goal.weight < 0.02) return;
+  if (goal.weight < 0.02) {
+    group.updateMatrixWorld(true);
+    return;
+  }
 
   group.updateMatrixWorld(true);
   group.localToWorld(_targetL.copy(_goalL));
   group.localToWorld(_targetR.copy(_goalR));
 
-  const cock = goal.cock;
-  _poleL.set(0.85, -0.2, THREE.MathUtils.lerp(0.2, -1.15, cock));
-  _poleR.set(-0.85, -0.2, THREE.MathUtils.lerp(0.2, -1.15, cock));
+  if (goal.driven) {
+    _poleL.set(goal.poleLX, goal.poleLY, goal.poleLZ);
+    _poleR.set(goal.poleRX, goal.poleRY, goal.poleRZ);
+  } else {
+    const cock = goal.cock;
+    _poleL.set(0.85, -0.2, THREE.MathUtils.lerp(0.2, -1.15, cock));
+    _poleR.set(-0.85, -0.2, THREE.MathUtils.lerp(0.2, -1.15, cock));
+  }
   _poleWorld.copy(_poleL).applyQuaternion(group.quaternion);
   _shoulder.setFromMatrixPosition(rig.upperL.matrixWorld);
   _poleL.copy(_shoulder).add(_poleWorld);
@@ -483,6 +590,76 @@ export function updateSwimmerRig(
   _shoulder.setFromMatrixPosition(rig.upperR.matrixWorld);
   _poleR.copy(_shoulder).add(_poleWorld);
 
-  solveArm(rig.upperL, rig.lowerL, rig.lenUpperL, rig.lenLowerL, _targetL, _poleL, goal.weight);
-  solveArm(rig.upperR, rig.lowerR, rig.lenUpperR, rig.lenLowerR, _targetR, _poleR, goal.weight);
+  const carryRight = player.throwArm !== 'left';
+  let weightL: number;
+  let weightR: number;
+  if (goal.driven) {
+    weightL = goal.weightL;
+    weightR = goal.weightR;
+  } else {
+    // The off arm fades back to the swim or tread clip. A full two-arm hold
+    // plus the stroke flings a palmed ball through the torso.
+    const off = 1 - rig.holdBlend;
+    weightL = carryRight ? goal.weight * off : goal.weight;
+    weightR = carryRight ? goal.weight : goal.weight * off;
+  }
+  solveArm(rig.upperL, rig.lowerL, rig.lenUpperL, rig.lenLowerL, _targetL, _poleL, weightL);
+  solveArm(rig.upperR, rig.lowerR, rig.lenUpperR, rig.lenLowerR, _targetR, _poleR, weightR);
+  const palmWeight = goal.driven ? goal.palm : rig.holdBlend;
+  if (palmWeight > 0.02) {
+    const hand = carryRight ? rig.handR : rig.handL;
+    const axis = carryRight ? PALM_AXIS_R : PALM_AXIS_L;
+    if (goal.driven) _twist.set(goal.palmX, goal.palmY, goal.palmZ);
+    else _twist.copy(carryRight ? PALM_DIR_R : PALM_DIR_L);
+    _twist.applyQuaternion(group.quaternion);
+    orientPalm(hand, axis, _twist, palmWeight);
+  }
+  group.updateMatrixWorld(true);
+}
+
+/**
+ * World-space center of a ball sitting in the throw hand's palm.
+ * Call after `updateSwimmerRig` so the mixer and the pose offsets are in.
+ */
+export function readCarrierPalm(rig: SwimmerRig, player: PlayerState, out: THREE.Vector3): THREE.Vector3 {
+  const right = player.throwArm !== 'left';
+  const hand = right ? rig.handR : rig.handL;
+  const axis = right ? PALM_AXIS_R : PALM_AXIS_L;
+  hand.updateWorldMatrix(true, false);
+  hand.getWorldPosition(_palmOrigin);
+  hand.getWorldQuaternion(_parentQ);
+  _palmNormal.copy(axis).applyQuaternion(_parentQ);
+  if (_palmNormal.lengthSq() > 1e-8) _palmNormal.normalize();
+  return out.copy(_palmOrigin).addScaledVector(_palmNormal, BALL.radius);
+}
+
+const _palmOrigin = new THREE.Vector3();
+const _palmNormal = new THREE.Vector3();
+const _palmWant = new THREE.Vector3();
+
+/**
+ * Roll the hand around the forearm so the palm axis favors `desiredWorld`.
+ * The clip's wrist bend stays; only the twist changes. `weight` slerps from
+ * the quaternion the mixer just wrote.
+ */
+function orientPalm(hand: THREE.Bone, palmLocal: THREE.Vector3, desiredWorld: THREE.Vector3, weight: number): void {
+  if (weight < 0.02) return;
+  const parent = hand.parent;
+  if (!parent) return;
+  parent.updateWorldMatrix(true, false);
+  _parentQ.copy(parent.getWorldQuaternion(_parentQ));
+  _invParent.copy(_parentQ).invert();
+
+  _localX.copy(palmLocal).applyQuaternion(hand.quaternion);
+  _palmWant.copy(desiredWorld).applyQuaternion(_invParent);
+  _fromY.set(0, 1, 0);
+  _localX.addScaledVector(_fromY, -_localX.dot(_fromY));
+  _palmWant.addScaledVector(_fromY, -_palmWant.dot(_fromY));
+  if (_localX.lengthSq() < 1e-6 || _palmWant.lengthSq() < 1e-6) return;
+  _localX.normalize();
+  _palmWant.normalize();
+  _roll.setFromUnitVectors(_localX, _palmWant);
+  _aimed.copy(_roll).multiply(hand.quaternion);
+  if (weight >= 0.999) hand.quaternion.copy(_aimed);
+  else hand.quaternion.slerp(_aimed, weight);
 }
