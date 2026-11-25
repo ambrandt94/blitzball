@@ -1,3 +1,8 @@
+/**
+ * Procedural wetsuit poses. The GLB swimmer layers the same catch / hold / throw
+ * ideas on bones after the animation mixer; these numbers stay so the fallback
+ * mesh and `rotationCheck` keep their contract.
+ */
 export interface LimbPose {
   yL: number;
   yR: number;

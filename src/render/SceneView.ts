@@ -11,6 +11,13 @@ import { createCatchBeacon } from './catchBeacon';
 import { blendLimbPose, swimLimbPose } from './limbs';
 import { buildGoalFrame } from './goalFrame';
 import { createSwimmer } from './swimmer';
+import {
+  attachSwimmerModel,
+  prepareSwimmerTemplate,
+  swimmerRig,
+  updateSwimmerRig,
+  type SwimmerTemplate,
+} from './swimmerModel';
 
 /** High-contrast team colors for greybox readability. */
 const TEAM_COLORS = [0x2b9fff, 0xff6a3d];
@@ -96,6 +103,7 @@ export class SceneView {
   private splashRing!: THREE.Mesh;
   private splashMat!: THREE.MeshBasicMaterial;
   private nearBubbleAcc = 0;
+  private swimmerTemplate: SwimmerTemplate | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -129,6 +137,7 @@ export class SceneView {
     this.motes = new BubblePool(this.scene, 160, 0xc5f4ff, 0.28);
     this.motes.seedMotes(160, ARENA_RADIUS * 0.86);
     void this.tryLoadCustomBall();
+    void this.tryLoadSwimmerModel();
   }
 
   /**
@@ -150,6 +159,29 @@ export class SceneView {
       this.ballPivot.add(model);
     } catch {
       // Procedural ball stays.
+    }
+  }
+
+  /**
+   * If public/models/swimmer.glb loads, each swimmer swaps the wetsuit mesh for
+   * a skinned clone. A failed load leaves the procedural body in place.
+   */
+  private async tryLoadSwimmerModel(): Promise<void> {
+    const url = `${import.meta.env.BASE_URL}models/swimmer.glb`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return;
+      const gltf = await new GLTFLoader().parseAsync(await response.arrayBuffer(), '');
+      const template = prepareSwimmerTemplate(gltf.scene, gltf.animations);
+      if (!template) return;
+      this.swimmerTemplate = template;
+      for (const group of this.playerMeshes.values()) {
+        const team = group.userData.team === 1 ? 1 : 0;
+        const playerId = typeof group.userData.playerId === 'number' ? group.userData.playerId : 0;
+        attachSwimmerModel(group, template, team, playerId);
+      }
+    } catch {
+      // Procedural swimmers stay.
     }
   }
 
@@ -336,6 +368,9 @@ export class SceneView {
       if (this.playerMeshes.has(p.id)) continue;
       const marker = p.role === 'human' ? 'you' : p.team === 0 && p.role === 'ai' ? 'mate' : 'none';
       const group = createSwimmer(p.team, marker);
+      group.userData.team = p.team;
+      group.userData.playerId = p.id;
+      if (this.swimmerTemplate) attachSwimmerModel(group, this.swimmerTemplate, p.team, p.id);
       group.visible = p.active && p.role !== 'stub';
       this.scene.add(group);
       this.playerMeshes.set(p.id, group);
@@ -454,7 +489,9 @@ export class SceneView {
         const follow = THREE.MathUtils.clamp(p.actionPoseTime / 0.14, 0, 1);
         mesh.rotateZ(-0.55 * follow);
       }
-      this.poseLimbs(mesh, p, sim, dt);
+      const rig = swimmerRig(mesh);
+      if (rig) updateSwimmerRig(rig, mesh, p, sim, dt);
+      else this.poseLimbs(mesh, p, sim, dt);
       const flash = mesh.getObjectByName('hitFlash');
       if (flash instanceof THREE.Mesh) {
         const mat = flash.material as THREE.MeshBasicMaterial;
