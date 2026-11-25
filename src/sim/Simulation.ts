@@ -21,6 +21,7 @@ import type {
 } from '../game/types';
 import { createPowerStrategy, type PowerStrategy, type PowerTuning } from './shotPower';
 import { DummyAI } from '../ai/DummyAI';
+import type { AiDelivery, AiMark } from '../ai/FieldAI';
 import { TeammateAI } from '../ai/TeammateAI';
 import {
   authoritativeUp,
@@ -92,6 +93,8 @@ function makePlayer(
     throwPosePower: 0,
     throwCurveRight: 0,
     throwCurveUp: 0,
+    windup: 0,
+    windupKind: 'none',
   };
 }
 
@@ -100,7 +103,15 @@ export class Simulation {
   ball: BallState;
   match: MatchState;
   charge: ChargeState = { active: false, kind: null, amount: 0 };
+  /** What each field player is trying to do, for the debug overlay. */
+  aiIntents: AiMark[] = [];
   /** Ball has left the hand and is waiting on the foot. */
+  private aiKick: { active: boolean; time: number; playerId: number; spec: AiDelivery | null } = {
+    active: false,
+    time: 0,
+    playerId: -1,
+    spec: null,
+  };
   private kickSwing = {
     active: false,
     time: 0,
@@ -330,6 +341,8 @@ export class Simulation {
         p.throwPosePower = 0;
         p.throwCurveRight = 0;
         p.throwCurveUp = 0;
+        p.windup = 0;
+        p.windupKind = 'none';
       }
     }
 
@@ -520,9 +533,9 @@ export class Simulation {
         continue;
       }
       if (onDefense) {
-        const aiIntent = this.ai.think(p, this.ball, this.players, this.tunables);
+        const aiIntent = this.ai.think(p, this.ball, this.players, this.tunables, motion);
         this.movePlayer(p, aiIntent, motion, false);
-        this.resolveAiActions(p, aiIntent, dt);
+        this.resolveAiActions(p, aiIntent);
       } else {
         const mateIntent = this.teammate.think(
           p,
@@ -531,15 +544,19 @@ export class Simulation {
           this.tunables,
           human,
           intent.callForPass,
-          dt,
+          motion,
         );
         this.movePlayer(p, mateIntent, motion, false);
         this.resolveTeammate(p, mateIntent);
       }
     }
+    if (live) {
+      this.aiIntents = [...this.ai.marks(), ...this.teammate.marks()];
+    }
 
     if (live) this.updatePossession(human, intent, motion);
     this.tickKickSwing(motion);
+    this.tickAiKick(motion);
     this.updateBall(motion);
     if (live) {
       this.resolveCatches();
@@ -720,17 +737,15 @@ export class Simulation {
       isHuman && player.hasBall && (intent.shootHeld || (this.shotAim.active && this.charge.kind !== 'kick'));
 
     const tackle = intent.burst || intent.burstPower;
+    const aiTackle = !isHuman && player.role === 'ai';
     const canBurst =
-      isHuman &&
       tackle &&
       !player.hasBall &&
       !player.catchReady &&
-      !aimingShot &&
-      !this.shotAim.active &&
-      !this.power.capturing() &&
       player.burstCooldown <= 0 &&
       this.kickoffLock <= 0 &&
-      this.match.resetTimer <= 0;
+      this.match.resetTimer <= 0 &&
+      (aiTackle || (isHuman && !aimingShot && !this.shotAim.active && !this.power.capturing()));
     if (isHuman && player.catchReady && tackle && !player.hasBall && !aimingShot) {
       this.tryDeflect(player);
     } else if (canBurst) {
@@ -844,37 +859,14 @@ export class Simulation {
 
   private resolveTeammate(player: PlayerState, intent: InputIntent): void {
     if (intent.claim) this.tryClaim(player);
-    if (intent.pass && player.hasBall) this.passToHuman(player);
+    const spec = this.teammate.takeDelivery(player.id);
+    if (spec && player.hasBall) this.releaseAiDelivery(player, spec);
   }
 
-  /** Lead the human a little so the return pass is catchable. */
-  private passToHuman(player: PlayerState): void {
-    const human = this.getHuman();
-    const aim = human.position.clone().addScaledVector(human.velocity, 0.28).sub(player.position);
-    if (aim.lengthSq() < 0.25) aim.copy(player.facing);
-    else aim.normalize();
-    this.releaseAtHand(player, aim);
-    const dist = Math.max(3, player.position.distanceTo(human.position));
-    const passSpeed = Math.max(4, this.tunables.passSpeed);
-    const speed = Math.min(passSpeed, Math.max(passSpeed * 0.45, dist * this.tunables.ballDrag * 1.25));
-    this.noteThrow(player);
-    this.releaseBall(aim.multiplyScalar(speed).addScaledVector(player.velocity, 0.15));
-    this.rememberThrow(player, 0.4);
-    this.playPose(player, 'pass', throwPoseSeconds(0.4, true));
-    this.match.statusMessage = 'Pass back';
-  }
-
-  private resolveAiActions(player: PlayerState, intent: InputIntent, _dt: number): void {
+  private resolveAiActions(player: PlayerState, intent: InputIntent): void {
     if (intent.claim) this.tryClaim(player);
-    if (!player.hasBall) return;
-    // Dummy AI fires a medium shot without sharing the human charge meter.
-    if (intent.kick) {
-      this.releaseAiKick(player);
-    } else if (intent.shoot || (!intent.shootHeld && Math.random() < 0.0)) {
-      this.releaseShot(player, 0.55 + Math.random() * 0.35);
-    } else if (intent.pass) {
-      this.releasePass(player, 0.55);
-    }
+    const spec = this.ai.takeDelivery(player.id);
+    if (spec && player.hasBall) this.releaseAiDelivery(player, spec);
   }
 
   private updatePossession(human: PlayerState, intent: InputIntent, dt: number): void {
@@ -1800,16 +1792,107 @@ export class Simulation {
     this.match.statusMessage = 'Volley!';
   }
 
-  /** A long AI shot that leaves the foot instead of the hand. */
-  private releaseAiKick(player: PlayerState): void {
-    const aim = this.getAimDirection(player, false);
-    this.footPoint(player, this.ball.position);
-    const speed = this.shotSpeedMax() * Math.max(1, this.tunables.kickSpeed) * 0.9;
+  /** Field AI shot or pass. Same Bezier as a human throw, with a kick dropping to the foot first. */
+  private releaseAiDelivery(player: PlayerState, spec: AiDelivery): void {
+    player.windup = 0;
+    player.windupKind = 'none';
+    if (spec.kick && !this.kickSwing.active && !this.aiKick.active) {
+      this.armAiKick(player, spec);
+      return;
+    }
+    this.scriptArc(player, spec, spec.kick);
+  }
+
+  private armAiKick(player: PlayerState, spec: AiDelivery): void {
+    const aim = spec.point.clone().sub(player.position);
+    if (aim.lengthSq() < 1e-8) aim.copy(player.facing);
+    else aim.normalize();
+    this.releaseAtHand(player, aim);
     this.noteThrow(player);
-    this.releaseBall(aim.clone().multiplyScalar(speed).addScaledVector(player.velocity, 0.2));
-    this.rememberThrow(player, 0.9);
-    this.playPose(player, 'kick', 0.42);
+    this.releaseBall(player.up.clone().multiplyScalar(-2.2));
+    this.ball.claimLock = Math.max(this.ball.claimLock, this.tunables.kickWindup + 0.3);
+    this.rememberThrow(player, spec.power);
+    this.playPose(player, 'kick', this.tunables.kickWindup + 0.36);
+    this.aiKick = { active: true, time: Math.max(0.05, this.tunables.kickWindup), playerId: player.id, spec };
     this.match.statusMessage = 'Kick!';
+  }
+
+  private tickAiKick(dt: number): void {
+    if (!this.aiKick.active || !this.aiKick.spec) return;
+    const player = this.players[this.aiKick.playerId];
+    if (!player) {
+      this.aiKick.active = false;
+      return;
+    }
+    const foot = this.footPoint(player, this.tmp.predictPos);
+    this.ball.velocity.copy(foot.sub(this.ball.position)).multiplyScalar(8);
+    this.aiKick.time -= dt;
+    if (this.aiKick.time > 0) return;
+    const spec = this.aiKick.spec;
+    this.aiKick.active = false;
+    this.aiKick.spec = null;
+    this.ball.position.copy(this.footPoint(player, this.tmp.predictPos));
+    this.scriptArc(player, spec, true);
+  }
+
+  private scriptArc(player: PlayerState, spec: AiDelivery, fromFoot: boolean): void {
+    const limit = ARENA_RADIUS - BALL.radius - 0.35;
+    const aim = spec.point.clone().sub(fromFoot ? this.ball.position : player.position);
+    if (aim.lengthSq() < 1e-8) aim.copy(player.facing);
+    else aim.normalize();
+    if (!fromFoot) this.releaseAtHand(player, aim);
+    const p0 = fromFoot ? this.ball.position.clone() : this.carriedPoint(player, new THREE.Vector3());
+    const p2 = spec.point.clone();
+    if (p2.length() > limit) p2.setLength(limit);
+    const forward = player.facing.clone();
+    if (forward.lengthSq() < 1e-8) forward.set(0, 0, 1);
+    else forward.normalize();
+    const right = new THREE.Vector3().crossVectors(player.up, forward);
+    if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
+    else right.normalize();
+    const height = spec.kind === 'pass' ? 0.02 : Math.max(0, this.tunables.arcHeight);
+    const p1 = shapedControl(
+      new THREE.Vector3(),
+      p0,
+      p2,
+      right,
+      player.up,
+      height,
+      spec.bendRight,
+      spec.bendUp,
+      this.tunables.arcBendLimit,
+      limit,
+      0,
+    );
+    const power = THREE.MathUtils.clamp(spec.power, 0, 1);
+    const kickBoost = spec.kick ? Math.max(1, this.tunables.kickSpeed) : 1;
+    const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), power) * kickBoost;
+    const length = Math.max(0.5, p0.distanceTo(p2));
+    const duration = Math.max(SHOT_ARC.minDuration, length / Math.max(4, speed));
+    if (!fromFoot) {
+      this.noteThrow(player);
+      this.releaseBall();
+    }
+    this.ball.position.copy(p0);
+    this.ball.arc = {
+      p0,
+      p1,
+      p2,
+      elapsed: 0,
+      duration,
+      receiverId: spec.receiverId,
+      carryLeft: 0,
+      carryDir: null,
+      carrySpeed: speed,
+    };
+    quadraticVelocity(this.ball.velocity, p0, p1, p2, 0, duration);
+    this.ball.claimLock = BALL.claimCooldown;
+    this.rememberThrow(player, power);
+    const pose = spec.kick ? 'kick' : spec.kind === 'pass' ? 'pass' : 'shoot';
+    this.playPose(player, pose, throwPoseSeconds(power, spec.kind === 'pass'));
+    player.throwCurveRight = THREE.MathUtils.clamp(spec.bendRight / 22, -1, 1);
+    player.throwCurveUp = THREE.MathUtils.clamp(spec.bendUp / 22, -1, 1);
+    this.match.statusMessage = spec.kind === 'pass' ? 'Pass' : spec.kick ? 'Kick!' : 'Shot';
   }
 
   private releaseShot(player: PlayerState, charge: number): void {
@@ -2214,7 +2297,7 @@ export class Simulation {
       return false;
     }
     const pos = quadraticPoint(this.tmp.holdTarget, arc.p0, arc.p1, arc.p2, t);
-    const vel = quadraticVelocity(this.tmp.aim, arc.p0, arc.p1, arc.p2, t, arc.duration);
+    quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, t, arc.duration);
     if (receiver?.active && pos.distanceTo(receiver.position) < PLAYER.radius + BALL.radius + 0.55) {
       this.ball.position.copy(pos);
       this.deliverToTeammate(receiver);
@@ -2231,7 +2314,6 @@ export class Simulation {
         return p.position.distanceTo(pos) < PLAYER.radius + BALL.radius;
       });
     this.ball.position.copy(pos);
-    this.ball.velocity.copy(vel);
     if (blocked) {
       this.ball.arc = null;
       return false;

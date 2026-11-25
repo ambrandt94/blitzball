@@ -116,6 +116,16 @@ export interface Tunables {
    * They never pass or shoot. Other AI is parked.
    */
   soloOpponent: boolean;
+  /** 0–100. Team 0 (blue) field players: aim, timing, and lane judgment. */
+  fieldSkillA: number;
+  /** 0–100. Team 1 (orange) field players. */
+  fieldSkillB: number;
+  /** 0–100. How tightly the deepest blue defender guards the mouth. */
+  goalieSkillA: number;
+  /** 0–100. How tightly the deepest orange defender guards the mouth. */
+  goalieSkillB: number;
+  /** Draw each field player's intent and the line to its target. */
+  showAiIntent: boolean;
   /** Shell radius. Changing it rebuilds the sphere, goals, and dressing. */
   arenaRadius: number;
   /** Seconds the teammate holds the ball before passing it back. */
@@ -235,6 +245,9 @@ export interface PlayerState {
   /** Curve captured at release, about -1..1, so the follow-through can keep the wrist twist. */
   throwCurveRight: number;
   throwCurveUp: number;
+  /** 0..1 while this player is winding up a pass, throw, or kick. */
+  windup: number;
+  windupKind: 'none' | 'shoot' | 'pass' | 'kick';
 }
 
 export interface BallState {

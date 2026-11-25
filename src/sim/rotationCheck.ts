@@ -12,7 +12,7 @@ import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
 import { defaultTunables } from '../ui/DevPanel';
 import { Simulation } from './Simulation';
-import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
+import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalMouthZ, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
 import { lookBasis, rotateToward, stabilizeUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
@@ -428,29 +428,47 @@ function checkPractice(): void {
   sim.ball.velocity.set(0, 0, 0);
   sim.ball.position.copy(mate.position).add(new THREE.Vector3(1.1, 0, 0.4));
   const intent = blankIntent();
-  for (let i = 0; i < 100; i++) sim.step(1 / 60, intent);
+  let received = false;
+  for (let i = 0; i < 100; i++) {
+    sim.step(1 / 60, intent);
+    if (mate.hasBall) received = true;
+  }
   if (defense.position.distanceTo(held) > 0.15) fail('frozen defense left its spot');
-  if (!mate.hasBall && mate.position.distanceTo(sim.ball.position) > 2.5) {
+  if (!received && mate.position.distanceTo(sim.ball.position) > 2.5) {
     fail('teammate did not come receive the pass');
   }
 
-  for (const p of sim.players) p.hasBall = false;
-  mate.hasBall = true;
-  mate.position.set(-4, 1, -2);
-  sim.getHuman().position.set(0, 0, -8);
-  sim.getHuman().velocity.set(0, 0, 0);
-  sim.ball.possession = 'held';
-  sim.ball.ownerId = mate.id;
-  sim.ball.lastOwnerId = mate.id;
-  sim.ball.arc = null;
+  const passSim = new Simulation(defaultTunables());
+  passSim.setSoloOpponent(false);
+  passSim.kickoffLock = 0;
+  passSim.tunables.fieldSkillA = 100;
+  const passer = passSim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const marker = passSim.players.find((p) => p.team === 1 && p.active);
+  if (!passer || !marker) fail('practice roster is missing the teammate or the defender');
+  passer.hasBall = true;
+  passer.position.set(0, 0, -16);
+  passer.velocity.set(0, 0, 0);
+  passer.facing.set(0, 0, 1);
+  passer.up.set(0, 1, 0);
+  marker.position.set(-5.2, 0, -16);
+  marker.velocity.set(0, 0, 0);
+  passSim.getHuman().position.set(4, 0, 14);
+  passSim.getHuman().velocity.set(0, 0, 0);
+  passSim.getHuman().up.set(0, 1, 0);
+  passSim.ball.possession = 'held';
+  passSim.ball.ownerId = passer.id;
+  passSim.ball.lastOwnerId = passer.id;
+  passSim.ball.arc = null;
+  passSim.ball.velocity.set(0, 0, 0);
+  passSim.ball.position.copy(passer.position).add(new THREE.Vector3(0, 0.15, 0.6));
   let passed = false;
   for (let i = 0; i < 140; i++) {
-    const before: string = sim.ball.possession;
-    sim.step(1 / 60, intent);
-    const now: string = sim.ball.possession;
-    if (before === 'held' && now === 'free' && sim.ball.lastOwnerId === mate.id) {
-      const toHuman = sim.getHuman().position.clone().sub(mate.position);
-      if (toHuman.lengthSq() > 0.01 && sim.ball.velocity.dot(toHuman.normalize()) < 2) {
+    const before: string = passSim.ball.possession;
+    passSim.step(1 / 60, intent);
+    const now: string = passSim.ball.possession;
+    if (before === 'held' && now === 'free' && passSim.ball.lastOwnerId === passer.id) {
+      const toHuman = passSim.getHuman().position.clone().sub(passer.position);
+      if (toHuman.lengthSq() > 0.01 && passSim.ball.velocity.dot(toHuman.normalize()) < 2) {
         fail('pass back was not aimed at the human');
       }
       passed = true;
@@ -1002,21 +1020,22 @@ function checkTeammatePassReachesPlayer(): void {
   sim.kickoffLock = 0;
   sim.tunables.defenseActive = false;
   sim.tunables.teammatePassDelay = 0.05;
+  sim.tunables.fieldSkillA = 100;
   const human = sim.getHuman();
   const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
   const defense = sim.players.find((p) => p.team === 1 && p.active);
   if (!mate || !defense) fail('practice roster is missing the teammate or the defender');
 
-  human.position.set(0, 0, -4);
+  human.position.set(4, 0, 18);
   human.velocity.set(0, 0, 0);
   human.facing.set(0, 0, 1);
   human.up.set(0, 1, 0);
   sim.yaw = 0;
   sim.pitch = 0;
 
-  mate.position.set(0, 0.2, 12);
+  mate.position.set(0, 0.2, -14);
   mate.velocity.set(0, 0, 0);
-  mate.facing.set(0, 0, -1);
+  mate.facing.set(0, 0, 1);
   mate.up.set(0, 1, 0);
   mate.hasBall = true;
   sim.ball.possession = 'held';
@@ -1027,7 +1046,7 @@ function checkTeammatePassReachesPlayer(): void {
   sim.ball.velocity.set(0, 0, 0);
   sim.ball.position.copy(mate.position).add(new THREE.Vector3(0, 0.15, -0.85));
 
-  defense.position.set(40, 20, 0);
+  defense.position.set(40, 20, -40);
   defense.velocity.set(0, 0, 0);
 
   const intent = blankIntent();
@@ -1063,6 +1082,7 @@ function checkOpponentInterceptsPass(): void {
   sim.kickoffLock = 0;
   sim.tunables.defenseActive = false;
   sim.tunables.teammatePassDelay = 0.05;
+  sim.tunables.fieldSkillA = 100;
   const human = sim.getHuman();
   const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
   const defense = sim.players.find((p) => p.team === 1 && p.active);
@@ -1088,12 +1108,13 @@ function checkOpponentInterceptsPass(): void {
   sim.ball.velocity.set(0, 0, 0);
   sim.ball.position.copy(mate.position).add(new THREE.Vector3(0, 0.15, -0.85));
 
-  defense.position.set(0, 0, 1);
+  defense.position.set(0, 0.4, -1.2);
   defense.velocity.set(0, 0, 0);
   defense.facing.set(0, 0, 1);
   defense.up.set(0, 1, 0);
 
   const intent = blankIntent();
+  intent.callForPass = true;
   let released = false;
   for (let i = 0; i < 240; i++) {
     const held = mate.hasBall;
@@ -2987,6 +3008,9 @@ export function runRotationChecks(): void {
   checkAimPowerModes();
   checkAimPosture();
   checkWindupSpin();
+  checkAiShootsOpenLane();
+  checkAiPassesWhenPressured();
+  checkAiPassReachesReceiver();
   checkWideCamera();
   checkBallFit();
   checkSpeeds();
@@ -3001,4 +3025,113 @@ export function runRotationChecks(): void {
 }
 
 runRotationChecks();
+function giveBallTo(sim: Simulation, player: ReturnType<Simulation['getHuman']>, offset: THREE.Vector3): void {
+  for (const other of sim.players) other.hasBall = false;
+  player.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = player.id;
+  sim.ball.lastOwnerId = player.id;
+  sim.ball.arc = null;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(player.position).add(offset);
+}
+
+/** In range of the goal, with nobody in the lane, a carrier shoots. */
+function checkAiShootsOpenLane(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.setSoloOpponent(false);
+  sim.tunables.defenseActive = false;
+  sim.tunables.fieldSkillA = 100;
+  sim.tunables.fieldSkillB = 100;
+  const human = sim.getHuman();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('roster missing');
+  human.position.set(0, 0, -36);
+  human.velocity.set(0, 0, 0);
+  defense.position.set(-28, 16, -24);
+  defense.velocity.set(0, 0, 0);
+  mate.position.set(0, 0, goalMouthZ() - 18);
+  mate.velocity.set(0, 0, 0);
+  mate.facing.set(0, 0, 1);
+  mate.up.set(0, 1, 0);
+  giveBallTo(sim, mate, new THREE.Vector3(0, 0.15, 0.7));
+  const intent = blankIntent();
+  for (let i = 0; i < 90; i++) {
+    sim.step(1 / 60, intent);
+    if (!mate.hasBall && sim.ball.lastOwnerId === mate.id) {
+      const travel = sim.ball.arc ? sim.ball.arc.p2.clone().sub(sim.ball.arc.p0) : sim.ball.velocity.clone();
+      if (travel.z <= 4) fail(`open shot did not go toward the goal (${travel.z.toFixed(1)})`);
+      if (sim.ball.arc?.receiverId !== null && sim.ball.arc) fail('open shot was aimed at a teammate');
+      return;
+    }
+  }
+  fail('carrier in range with an open lane did not shoot');
+}
+
+/** A nearby defender and a better-placed teammate produce a pass, not a carry. */
+function checkAiPassesWhenPressured(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.setSoloOpponent(false);
+  sim.tunables.defenseActive = false;
+  sim.tunables.fieldSkillA = 100;
+  const human = sim.getHuman();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('roster missing');
+  mate.position.set(0, 0, -20);
+  mate.velocity.set(0, 0, 0);
+  mate.facing.set(0, 0, 1);
+  mate.up.set(0, 1, 0);
+  human.position.set(6, 0, 16);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  defense.position.set(-5, 0, -20);
+  defense.velocity.set(0, 0, 0);
+  giveBallTo(sim, mate, new THREE.Vector3(0, 0.15, 0.6));
+  const intent = blankIntent();
+  for (let i = 0; i < 80; i++) {
+    sim.step(1 / 60, intent);
+    if (!mate.hasBall && sim.ball.lastOwnerId === mate.id) {
+      if (sim.ball.arc?.receiverId !== human.id) fail(`pressured carrier did not pass to the open teammate`);
+      return;
+    }
+  }
+  fail('pressured carrier with an open teammate did not pass');
+}
+
+/** Nobody in the lane: the pass arrives and the receiver ends up with the ball. */
+function checkAiPassReachesReceiver(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.setSoloOpponent(false);
+  sim.tunables.defenseActive = false;
+  sim.tunables.fieldSkillA = 100;
+  const human = sim.getHuman();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('roster missing');
+  mate.position.set(0, 0, -22);
+  mate.velocity.set(0, 0, 0);
+  mate.facing.set(0, 0, 1);
+  mate.up.set(0, 1, 0);
+  human.position.set(2, 0, 12);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, -1);
+  human.up.set(0, 1, 0);
+  defense.position.set(30, 18, 30);
+  defense.velocity.set(0, 0, 0);
+  giveBallTo(sim, mate, new THREE.Vector3(0, 0.15, 0.6));
+  const intent = blankIntent();
+  for (let i = 0; i < 240; i++) {
+    sim.step(1 / 60, intent);
+    if (human.hasBall && sim.ball.ownerId === human.id) return;
+  }
+  fail(`pass did not reach the receiver (owner ${sim.ball.ownerId})`);
+}
+
 console.log('rotation checks passed');

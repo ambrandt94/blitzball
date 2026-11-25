@@ -717,9 +717,11 @@ export function updateSwimmerRig(
   rig.holdBlend = springTo(rig.holdSpring, holdTarget, stiffness * 1.15, dt);
 
   const humanThrow = player.id === sim.humanId && player.role === 'human';
+  const aiWind = player.role === 'ai' && player.windup > 0.01 && player.windupKind !== 'none';
   const chargingShot =
-    humanThrow && sim.charge.active && sim.charge.kind === 'shoot' && (sim.shotAim.active || pose === 'hold');
-  const chargingPass = humanThrow && sim.charge.active && sim.charge.kind === 'pass';
+    (humanThrow && sim.charge.active && sim.charge.kind === 'shoot' && (sim.shotAim.active || pose === 'hold')) ||
+    (aiWind && player.windupKind === 'shoot');
+  const chargingPass = (humanThrow && sim.charge.active && sim.charge.kind === 'pass') || (aiWind && player.windupKind === 'pass');
   const releasingShot = pose === 'shoot' && !chargingShot;
   const releasingPass = pose === 'pass' && !chargingPass;
   const throwing = chargingShot || chargingPass || releasingShot || releasingPass;
@@ -728,11 +730,11 @@ export function updateSwimmerRig(
   let curveR = 0;
   let curveU = 0;
   if (chargingShot) {
-    targetPower = sim.charge.amount;
-    curveR = THREE.MathUtils.clamp(sim.shotAim.bendRight / 22, -1, 1);
-    curveU = THREE.MathUtils.clamp(sim.shotAim.bendUp / 22, -1, 1);
+    targetPower = aiWind ? player.windup : sim.charge.amount;
+    curveR = aiWind ? player.throwCurveRight : THREE.MathUtils.clamp(sim.shotAim.bendRight / 22, -1, 1);
+    curveU = aiWind ? player.throwCurveUp : THREE.MathUtils.clamp(sim.shotAim.bendUp / 22, -1, 1);
   } else if (chargingPass) {
-    targetPower = sim.charge.amount;
+    targetPower = aiWind ? player.windup : sim.charge.amount;
   } else if (releasingShot || releasingPass) {
     targetPower = player.throwPosePower;
     const duration = Math.max(0.05, player.actionPoseDuration);
@@ -951,10 +953,12 @@ const _palmWant = new THREE.Vector3();
  * the quaternion the mixer just wrote.
  */
 function kickAngle(player: PlayerState, sim: Simulation): number {
-  const charging = sim.charge.kind === 'kick' && sim.charge.active;
+  const humanKick = player.role === 'human' && sim.charge.kind === 'kick' && sim.charge.active;
+  const aiKick = player.windupKind === 'kick' && player.windup > 0.01;
+  const charging = humanKick || aiKick;
   const swinging = player.actionPose === 'kick';
   if (!charging && !swinging) return 0;
-  const power = swinging ? player.throwPosePower : sim.charge.amount;
+  const power = swinging ? player.throwPosePower : aiKick ? player.windup : sim.charge.amount;
   if (!swinging) return -0.9 * THREE.MathUtils.clamp(power, 0, 1);
   const duration = Math.max(0.05, player.actionPoseDuration);
   const t = 1 - THREE.MathUtils.clamp(player.actionPoseTime / duration, 0, 1);

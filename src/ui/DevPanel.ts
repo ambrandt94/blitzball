@@ -76,6 +76,11 @@ export function defaultTunables(): Tunables {
     shotCarry: SHOT_ARC.carry,
     defenseActive: false,
     soloOpponent: true,
+    fieldSkillA: 70,
+    fieldSkillB: 70,
+    goalieSkillA: 40,
+    goalieSkillB: 40,
+    showAiIntent: false,
     arenaRadius: ARENA_RADIUS,
     teammatePassDelay: PRACTICE.passDelay,
     shoulderOffset: CAMERA.shoulderOffset,
@@ -158,6 +163,11 @@ export class DevPanel {
     this.bool('Debug stats', 'showDebugStats');
     this.bool('Defense chases', 'defenseActive');
     this.bool('Test opponent', 'soloOpponent');
+    this.range('Blue goalie skill', 'goalieSkillA', 0, 100, 1);
+    this.range('Orange goalie skill', 'goalieSkillB', 0, 100, 1);
+    this.range('Blue field AI', 'fieldSkillA', 0, 100, 1);
+    this.range('Orange field AI', 'fieldSkillB', 0, 100, 1);
+    this.bool('Show AI intent', 'showAiIntent');
 
     this.section('Movement', false);
     this.range('Wall escape speed', 'wallEscapeSpeed', 20, 110, 0.5);

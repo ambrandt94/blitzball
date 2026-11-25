@@ -103,7 +103,7 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 - Ripped Final Fantasy models (the ball and swimmers are original procedural meshes)
 - Mobile touch
 - Win-condition settings UI (score-to-N vs timed)
-- Full 3v3 roles and keepers (one practice teammate only; other slots stay stubs)
+- Full 3v3 roles (one practice teammate and one defender play the field; other slots stay stubs). Field AI skill and goalie skill are per team on the dev panel. Show AI intent draws what they chose.
 - Remappable inputs UI (constants are tunable in code / Dev panel)
 
 ## Project layout

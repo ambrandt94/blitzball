@@ -141,6 +141,8 @@ export class SceneView {
   };
   private fogTick = 0;
   private shot: 'wide' | 'inside' | 'ball' | 'windup' | 'bank' | null = null;
+  private aiIntentLine!: THREE.LineSegments;
+  private aiIntentPositions = new Float32Array(8 * 2 * 3);
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -364,6 +366,16 @@ export class SceneView {
       }),
     );
     this.scene.add(this.chargeGhost);
+
+    const aiGeo = new THREE.BufferGeometry();
+    aiGeo.setAttribute('position', new THREE.BufferAttribute(this.aiIntentPositions, 3));
+    aiGeo.setDrawRange(0, 0);
+    this.aiIntentLine = new THREE.LineSegments(
+      aiGeo,
+      new THREE.LineBasicMaterial({ color: 0xffe28a, transparent: true, opacity: 0.9 }),
+    );
+    this.aiIntentLine.frustumCulled = false;
+    this.scene.add(this.aiIntentLine);
 
     const pullGeo = new THREE.BufferGeometry();
     pullGeo.setAttribute('position', new THREE.BufferAttribute(this.pullPositions, 3));
@@ -708,6 +720,7 @@ export class SceneView {
     this.pip.scale.set(pipPulse, pipPulse, pipPulse);
 
     this.writeLine(this.chargeGhost, this.ghostPositions, sim.chargeGhost, GHOST_MAX);
+    this.syncAiIntents(sim);
     this.syncLandingMarker(sim);
     this.syncPullBand(sim);
     this.syncCatchBeacon(sim);
@@ -760,6 +773,26 @@ export class SceneView {
       this.camera.fov = 64;
     }
     this.camera.updateProjectionMatrix();
+  }
+
+  private syncAiIntents(sim: Simulation): void {
+    const marks = sim.tunables.showAiIntent ? sim.aiIntents : [];
+    const attr = this.aiIntentLine.geometry.getAttribute('position') as THREE.BufferAttribute;
+    let count = 0;
+    for (const mark of marks) {
+      if (count >= 8) break;
+      const i = count * 6;
+      this.aiIntentPositions[i] = mark.from.x;
+      this.aiIntentPositions[i + 1] = mark.from.y;
+      this.aiIntentPositions[i + 2] = mark.from.z;
+      this.aiIntentPositions[i + 3] = mark.to.x;
+      this.aiIntentPositions[i + 4] = mark.to.y;
+      this.aiIntentPositions[i + 5] = mark.to.z;
+      count += 1;
+    }
+    this.aiIntentLine.visible = count > 0;
+    attr.needsUpdate = true;
+    this.aiIntentLine.geometry.setDrawRange(0, count * 2);
   }
 
   private syncGoalFlash(sim: Simulation): void {

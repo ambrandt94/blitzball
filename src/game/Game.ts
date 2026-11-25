@@ -294,6 +294,9 @@ export class Game {
         this.tunables.soloOpponent
           ? 'test opponent'
           : `mate + ${this.tunables.defenseActive ? 'defense chases' : 'defense holds'}`,
+        this.tunables.showAiIntent
+          ? this.sim.aiIntents.map((mark) => `ai${mark.id} ${mark.kind}`).join(' ') || 'ai idle'
+          : 'ai intent hidden',
       ].join('\n');
     }
   }
