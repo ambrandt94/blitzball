@@ -1,0 +1,31 @@
+{
+ "image": "bubbles_64.png",
+ "cell": [
+  16,
+  16
+ ],
+ "grid": [
+  4,
+  4
+ ],
+ "rows": {
+  "0": "4px bubble",
+  "1": "6px bubble",
+  "2": "10px bubble",
+  "3": "14px bubble"
+ },
+ "cols": {
+  "0": "round",
+  "1": "wobble wide",
+  "2": "wobble tall",
+  "3": "pop (play once, then despawn)"
+ },
+ "wobble_loop": [
+  0,
+  1,
+  0,
+  2
+ ],
+ "suggested_fps": 6,
+ "alpha": "cutout 0/255, no outline (bubbles are not solid)"
+}

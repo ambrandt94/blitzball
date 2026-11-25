@@ -4,8 +4,8 @@ import { ARENA_RADIUS, ARENA_REFERENCE, BALL, CAMERA } from '../game/constants';
 import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
 import { authoritativeUp, rotateToward, stabilizeUp } from '../sim/math';
-import { buildArenaDressing, type WaterRig } from './arenaDressing';
-import { createBlitzball, fitBallModel, tuneUnderwaterBallMaterials } from './blitzball';
+import { buildArenaDressing, type ArenaVisuals, type WaterRig } from './arenaDressing';
+import { createBlitzball, fitBallModel, mountStadiumBall, tuneUnderwaterBallMaterials } from './blitzball';
 import { BubblePool } from './bubbles';
 import { createCatchBeacon } from './catchBeacon';
 import { blendLimbPose, swimLimbPose } from './limbs';
@@ -71,7 +71,7 @@ function makePipTexture(fill: string, stroke: string, mark?: string): THREE.Canv
 
 export class SceneView {
   scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(62, 1, 0.1, ARENA_RADIUS * 8);
+  camera = new THREE.PerspectiveCamera(62, 1, 0.08, 1600);
   renderer: THREE.WebGLRenderer;
 
   private playerMeshes = new Map<number, THREE.Group>();
@@ -134,6 +134,13 @@ export class SceneView {
   private splashMat!: THREE.MeshBasicMaterial;
   private nearBubbleAcc = 0;
   private swimmerTemplate: SwimmerTemplate | null = null;
+  private visuals: ArenaVisuals = {
+    waterStyle: 'trailbound',
+    stadiumDetail: 'high',
+    crowdDensity: 'high',
+  };
+  private fogTick = 0;
+  private shot: 'wide' | 'inside' | 'ball' | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -143,7 +150,7 @@ export class SceneView {
       powerPreference: 'high-performance',
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setClearColor(0x042433, 1);
+    this.renderer.setClearColor(0x1e68d0, 1);
     this.scene.fog = new THREE.FogExp2(0x0a4d66, 0.0065 * (ARENA_REFERENCE / ARENA_RADIUS));
 
     this.trailPositions = new Float32Array(TRAIL_MAX * 3);
@@ -154,8 +161,10 @@ export class SceneView {
     this.pipOrange = makePipTexture('#ff6a3d', '#1a1010', 'O');
     this.pipBlue = makePipTexture('#2b9fff', '#0a2030', 'B');
 
+    const shot = new URLSearchParams(location.search).get('shot');
+    if (shot === 'wide' || shot === 'inside' || shot === 'ball') this.shot = shot;
     this.buildLights();
-    this.water = buildArenaDressing(this.scene);
+    this.water = buildArenaDressing(this.scene, this.visuals);
     this.buildGoals();
     this.buildSplashRing();
     this.buildBall();
@@ -176,18 +185,29 @@ export class SceneView {
    * leaves the built-in mesh in place.
    */
   private async tryLoadCustomBall(): Promise<void> {
-    const url = `${import.meta.env.BASE_URL}models/blitzball.glb`;
+    const hero = `${import.meta.env.BASE_URL}stadium/models/ball.glb`;
+    const legacy = `${import.meta.env.BASE_URL}models/blitzball.glb`;
+    if (await this.tryMountBall(hero, true)) return;
+    const mounted = await this.tryMountBall(legacy, false);
+    if (!mounted && typeof document !== 'undefined') document.body.dataset.ball = 'procedural';
+  }
+
+  /** Hero ball keeps its centre pivot. The older atlas ball is recentered. */
+  private async tryMountBall(url: string, hero: boolean): Promise<boolean> {
     try {
       const response = await fetch(url);
-      if (!response.ok) return;
+      if (!response.ok) return false;
       const gltf = await new GLTFLoader().parseAsync(await response.arrayBuffer(), '');
       const model = gltf.scene;
-      if (!fitBallModel(model, BALL.radius)) return;
-      tuneUnderwaterBallMaterials(model);
+      const fitted = hero ? mountStadiumBall(model, BALL.radius) : fitBallModel(model, BALL.radius);
+      if (!fitted) return false;
+      if (!hero) tuneUnderwaterBallMaterials(model);
       for (const child of [...this.ballPivot.children]) this.ballPivot.remove(child);
       this.ballPivot.add(model);
+      if (typeof document !== 'undefined') document.body.dataset.ball = hero ? 'hero' : 'legacy';
+      return true;
     } catch {
-      // Procedural ball stays.
+      return false;
     }
   }
 
@@ -253,18 +273,19 @@ export class SceneView {
     this.scene.add(this.splashRing);
   }
 
-  /** Drop the shell, bowl, sunbeams, and goals, then build them at the current radius. */
+  /** Rescale the shell and the stadium, and rebuild the goals, at the current radius. */
   rebuildArena(): void {
-    this.disposeNamed('arena-dressing');
     this.disposeNamed('goals');
-    this.water = buildArenaDressing(this.scene);
+    this.water.resize();
     this.buildGoals();
-    this.camera.far = ARENA_RADIUS * 8;
+    this.camera.far = Math.max(1600, ARENA_RADIUS * 16);
     this.camera.updateProjectionMatrix();
-    if (this.scene.fog instanceof THREE.FogExp2) {
-      this.scene.fog.density = 0.0065 * (ARENA_REFERENCE / ARENA_RADIUS);
-    }
     this.motes.seedMotes(160, ARENA_RADIUS * 0.86);
+  }
+
+  applyVisuals(visuals: ArenaVisuals): void {
+    this.visuals = visuals;
+    this.water.applyVisuals(visuals);
   }
 
   private disposeNamed(name: string): void {
@@ -628,6 +649,9 @@ export class SceneView {
     this.ballPivot.position.copy(sim.ball.position);
     this.bubbleUp.copy(authoritativeUp(sim.tunables.goalAxisUp));
     this.spinBall(sim, dt);
+    if (this.shot === 'ball' && sim.ball.velocity.length() < 0.2) {
+      this.ballPivot.rotation.set(0.22, 0.62, 0.05);
+    }
     this.ballHalo.position.copy(sim.ball.position);
     this.ballRing.position.copy(sim.ball.position);
     this.ballRing.lookAt(this.camera.position);
@@ -686,6 +710,9 @@ export class SceneView {
     this.syncBubbles(sim, dt);
     this.syncGoalFlash(sim);
     this.syncSplash(sim);
+    this.water.setCheer(sim.goalCelebrate > 0.12 ? 1 : 0);
+    if (this.fogTick++ % 45 === 0) this.water.patchFog(this.scene);
+    if (this.shot) this.frameShot();
     this.water.update(
       this.pulse,
       this.camera.position,
@@ -695,6 +722,29 @@ export class SceneView {
       sim.nearShell,
       Math.max(sim.impactPulse, sim.breachTime > 0 ? 1 : 0),
     );
+  }
+
+  /** Fixed cameras for the art-pass stills. Normal play never sets `shot`. */
+  private frameShot(): void {
+    this.camera.up.set(0, 1, 0);
+    if (this.shot === 'wide') {
+      // Above the wall walk, still inside the sky cylinder.
+      this.camera.position.set(210, 125, 168);
+      this.camera.lookAt(0, -8, 0);
+      this.camera.fov = 48;
+    } else if (this.shot === 'ball') {
+      this.camera.position.set(0.72, 0.08, 1.28);
+      this.camera.lookAt(0, -0.04, 0);
+      this.camera.fov = 26;
+      this.ballHalo.visible = false;
+      this.ballRing.visible = false;
+      this.pip.visible = false;
+    } else {
+      this.camera.position.set(-2.2, 2.6, -18.5);
+      this.camera.lookAt(0.4, 0.5, 14);
+      this.camera.fov = 64;
+    }
+    this.camera.updateProjectionMatrix();
   }
 
   private syncGoalFlash(sim: Simulation): void {

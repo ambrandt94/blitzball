@@ -65,6 +65,7 @@ export class Game {
   private goalBanner: HTMLElement | null;
   private lastThrowFeedback = 0;
   private audioCtx: AudioContext | null = null;
+  private shotMode: 'wide' | 'inside' | 'ball' | null = null;
 
   constructor(app: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -79,7 +80,23 @@ export class Game {
         this.sim.resizeArena(this.tunables.arenaRadius);
         this.view.rebuildArena();
       }
+      if (key === 'waterStyle' || key === 'stadiumDetail' || key === 'crowdDensity') {
+        this.view.applyVisuals({
+          waterStyle: this.tunables.waterStyle,
+          stadiumDetail: this.tunables.stadiumDetail,
+          crowdDensity: this.tunables.crowdDensity,
+        });
+      }
     });
+    const shot = new URLSearchParams(location.search).get('shot');
+    if (shot === 'wide' || shot === 'inside' || shot === 'ball') {
+      this.shotMode = shot;
+      this.tunables.showDebugStats = false;
+      const hud = document.getElementById('hud');
+      if (hud) hud.style.display = 'none';
+      const dev = document.getElementById('dev-panel');
+      if (dev) dev.style.display = 'none';
+    }
 
     this.scoreA = document.getElementById('score-a')!;
     this.scoreB = document.getElementById('score-b')!;
@@ -117,6 +134,13 @@ export class Game {
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     this.accum += dt;
+
+    if (this.shotMode) {
+      this.view.sync(this.sim, false, dt);
+      this.view.render();
+      requestAnimationFrame(this.frame);
+      return;
+    }
 
     const fresh = this.input.sample(dt);
     if (fresh.toggleDev) this.dev.toggle();

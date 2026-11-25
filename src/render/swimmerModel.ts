@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { ensureWaterFog } from './waterFog';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { BALL, PLAYER } from '../game/constants';
 import type { PlayerState } from '../game/types';
@@ -196,7 +197,9 @@ function tintClone(root: THREE.Object3D, team: 0 | 1): void {
     mesh.frustumCulled = false;
     const next = materialList(mesh).map((material) => {
       const cloned = material.clone();
+      cloned.userData.waterFog = false;
       nearestTextures(cloned);
+      ensureWaterFog(cloned);
       if (cloned instanceof THREE.MeshStandardMaterial && cloned.name === 'TeamTint') {
         cloned.color.setHex(suit);
       }

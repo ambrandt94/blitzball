@@ -78,17 +78,22 @@ export function defaultTunables(): Tunables {
     shoulderTransition: CAMERA.shoulderTransition,
     showSunbeams: true,
     sunbeamIntensity: 0.7,
+    waterStyle: 'trailbound',
+    stadiumDetail: 'high',
+    crowdDensity: 'high',
   };
 }
 
 export class DevPanel {
   private root: HTMLElement;
+  private host: HTMLElement;
   private tunables: Tunables;
   private onChange: (key: keyof Tunables) => void;
   visible = true;
 
   constructor(root: HTMLElement, tunables: Tunables, onChange: (key: keyof Tunables) => void) {
     this.root = root;
+    this.host = root;
     this.tunables = tunables;
     this.onChange = onChange;
     const saved = loadPowerMode();
@@ -111,6 +116,26 @@ export class DevPanel {
     h.textContent = 'Dev toggles';
     this.root.appendChild(h);
 
+    this.section('Visuals', true);
+    this.pick('Water style', 'waterStyle', [
+      { value: 'trailbound', label: 'Trailbound' },
+      { value: 'classic', label: 'Classic' },
+    ]);
+    this.pick('Stadium detail', 'stadiumDetail', [
+      { value: 'off', label: 'Off' },
+      { value: 'low', label: 'Low' },
+      { value: 'high', label: 'High' },
+    ]);
+    this.pick('Crowd density', 'crowdDensity', [
+      { value: 'off', label: 'Off' },
+      { value: 'low', label: 'Low' },
+      { value: 'high', label: 'High' },
+    ]);
+    this.range('Arena radius', 'arenaRadius', 44, 96, 0.5);
+    this.bool('Sunbeams', 'showSunbeams');
+    this.range('Sunbeam strength', 'sunbeamIntensity', 0, 1.5, 0.05);
+
+    this.section('Match', true);
     this.bool('Goal-axis up (vs world Y)', 'goalAxisUp');
     this.bool('V / LB zoom = hold (off = toggle)', 'zoomHoldMode');
     this.bool('Invert mouse look X', 'mouseLookInvertX');
@@ -119,9 +144,8 @@ export class DevPanel {
     this.bool('Debug stats', 'showDebugStats');
     this.bool('Defense chases', 'defenseActive');
     this.bool('Test opponent', 'soloOpponent');
-    this.range('Arena radius', 'arenaRadius', 44, 96, 0.5);
-    this.bool('Sunbeams', 'showSunbeams');
-    this.range('Sunbeam strength', 'sunbeamIntensity', 0, 1.5, 0.05);
+
+    this.section('Movement', false);
     this.range('Wall escape speed', 'wallEscapeSpeed', 20, 110, 0.5);
     this.range('Wall escape angle', 'wallEscapeAngle', 0.1, 1.2, 0.01);
     this.range('Claim radius', 'claimRadius', 0.6, 4, 0.05);
@@ -147,6 +171,7 @@ export class DevPanel {
     this.range('Paddle rate', 'swimAnimRate', 0.2, 4, 0.1);
     this.range('Paddle amount', 'swimAnimAmount', 0, 1.4, 0.05);
     this.range('Strafe speed', 'strafeSpeedMult', 0.25, 1, 0.01);
+    this.section('Shot', false);
     this.range('Shoulder offset', 'shoulderOffset', 0, 3.2, 0.05);
     this.range('Shoulder transition', 'shoulderTransition', 1, 18, 0.1);
     this.range('Arc aim distance', 'arcAimDistance', 8, 90, 0.5);
@@ -168,7 +193,19 @@ export class DevPanel {
     this.range('Max taps', 'tapMax', 1, 9, 1);
     this.range('Teammate lock radius', 'teammateLockRadius', 0.3, 3, 0.05);
     this.range('Shot carry', 'shotCarry', 0, 60, 0.5);
+    this.section('Practice', false);
     this.range('Teammate pass delay', 'teammatePassDelay', 0.3, 3, 0.05);
+  }
+
+  private section(title: string, open: boolean): void {
+    const details = document.createElement('details');
+    details.className = 'dev-section';
+    details.open = open;
+    const summary = document.createElement('summary');
+    summary.textContent = title;
+    details.appendChild(summary);
+    this.root.appendChild(details);
+    this.host = details;
   }
 
   private bool(label: string, key: keyof Tunables): void {
@@ -188,7 +225,15 @@ export class DevPanel {
     });
     row.appendChild(lab);
     row.appendChild(input);
-    this.root.appendChild(row);
+    this.host.appendChild(row);
+  }
+
+  private pick<K extends 'waterStyle' | 'stadiumDetail' | 'crowdDensity'>(
+    label: string,
+    key: K,
+    options: { value: Tunables[K]; label: string }[],
+  ): void {
+    this.select(label, key, options, () => this.onChange(key));
   }
 
   private choice(label: string, key: 'powerMode', options: { value: PowerMode; label: string }[]): void {
@@ -213,7 +258,38 @@ export class DevPanel {
     });
     row.appendChild(lab);
     row.appendChild(input);
-    this.root.appendChild(row);
+    this.host.appendChild(row);
+  }
+
+  private select<K extends keyof Tunables>(
+    label: string,
+    key: K,
+    options: { value: Tunables[K]; label: string }[],
+    onPick: () => void,
+  ): void {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('label');
+    lab.style.flex = '1';
+    lab.textContent = label;
+    const input = document.createElement('select');
+    for (const option of options) {
+      const item = document.createElement('option');
+      item.value = String(option.value);
+      item.textContent = option.label;
+      input.appendChild(item);
+    }
+    input.value = String(this.tunables[key]);
+    input.addEventListener('change', () => {
+      const value = input.value as Tunables[K];
+      const allowed = options.some((option) => option.value === value);
+      if (!allowed) return;
+      this.tunables[key] = value;
+      onPick();
+    });
+    row.appendChild(lab);
+    row.appendChild(input);
+    this.host.appendChild(row);
   }
 
   private range(
@@ -244,6 +320,6 @@ export class DevPanel {
     wrap.appendChild(name);
     wrap.appendChild(input);
     wrap.appendChild(value);
-    this.root.appendChild(wrap);
+    this.host.appendChild(wrap);
   }
 }

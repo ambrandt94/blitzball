@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { applyPixelTexel } from './pixelTexel';
 
 const TEX_W = 1024;
 const TEX_H = 512;
@@ -323,6 +324,50 @@ function solidifyBallMap(map: THREE.Texture): THREE.Texture {
   tex.anisotropy = 4;
   tex.needsUpdate = true;
   return tex;
+}
+
+/** Model Forge hero ball: 0.35 m diameter, pivot already at the centre. */
+const HERO_BALL_RADIUS = 0.175;
+
+/**
+ * Scale the stadium ball to the gameplay radius. If the pivot is not the
+ * centre, fall back to a bounds fit. Pixel sampling stays on the painted map.
+ */
+export function mountStadiumBall(root: THREE.Object3D, radius: number): boolean {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) return false;
+  const center = box.getCenter(new THREE.Vector3());
+  if (center.length() > 0.05) {
+    if (!fitBallModel(root, radius)) return false;
+  } else {
+    root.position.set(0, 0, 0);
+    root.rotation.set(0, 0, 0);
+    root.scale.setScalar(radius / HERO_BALL_RADIUS);
+    root.updateMatrixWorld(true);
+  }
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const material of list) {
+      if (!(material instanceof THREE.MeshStandardMaterial)) continue;
+      material.metalness = 0;
+      material.roughness = 0.85;
+      material.envMapIntensity = 0.25;
+      material.transparent = false;
+      material.opacity = 1;
+      material.depthWrite = true;
+      if (material.map) {
+        applyPixelTexel(material.map);
+        material.emissive.set(0xffffff);
+        material.emissiveMap = material.map;
+        material.emissiveIntensity = 0.32;
+      }
+      material.needsUpdate = true;
+    }
+  });
+  return true;
 }
 
 /** The atlas is a small nearest-filtered stripe sheet. A little self-light keeps the bands readable in blue water. */

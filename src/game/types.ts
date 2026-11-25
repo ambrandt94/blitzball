@@ -5,6 +5,10 @@ export type TeamId = 0 | 1;
 /** How a held throw turns into shot power. `meter` is the default. */
 export type PowerMode = 'meter' | 'tap' | 'hold' | 'target' | 'pull';
 
+export type WaterStyle = 'trailbound' | 'classic';
+export type StadiumDetail = 'off' | 'low' | 'high';
+export type CrowdDensity = 'off' | 'low' | 'high';
+
 export type PlayerRole = 'human' | 'ai' | 'stub';
 
 export type PossessionState = 'free' | 'held';
@@ -116,6 +120,12 @@ export interface Tunables {
   showSunbeams: boolean;
   /** 0 hides the shafts. 1 is the tuned rim brightness. */
   sunbeamIntensity: number;
+  /** Trailbound shell, or the earlier smooth shader. */
+  waterStyle: WaterStyle;
+  /** Instanced colosseum. Off hides it. Low drops towers, banners, and halos. */
+  stadiumDetail: StadiumDetail;
+  /** Instanced spectator billboards. */
+  crowdDensity: CrowdDensity;
 }
 
 /** Yellow landing dot. RMB places it on the straight throw; a shot hold slides it with power. */
