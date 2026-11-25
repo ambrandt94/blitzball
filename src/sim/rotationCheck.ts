@@ -7,7 +7,7 @@ import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, SHOT_ARC, setArenaRadius } fr
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
-import { aimPosturePitch, stepAimPosture, wantsAimPosture } from '../render/swimmerModel';
+import { aimPosturePitch, spring1, stepAimPosture, updateSwimmerRig, wantsAimPosture, type SwimmerRig } from '../render/swimmerModel';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
 import { defaultTunables } from '../ui/DevPanel';
@@ -2672,6 +2672,202 @@ function checkAimPowerModes(): void {
   if (!taps.human.hasBall) fail('a cancelled tap window threw when it would have closed');
 }
 
+function quatDelta(a: THREE.Quaternion, b: THREE.Quaternion): number {
+  return 2 * Math.acos(Math.min(1, Math.abs(a.dot(b))));
+}
+
+/** A throw rig whose tread clip does not key the chest, which is how the windup used to spin. */
+function windupRig(): { group: THREE.Group; rig: SwimmerRig } {
+  const group = new THREE.Group();
+  const model = new THREE.Group();
+  const root = new THREE.Bone();
+  root.name = 'Root';
+  const at = (name: string, y: number, x = 0): THREE.Bone => {
+    const bone = new THREE.Bone();
+    bone.name = name;
+    bone.position.set(x, y, 0);
+    return bone;
+  };
+  const trans = at('Trans', 0);
+  const spine = at('Spine', 0.15);
+  const chest = at('Chest', 0.16);
+  const neck = at('Neck', 0.1);
+  const head = at('Head', 0.1);
+  const upperL = at('UpperArm_L', 0.08, 0.18);
+  const lowerL = at('LowerArm_L', -0.26);
+  const handL = at('Hand_L', -0.22);
+  const upperR = at('UpperArm_R', 0.08, -0.18);
+  const lowerR = at('LowerArm_R', -0.26);
+  const handR = at('Hand_R', -0.22);
+  const hips = at('Hips', -0.08);
+  const thighL = at('Thigh_L', -0.16, 0.08);
+  const thighR = at('Thigh_R', -0.16, -0.08);
+  root.add(trans);
+  trans.add(spine, hips);
+  spine.add(chest);
+  chest.add(neck, upperL, upperR);
+  neck.add(head);
+  upperL.add(lowerL);
+  lowerL.add(handL);
+  upperR.add(lowerR);
+  lowerR.add(handR);
+  hips.add(thighL, thighR);
+  model.add(root);
+  group.add(model);
+
+  const ident = [0, 0, 0, 1, 0, 0, 0, 1];
+  const track = (name: string) => new THREE.QuaternionKeyframeTrack(`${name}.quaternion`, [0, 1], ident);
+  const mixer = new THREE.AnimationMixer(root);
+  const swim = mixer.clipAction(
+    new THREE.AnimationClip('Swim', 1, ['Chest', 'Spine', 'Head', 'UpperArm_L', 'UpperArm_R', 'Thigh_L', 'Thigh_R'].map(track)),
+  );
+  const tread = mixer.clipAction(
+    new THREE.AnimationClip('Tread', 1, ['Spine', 'Head', 'UpperArm_L', 'UpperArm_R', 'Thigh_L', 'Thigh_R'].map(track)),
+  );
+  swim.setLoop(THREE.LoopRepeat, Infinity);
+  tread.setLoop(THREE.LoopRepeat, Infinity);
+  swim.play();
+  tread.play();
+  tread.setEffectiveWeight(1);
+  swim.setEffectiveWeight(0);
+  mixer.update(0);
+
+  const rig: SwimmerRig = {
+    model,
+    mixer,
+    swim,
+    tread,
+    idle: null,
+    spine,
+    chest,
+    upperL,
+    lowerL,
+    handL,
+    upperR,
+    lowerR,
+    handR,
+    hips,
+    thighL,
+    thighR,
+    head,
+    neck,
+    lenUpperL: lowerL.position.length(),
+    lenLowerL: handL.position.length(),
+    lenUpperR: lowerR.position.length(),
+    lenLowerR: handR.position.length(),
+    swimWeight: 0,
+    catchBlend: 0,
+    holdBlend: 0,
+    throwShown: 0,
+    curveRightShown: 0,
+    curveUpShown: 0,
+    speedSwim: 0,
+    aimPosture: 0,
+    posed: [],
+    hasClip: false,
+    aimSpring: spring1(),
+    wIdle: spring1(),
+    wTread: spring1(1),
+    wSwim: spring1(),
+    stroke: spring1(),
+    catchSpring: spring1(),
+    holdSpring: spring1(),
+    throwSpring: spring1(),
+    curveRightSpring: spring1(),
+    curveUpSpring: spring1(),
+    kickSpring: spring1(),
+    burstSpring: spring1(),
+    bankSpring: spring1(),
+    pitchSpring: spring1(),
+    headYaw: spring1(),
+    headPitch: spring1(),
+    armLag: spring1(),
+    legLag: spring1(),
+    prevFacing: new THREE.Vector3(),
+  };
+  return { group, rig };
+}
+
+function checkWindupSpin(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.setSoloOpponent(false);
+  quietRoster(sim);
+  sim.tunables.powerMode = 'hold';
+  sim.tunables.shotPowerRate = 8;
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.position.set(0, 0.2, 0.7);
+  const charging = blankIntent();
+  charging.shootHeld = true;
+
+  sim.yaw = 0;
+  sim.armShotAim(charging);
+  sim.step(1 / 60, charging);
+  let maxFacing = 0;
+  let maxUp = 0;
+  for (let i = 0; i < 240; i++) {
+    // Sweep the aim through the direction behind the swimmer, across the ±180° seam.
+    sim.yaw = -Math.PI * 0.95 + (i / 239) * Math.PI * 1.9;
+    const before = human.facing.clone();
+    const beforeUp = human.up.clone();
+    sim.armShotAim(charging);
+    sim.step(1 / 60, charging);
+    if (human.facing.lengthSq() < 0.9 || !Number.isFinite(human.facing.x)) fail('facing collapsed during the windup');
+    if (human.up.lengthSq() < 0.9 || !Number.isFinite(human.up.x)) fail('body up collapsed during the windup');
+    const step = angle(before, human.facing);
+    const upStep = angle(beforeUp, human.up);
+    if (step > (25 * Math.PI) / 180) fail(`body spun ${deg(step).toFixed(1)}° in one windup frame`);
+    if (upStep > (20 * Math.PI) / 180) fail(`body up spun ${deg(upStep).toFixed(1)}° in one windup frame`);
+    maxFacing = Math.max(maxFacing, step);
+    maxUp = Math.max(maxUp, upStep);
+  }
+  const aim = lookBasis(sim.yaw, sim.pitch, sim.tunables.goalAxisUp).forward;
+  for (let i = 0; i < 50; i++) {
+    sim.armShotAim(charging);
+    sim.step(1 / 60, charging);
+  }
+  if (human.facing.dot(aim) < 0.95) {
+    fail(`facing did not settle on the aim (${human.facing.dot(aim).toFixed(2)})`);
+  }
+
+  const { group, rig } = windupRig();
+  let maxChest = 0;
+  let prevUpper = rig.upperR.quaternion.clone();
+  let settledChest = 0;
+  let settledArm = 0;
+  sim.yaw = 0.4;
+  for (let i = 0; i < 150; i++) {
+    sim.armShotAim(charging);
+    sim.step(1 / 60, charging);
+    updateSwimmerRig(rig, group, human, sim, 1 / 60);
+    const clip = rig.posed.find((entry) => entry.bone === rig.chest);
+    if (!clip) fail('chest pose was not sampled');
+    const chest = quatDelta(rig.chest.quaternion, clip.clip);
+    if (!Number.isFinite(chest)) fail('chest rotation became non-finite');
+    if (chest > 1.2) fail(`chest offset ran away (${chest.toFixed(2)} rad)`);
+    const armStep = quatDelta(rig.upperR.quaternion, prevUpper);
+    if (i > 40 && armStep > 0.75) fail(`throw arm spun ${deg(armStep).toFixed(1)}° in one frame`);
+    maxChest = Math.max(maxChest, chest);
+    prevUpper.copy(rig.upperR.quaternion);
+    if (i === 90) settledChest = chest;
+    if (i === 149) {
+      settledArm = armStep;
+      if (Math.abs(chest - settledChest) > 0.08) fail(`chest offset did not settle (${chest.toFixed(2)} vs ${settledChest.toFixed(2)})`);
+    }
+  }
+  if (settledArm > 0.12) fail(`throw arm kept moving after the windup settled (${deg(settledArm).toFixed(1)}°)`);
+  if (maxChest < 0.05) fail('windup did not pose the chest at all');
+  if (maxFacing > (25 * Math.PI) / 180) fail('recorded facing step exceeded the cap');
+  if (maxUp > (20 * Math.PI) / 180) fail('recorded up step exceeded the cap');
+}
+
 function checkAimPosture(): void {
   const base = {
     human: true,
@@ -2707,11 +2903,11 @@ function checkAimPosture(): void {
     fail('a receiver in catch-ready should tread');
   }
 
-  let blend = 0;
-  for (let i = 0; i < 15; i++) blend = stepAimPosture(blend, true, 0.25, 1 / 60);
-  if (blend < 0.9) fail(`aim posture did not settle in 0.25s (${blend.toFixed(2)})`);
-  for (let i = 0; i < 15; i++) blend = stepAimPosture(blend, false, 0.25, 1 / 60);
-  if (blend > 0.1) fail(`aim posture did not release in 0.25s (${blend.toFixed(2)})`);
+  const posture = { value: 0, vel: 0 };
+  for (let i = 0; i < 15; i++) stepAimPosture(posture, true, 0.25, 1 / 60);
+  if (posture.value < 0.9) fail(`aim posture did not settle in 0.25s (${posture.value.toFixed(2)})`);
+  for (let i = 0; i < 15; i++) stepAimPosture(posture, false, 0.25, 1 / 60);
+  if (posture.value > 0.1) fail(`aim posture did not release in 0.25s (${posture.value.toFixed(2)})`);
 
   const level = aimPosturePitch(0, 1);
   if (level < 0.12 || level > 0.35) fail(`level aim should lean slightly (${level.toFixed(2)})`);
@@ -2790,6 +2986,7 @@ export function runRotationChecks(): void {
   checkThrowPoses();
   checkAimPowerModes();
   checkAimPosture();
+  checkWindupSpin();
   checkWideCamera();
   checkBallFit();
   checkSpeeds();

@@ -48,6 +48,33 @@ export interface SwimmerTemplate {
   scene: THREE.Group;
   swim: THREE.AnimationClip;
   tread: THREE.AnimationClip;
+  idle: THREE.AnimationClip | null;
+}
+
+/** Critically damped scalar. `omega` is the stiffness (1/seconds). */
+export interface Spring1 {
+  value: number;
+  vel: number;
+}
+
+export function spring1(value = 0): Spring1 {
+  return { value, vel: 0 };
+}
+
+export function springTo(state: Spring1, target: number, omega: number, dt: number): number {
+  if (!(dt > 0) || !Number.isFinite(target)) return state.value;
+  const w = Math.max(0.01, omega);
+  const err = state.value - target;
+  state.vel += (-2 * w * state.vel - w * w * err) * dt;
+  state.value += state.vel * dt;
+  if (!Number.isFinite(state.value) || !Number.isFinite(state.vel)) {
+    state.value = target;
+    state.vel = 0;
+  } else if (Math.abs(state.value - target) < 1e-4 && Math.abs(state.vel) < 1e-3) {
+    state.value = target;
+    state.vel = 0;
+  }
+  return state.value;
 }
 
 export interface SwimmerRig {
@@ -81,6 +108,36 @@ export interface SwimmerRig {
   speedSwim: number;
   /** 0 swim, 1 upright tread. Eased by the aim posture blend time. */
   aimPosture: number;
+  idle: THREE.AnimationAction | null;
+  head: THREE.Bone | null;
+  neck: THREE.Bone | null;
+  /** Local quaternions the mixer wrote this frame, before pose offsets. */
+  posed: PosedBone[];
+  hasClip: boolean;
+  aimSpring: Spring1;
+  wIdle: Spring1;
+  wTread: Spring1;
+  wSwim: Spring1;
+  stroke: Spring1;
+  catchSpring: Spring1;
+  holdSpring: Spring1;
+  throwSpring: Spring1;
+  curveRightSpring: Spring1;
+  curveUpSpring: Spring1;
+  kickSpring: Spring1;
+  burstSpring: Spring1;
+  bankSpring: Spring1;
+  pitchSpring: Spring1;
+  headYaw: Spring1;
+  headPitch: Spring1;
+  armLag: Spring1;
+  legLag: Spring1;
+  prevFacing: THREE.Vector3;
+}
+
+interface PosedBone {
+  bone: THREE.Bone;
+  clip: THREE.Quaternion;
 }
 
 /** A few degrees of forward lean so an upright tread still faces the aim. */
@@ -108,10 +165,9 @@ export function wantsAimPosture(input: AimPostureInput): boolean {
 }
 
 /** Ease toward 1 while aiming and back to 0 after. `blendSeconds` is the settle time. */
-export function stepAimPosture(current: number, active: boolean, blendSeconds: number, dt: number): number {
-  const target = active ? 1 : 0;
-  const rate = 3 / Math.max(0.05, blendSeconds);
-  return current + (target - current) * (1 - Math.exp(-rate * dt));
+export function stepAimPosture(state: Spring1, active: boolean, blendSeconds: number, dt: number): number {
+  const omega = 4 / Math.max(0.05, blendSeconds);
+  return springTo(state, active ? 1 : 0, omega, dt);
 }
 
 /**
@@ -214,6 +270,7 @@ export function prepareSwimmerTemplate(
 ): SwimmerTemplate | null {
   const swim = THREE.AnimationClip.findByName(clips, 'Swim');
   const tread = THREE.AnimationClip.findByName(clips, 'Tread');
+  const idle = THREE.AnimationClip.findByName(clips, 'Idle');
   if (!swim || !tread) return null;
   if (!scene.getObjectByName('Root') || !scene.getObjectByName('Hand_R') || !scene.getObjectByName('Trans')) {
     return null;
@@ -228,7 +285,7 @@ export function prepareSwimmerTemplate(
     }
   });
   if (!tint) return null;
-  return { scene, swim, tread };
+  return { scene, swim, tread, idle: idle ?? null };
 }
 
 function findBone(root: THREE.Object3D, name: string): THREE.Bone | null {
@@ -312,10 +369,16 @@ export function attachSwimmerModel(
     const mixer = new THREE.AnimationMixer(clone);
     const swim = mixer.clipAction(template.swim);
     const tread = mixer.clipAction(template.tread);
+    const idle = template.idle ? mixer.clipAction(template.idle) : null;
     swim.setLoop(THREE.LoopRepeat, Infinity);
     tread.setLoop(THREE.LoopRepeat, Infinity);
     swim.play();
     tread.play();
+    if (idle) {
+      idle.setLoop(THREE.LoopRepeat, Infinity);
+      idle.play();
+      idle.setEffectiveWeight(0);
+    }
     swim.time = (playerId * 0.41) % Math.max(0.01, swim.getClip().duration);
     tread.time = (playerId * 0.27) % Math.max(0.01, tread.getClip().duration);
     tread.setEffectiveWeight(1);
@@ -338,6 +401,30 @@ export function attachSwimmerModel(
       hips: findBone(wrapper, 'Hips') ?? findBone(wrapper, 'Pelvis'),
       thighL: findBone(wrapper, 'Thigh_L'),
       thighR: findBone(wrapper, 'Thigh_R'),
+      idle,
+      head: findBone(wrapper, 'Head'),
+      neck: findBone(wrapper, 'Neck'),
+      posed: [],
+      hasClip: false,
+      aimSpring: spring1(),
+      wIdle: spring1(),
+      wTread: spring1(1),
+      wSwim: spring1(),
+      stroke: spring1(),
+      catchSpring: spring1(),
+      holdSpring: spring1(),
+      throwSpring: spring1(),
+      curveRightSpring: spring1(),
+      curveUpSpring: spring1(),
+      kickSpring: spring1(),
+      burstSpring: spring1(),
+      bankSpring: spring1(),
+      pitchSpring: spring1(),
+      headYaw: spring1(),
+      headPitch: spring1(),
+      armLag: spring1(),
+      legLag: spring1(),
+      prevFacing: new THREE.Vector3(),
       lenUpperL: lowerL.position.length(),
       lenLowerL: handL.position.length(),
       lenUpperR: lowerR.position.length(),
@@ -465,34 +552,59 @@ function fillGoal(player: PlayerState, _sim: Simulation, swimWeight: number, cat
 
 const _kickAxis = new THREE.Vector3(1, 0, 0);
 const _kickQ = new THREE.Quaternion();
+const _clipQ = new THREE.Quaternion();
+const _lagQ = new THREE.Quaternion();
 
-/** Cock the throwing-side thigh, then swing it through as the ball leaves the foot. */
-function poseKick(rig: SwimmerRig, player: PlayerState, sim: Simulation): void {
-  const thigh = player.throwArm === 'left' ? rig.thighL : rig.thighR;
-  if (!thigh) return;
-  const charging = sim.charge.kind === 'kick' && sim.charge.active;
-  const swinging = player.actionPose === 'kick';
-  if (!charging && !swinging) return;
-  const power = swinging ? player.throwPosePower : sim.charge.amount;
-  let angle: number;
-  if (swinging) {
-    const duration = Math.max(0.05, player.actionPoseDuration);
-    const t = 1 - THREE.MathUtils.clamp(player.actionPoseTime / duration, 0, 1);
-    const cock = -1.05 * Math.max(0.35, power);
-    const through = 1.15 * Math.max(0.45, power);
-    angle =
-      t < 0.45
-        ? THREE.MathUtils.lerp(cock, through, t / 0.45)
-        : THREE.MathUtils.lerp(through, 0.2, (t - 0.45) / 0.55);
-  } else {
-    angle = -0.9 * THREE.MathUtils.clamp(power, 0, 1);
+function rememberPosed(rig: SwimmerRig, bone: THREE.Bone | null): void {
+  if (!bone) return;
+  if (rig.posed.some((entry) => entry.bone === bone)) return;
+  rig.posed.push({ bone, clip: bone.quaternion.clone() });
+}
+
+/** Put last frame's sampled pose back so a skipped mixer write cannot stack offsets. */
+function restoreClipPose(rig: SwimmerRig): void {
+  if (!rig.hasClip) return;
+  for (const entry of rig.posed) entry.bone.quaternion.copy(entry.clip);
+}
+
+function captureClipPose(rig: SwimmerRig): void {
+  for (const entry of rig.posed) entry.clip.copy(entry.bone.quaternion);
+  rig.hasClip = true;
+}
+
+function clipOf(rig: SwimmerRig, bone: THREE.Bone): THREE.Quaternion {
+  const entry = rig.posed.find((item) => item.bone === bone);
+  return entry ? entry.clip : bone.quaternion;
+}
+
+/** `offset` is applied on the pose the mixer sampled this frame, never on last frame's result. */
+function applyOffset(bone: THREE.Bone, clip: THREE.Quaternion, offset: THREE.Quaternion): void {
+  bone.quaternion.copy(clip).multiply(offset);
+}
+
+/** Shortest swing of `from` onto `to`. Near-opposite directions use a stable axis. */
+function swingOnto(from: THREE.Vector3, to: THREE.Vector3, out: THREE.Quaternion): void {
+  if (from.lengthSq() < 1e-10 || to.lengthSq() < 1e-10) {
+    out.identity();
+    return;
   }
-  _kickQ.setFromAxisAngle(_kickAxis, angle);
-  thigh.quaternion.multiply(_kickQ);
-  if (rig.hips) {
-    _kickQ.setFromAxisAngle(_kickAxis, angle * 0.16);
-    rig.hips.quaternion.multiply(_kickQ);
+  _fromY.copy(from).normalize();
+  _localDir.copy(to).normalize();
+  const dot = THREE.MathUtils.clamp(_fromY.dot(_localDir), -1, 1);
+  if (dot > 0.9995) {
+    out.identity();
+    return;
   }
+  if (dot < -0.9995) {
+    _pole.set(0, 1, 0);
+    if (Math.abs(_fromY.y) > 0.9) _pole.set(1, 0, 0);
+    _pole.cross(_fromY);
+    if (_pole.lengthSq() < 1e-8) _pole.set(1, 0, 0);
+    else _pole.normalize();
+    out.setFromAxisAngle(_pole, Math.PI);
+    return;
+  }
+  out.setFromUnitVectors(_fromY, _localDir);
 }
 
 /**
@@ -510,23 +622,27 @@ function aimBone(bone: THREE.Bone, worldDir: THREE.Vector3, twistWorld: THREE.Ve
   _localDir.normalize();
 
   const current = bone.quaternion;
-  _fromY.set(0, 1, 0).applyQuaternion(current).normalize();
-  _swing.setFromUnitVectors(_fromY, _localDir);
-  _aimed.copy(_swing).multiply(current);
+  _clipQ.copy(current);
+  _fromY.set(0, 1, 0).applyQuaternion(_clipQ);
+  if (_fromY.lengthSq() < 1e-10) return;
+  swingOnto(_fromY, _localDir, _swing);
+  _aimed.copy(_swing).multiply(_clipQ);
 
   _localX.set(1, 0, 0).applyQuaternion(_aimed);
   _twist.copy(twistWorld).applyQuaternion(_invParent);
   _twist.addScaledVector(_localDir, -_twist.dot(_localDir));
   _localX.addScaledVector(_localDir, -_localX.dot(_localDir));
   if (_twist.lengthSq() > 1e-6 && _localX.lengthSq() > 1e-6) {
-    _twist.normalize();
-    _localX.normalize();
-    _roll.setFromUnitVectors(_localX, _twist);
+    // Roll around the aimed axis. atan2 stays on the short arc, including across ±180°.
+    _pole.crossVectors(_localX, _twist);
+    const twistAngle = Math.atan2(_pole.dot(_localDir), THREE.MathUtils.clamp(_localX.dot(_twist), -1, 1));
+    _roll.setFromAxisAngle(_localDir, twistAngle);
     _aimed.premultiply(_roll);
   }
 
-  if (weight >= 0.999) current.copy(_aimed);
-  else current.slerp(_aimed, weight);
+  const blend = THREE.MathUtils.clamp(weight, 0, 1);
+  if (blend >= 0.999) current.copy(_aimed);
+  else current.copy(_clipQ).slerp(_aimed, blend);
 }
 
 function solveArm(
@@ -586,24 +702,19 @@ export function updateSwimmerRig(
   dt: number,
 ): void {
   const tun = sim.tunables;
+  const stiffness = Math.max(0.5, tun.blendStiffness);
   const speed = player.velocity.length();
   const cruise = Math.max(4, tun.playerMaxSpeed * tun.sprintMult);
   const speed01 = Math.min(1, speed / cruise);
   const slow = Math.max(0.4, tun.bodyIdleSpeed);
-  const swimTarget = THREE.MathUtils.smoothstep(speed, slow * 0.45, slow * 1.25);
-  rig.speedSwim = THREE.MathUtils.damp(rig.speedSwim, swimTarget, 5.5, dt);
-
-  const amount = tun.swimAnim ? tun.swimAnimAmount / Math.max(0.05, PLAYER.swimAnimAmount) : 0;
-  const hz = tun.swimAnimRate * (0.45 + 0.55 * speed01) * amount;
+  const moving = THREE.MathUtils.smoothstep(speed, slow * 0.45, slow * 1.25);
 
   const pose = player.actionPose;
   const aimingShot = sim.shotAim.active && player.id === sim.humanId;
   const catchTarget = pose === 'claim' || player.catchReady ? 1 : 0;
   const holdTarget = pose === 'hold' || aimingShot ? 1 : 0;
-  const ease = (current: number, target: number, rate: number) =>
-    current + (target - current) * (1 - Math.exp(-rate * dt));
-  rig.catchBlend = ease(rig.catchBlend, catchTarget, 8.5);
-  rig.holdBlend = ease(rig.holdBlend, holdTarget, holdTarget > rig.holdBlend ? 18 : 11);
+  rig.catchBlend = springTo(rig.catchSpring, catchTarget, stiffness, dt);
+  rig.holdBlend = springTo(rig.holdSpring, holdTarget, stiffness * 1.15, dt);
 
   const humanThrow = player.id === sim.humanId && player.role === 'human';
   const chargingShot =
@@ -629,10 +740,9 @@ export function updateSwimmerRig(
     curveR = player.throwCurveRight;
     curveU = player.throwCurveUp;
   }
-  const dampRate = throwing ? 9 : 6;
-  rig.throwShown = THREE.MathUtils.damp(rig.throwShown, throwing ? targetPower : 0, dampRate, dt);
-  rig.curveRightShown = THREE.MathUtils.damp(rig.curveRightShown, throwing ? curveR : 0, 8, dt);
-  rig.curveUpShown = THREE.MathUtils.damp(rig.curveUpShown, throwing ? curveU : 0, 8, dt);
+  rig.throwShown = springTo(rig.throwSpring, throwing ? targetPower : 0, stiffness, dt);
+  rig.curveRightShown = springTo(rig.curveRightSpring, throwing ? curveR : 0, stiffness, dt);
+  rig.curveUpShown = springTo(rig.curveUpSpring, throwing ? curveU : 0, stiffness, dt);
   throwLive.active = throwing;
   throwLive.power = rig.throwShown;
   throwLive.release = release;
@@ -650,19 +760,83 @@ export function updateSwimmerRig(
     burst: pose === 'burst',
     pose,
   });
-  rig.aimPosture = stepAimPosture(rig.aimPosture, aiming, tun.aimPostureBlend, dt);
-  // Speed still picks swim vs tread. Aim pulls that all the way to the tread clip.
-  rig.swimWeight = rig.speedSwim * (1 - rig.aimPosture);
+  rig.aimPosture = stepAimPosture(rig.aimSpring, aiming, tun.aimPostureBlend, dt);
+  // Moving picks swim. Still picks idle. Aim stands up into the tread. Springs keep the crossfade from popping.
+  const upright = rig.aimPosture;
+  const idleTarget = rig.idle ? (1 - moving) * (1 - upright) : 0;
+  const swimTarget = moving * (1 - upright);
+  const treadTarget = rig.idle ? upright : upright + (1 - moving) * (1 - upright);
+  springTo(rig.wIdle, idleTarget, stiffness, dt);
+  springTo(rig.wSwim, swimTarget, stiffness, dt);
+  springTo(rig.wTread, treadTarget, stiffness, dt);
+  rig.wIdle.value = Math.max(0, rig.wIdle.value);
+  rig.wSwim.value = Math.max(0, rig.wSwim.value);
+  rig.wTread.value = Math.max(0, rig.wTread.value);
+  let weightSum = rig.wIdle.value + rig.wSwim.value + rig.wTread.value;
+  if (weightSum < 1e-4) {
+    rig.wTread.value = 1;
+    weightSum = 1;
+  }
+  rig.swimWeight = rig.wSwim.value / weightSum;
+  rig.speedSwim = moving;
   rig.swim.setEffectiveWeight(rig.swimWeight);
-  rig.tread.setEffectiveWeight(1 - rig.swimWeight);
-  rig.swim.setEffectiveTimeScale(hz * SWIM_CLIP_SECONDS);
-  const treadRate = amount > 0 ? 1 : 0;
-  rig.tread.setEffectiveTimeScale(THREE.MathUtils.lerp(treadRate, 1.15, rig.aimPosture));
+  rig.tread.setEffectiveWeight(rig.wTread.value / weightSum);
+  if (rig.idle) rig.idle.setEffectiveWeight(rig.wIdle.value / weightSum);
+  const amount = tun.swimAnim ? tun.swimAnimAmount / Math.max(0.05, PLAYER.swimAnimAmount) : 0;
+  const strokeTarget = tun.swimAnim ? tun.swimAnimRate * (0.35 + 1.05 * speed01) * amount : 0;
+  springTo(rig.stroke, strokeTarget, stiffness, dt);
+  rig.swim.setEffectiveTimeScale(Math.max(0, rig.stroke.value) * SWIM_CLIP_SECONDS);
+  const treadRate = tun.swimAnim ? 0.65 + 0.55 * upright + 0.3 * speed01 : 0;
+  rig.tread.setEffectiveTimeScale(treadRate);
+  if (rig.idle) rig.idle.setEffectiveTimeScale(tun.swimAnim ? 0.75 : 0);
+
+  rememberPosed(rig, rig.spine);
+  rememberPosed(rig, rig.chest);
+  rememberPosed(rig, rig.upperL);
+  rememberPosed(rig, rig.lowerL);
+  rememberPosed(rig, rig.handL);
+  rememberPosed(rig, rig.upperR);
+  rememberPosed(rig, rig.lowerR);
+  rememberPosed(rig, rig.handR);
+  rememberPosed(rig, rig.hips);
+  rememberPosed(rig, rig.thighL);
+  rememberPosed(rig, rig.thighR);
+  rememberPosed(rig, rig.head);
+  rememberPosed(rig, rig.neck);
+  restoreClipPose(rig);
   rig.mixer.update(dt);
-  poseKick(rig, player, sim);
+  captureClipPose(rig);
 
   const up = authoritativeUp(tun.goalAxisUp);
-  rig.model.rotation.set(aimPosturePitch(player.facing.dot(up), rig.aimPosture), 0, 0);
+  const turn = bodyTurn(rig, player, up);
+  rig.headYaw.value += turn.yaw * 0.85;
+  rig.headPitch.value += turn.pitch * 0.55;
+  rig.armLag.value += turn.yaw * 0.45;
+  rig.legLag.value += turn.yaw * -0.3;
+  springTo(rig.headYaw, 0, stiffness * 0.7, dt);
+  springTo(rig.headPitch, 0, stiffness * 0.7, dt);
+  springTo(rig.armLag, 0, stiffness * 0.65, dt);
+  springTo(rig.legLag, 0, stiffness * 0.65, dt);
+  rig.headYaw.value = THREE.MathUtils.clamp(rig.headYaw.value, -0.55, 0.55);
+  rig.headPitch.value = THREE.MathUtils.clamp(rig.headPitch.value, -0.4, 0.4);
+  rig.armLag.value = THREE.MathUtils.clamp(rig.armLag.value, -0.4, 0.4);
+  rig.legLag.value = THREE.MathUtils.clamp(rig.legLag.value, -0.35, 0.35);
+
+  const right = _pole.crossVectors(player.up, player.facing);
+  const lateral = right.lengthSq() > 1e-8 ? player.velocity.dot(right.normalize()) : 0;
+  const bankTarget = THREE.MathUtils.clamp(-lateral / cruise, -1, 1) * tun.bankAmount * (1 - upright * 0.65);
+  springTo(rig.bankSpring, bankTarget, stiffness, dt);
+  const climb = player.velocity.dot(player.up);
+  const along = player.velocity.dot(player.facing);
+  const swimPitch = Math.atan2(climb, Math.max(1.5, Math.abs(along))) * 0.4 * (1 - upright);
+  springTo(rig.pitchSpring, swimPitch, stiffness, dt);
+  const burstTarget = pose === 'burst' ? -0.48 : 0;
+  springTo(rig.burstSpring, burstTarget, stiffness, dt);
+  const visualPitch = aimPosturePitch(player.facing.dot(up), rig.aimPosture) + rig.pitchSpring.value;
+  const visualRoll = rig.bankSpring.value + rig.burstSpring.value;
+  if (Number.isFinite(visualPitch) && Number.isFinite(visualRoll)) {
+    rig.model.rotation.set(visualPitch, 0, visualRoll);
+  }
 
   fillGoal(player, sim, rig.swimWeight, rig.catchBlend, rig.holdBlend);
   if (player.catchReady && !throwLive.active) {
@@ -688,18 +862,24 @@ export function updateSwimmerRig(
   }
   if (goal.lean > 0.001) {
     _leanQ.setFromAxisAngle(_leanAxis, goal.lean);
-    rig.spine.quaternion.multiply(_leanQ);
+    applyOffset(rig.spine, clipOf(rig, rig.spine), _leanQ);
   }
   if (Math.abs(goal.chestYaw) > 0.001) {
     _yawQ.setFromAxisAngle(_yawAxis, goal.chestYaw);
-    rig.chest.quaternion.multiply(_yawQ);
+    applyOffset(rig.chest, clipOf(rig, rig.chest), _yawQ);
   }
+  applyKick(rig, player, sim, stiffness, dt);
+  applySecondary(rig);
   if (goal.weight < 0.02) {
     group.updateMatrixWorld(true);
     return;
   }
 
   group.updateMatrixWorld(true);
+  // IK solves from the sampled clip, not from this frame's lag offset.
+  for (const bone of [rig.upperL, rig.lowerL, rig.handL, rig.upperR, rig.lowerR, rig.handR]) {
+    bone.quaternion.copy(clipOf(rig, bone));
+  }
   group.localToWorld(_targetL.copy(_goalL));
   group.localToWorld(_targetR.copy(_goalR));
 
@@ -770,6 +950,88 @@ const _palmWant = new THREE.Vector3();
  * The clip's wrist bend stays; only the twist changes. `weight` slerps from
  * the quaternion the mixer just wrote.
  */
+function kickAngle(player: PlayerState, sim: Simulation): number {
+  const charging = sim.charge.kind === 'kick' && sim.charge.active;
+  const swinging = player.actionPose === 'kick';
+  if (!charging && !swinging) return 0;
+  const power = swinging ? player.throwPosePower : sim.charge.amount;
+  if (!swinging) return -0.9 * THREE.MathUtils.clamp(power, 0, 1);
+  const duration = Math.max(0.05, player.actionPoseDuration);
+  const t = 1 - THREE.MathUtils.clamp(player.actionPoseTime / duration, 0, 1);
+  const cock = -1.05 * Math.max(0.35, power);
+  const through = 1.15 * Math.max(0.45, power);
+  return t < 0.45
+    ? THREE.MathUtils.lerp(cock, through, t / 0.45)
+    : THREE.MathUtils.lerp(through, 0.2, (t - 0.45) / 0.55);
+}
+
+function applyKick(rig: SwimmerRig, player: PlayerState, sim: Simulation, stiffness: number, dt: number): void {
+  springTo(rig.kickSpring, kickAngle(player, sim), stiffness, dt);
+  const angle = rig.kickSpring.value;
+  const lag = rig.legLag.value;
+  const poseThigh = (thigh: THREE.Bone | null, kick: number, trail: number): void => {
+    if (!thigh) return;
+    const total = kick + trail;
+    if (Math.abs(total) < 0.015) return;
+    _kickQ.setFromAxisAngle(_kickAxis, total);
+    applyOffset(thigh, clipOf(rig, thigh), _kickQ);
+  };
+  const throwLeft = player.throwArm === 'left';
+  poseThigh(rig.thighL, throwLeft ? angle : 0, lag);
+  poseThigh(rig.thighR, throwLeft ? 0 : angle, -lag * 0.8);
+  if (rig.hips && Math.abs(angle) >= 0.02) {
+    _kickQ.setFromAxisAngle(_kickAxis, angle * 0.16);
+    applyOffset(rig.hips, clipOf(rig, rig.hips), _kickQ);
+  }
+}
+
+/** Head, arms, and legs trail the body's turn. Offsets start from this frame's clip pose. */
+function applySecondary(rig: SwimmerRig): void {
+  if (rig.head && (Math.abs(rig.headYaw.value) > 0.01 || Math.abs(rig.headPitch.value) > 0.01)) {
+    _yawQ.setFromAxisAngle(_yawAxis, rig.headYaw.value);
+    _leanQ.setFromAxisAngle(_leanAxis, rig.headPitch.value);
+    _lagQ.copy(_yawQ).multiply(_leanQ);
+    applyOffset(rig.head, clipOf(rig, rig.head), _lagQ);
+  }
+  const arm = rig.armLag.value;
+  if (Math.abs(arm) > 0.01) {
+    _lagQ.setFromAxisAngle(_yawAxis, arm);
+    applyOffset(rig.upperL, clipOf(rig, rig.upperL), _lagQ);
+    _lagQ.setFromAxisAngle(_yawAxis, arm * 0.85);
+    applyOffset(rig.upperR, clipOf(rig, rig.upperR), _lagQ);
+  }
+}
+
+/**
+ * Yaw and pitch the facing gained this frame, wrapped to the short arc.
+ * A zero or broken facing contributes nothing.
+ */
+function bodyTurn(rig: SwimmerRig, player: PlayerState, up: THREE.Vector3): { yaw: number; pitch: number } {
+  const facing = player.facing;
+  const prev = rig.prevFacing;
+  if (facing.lengthSq() < 1e-8 || !Number.isFinite(facing.x)) return { yaw: 0, pitch: 0 };
+  if (prev.lengthSq() < 1e-8) {
+    prev.copy(facing);
+    return { yaw: 0, pitch: 0 };
+  }
+  _fromY.copy(prev).addScaledVector(up, -prev.dot(up));
+  _localDir.copy(facing).addScaledVector(up, -facing.dot(up));
+  let yaw = 0;
+  if (_fromY.lengthSq() > 1e-8 && _localDir.lengthSq() > 1e-8) {
+    _fromY.normalize();
+    _localDir.normalize();
+    _pole.crossVectors(_fromY, _localDir);
+    yaw = Math.atan2(_pole.dot(up), THREE.MathUtils.clamp(_fromY.dot(_localDir), -1, 1));
+  }
+  const prevPitch = Math.asin(THREE.MathUtils.clamp(prev.dot(up), -1, 1));
+  const nextPitch = Math.asin(THREE.MathUtils.clamp(facing.dot(up), -1, 1));
+  let pitch = nextPitch - prevPitch;
+  if (pitch > Math.PI) pitch -= Math.PI * 2;
+  if (pitch < -Math.PI) pitch += Math.PI * 2;
+  prev.copy(facing);
+  return { yaw, pitch };
+}
+
 function orientPalm(hand: THREE.Bone, palmLocal: THREE.Vector3, desiredWorld: THREE.Vector3, weight: number): void {
   if (weight < 0.02) return;
   const parent = hand.parent;

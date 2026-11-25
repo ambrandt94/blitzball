@@ -69,7 +69,7 @@ export class Game {
   private goalBanner: HTMLElement | null;
   private lastThrowFeedback = 0;
   private audioCtx: AudioContext | null = null;
-  private shotMode: 'wide' | 'inside' | 'ball' | null = null;
+  private shotMode: 'wide' | 'inside' | 'ball' | 'windup' | 'bank' | null = null;
 
   constructor(app: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -93,13 +93,14 @@ export class Game {
       }
     });
     const shot = new URLSearchParams(location.search).get('shot');
-    if (shot === 'wide' || shot === 'inside' || shot === 'ball') {
+    if (shot === 'wide' || shot === 'inside' || shot === 'ball' || shot === 'windup' || shot === 'bank') {
       this.shotMode = shot;
       this.tunables.showDebugStats = false;
       const hud = document.getElementById('hud');
       if (hud) hud.style.display = 'none';
       const dev = document.getElementById('dev-panel');
       if (dev) dev.style.display = 'none';
+      if (shot === 'windup' || shot === 'bank') this.poseStill();
     }
 
     this.scoreA = document.getElementById('score-a')!;
@@ -115,6 +116,38 @@ export class Game {
 
     this.onResize();
     window.addEventListener('resize', this.onResize);
+  }
+
+  /** Park the human in frame for the windup and bank stills. Physics does not step. */
+  private poseStill(): void {
+    const human = this.sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.actionPose = this.shotMode === 'windup' ? 'hold' : 'none';
+    human.actionPoseTime = 0.2;
+    this.sim.kickoffLock = 0;
+    this.sim.strafing = this.shotMode === 'windup';
+    if (this.shotMode === 'windup') {
+      human.hasBall = true;
+      this.sim.ball.possession = 'held';
+      this.sim.ball.ownerId = human.id;
+      this.sim.ball.position.set(0, 0.2, 0.7);
+      this.sim.charge.active = true;
+      this.sim.charge.kind = 'shoot';
+      this.sim.charge.amount = 0.85;
+      this.sim.shotAim.active = true;
+    } else {
+      human.hasBall = false;
+      human.velocity.set(16, 2, 5);
+      this.sim.ball.possession = 'free';
+      this.sim.ball.ownerId = null;
+      this.sim.ball.position.set(0, -6, 18);
+    }
+    for (const p of this.sim.players) {
+      if (p.id !== human.id) p.active = false;
+    }
   }
 
   start(): void {

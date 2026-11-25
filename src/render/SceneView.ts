@@ -140,7 +140,7 @@ export class SceneView {
     crowdDensity: 'high',
   };
   private fogTick = 0;
-  private shot: 'wide' | 'inside' | 'ball' | null = null;
+  private shot: 'wide' | 'inside' | 'ball' | 'windup' | 'bank' | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -162,7 +162,7 @@ export class SceneView {
     this.pipBlue = makePipTexture('#2b9fff', '#0a2030', 'B');
 
     const shot = new URLSearchParams(location.search).get('shot');
-    if (shot === 'wide' || shot === 'inside' || shot === 'ball') this.shot = shot;
+    if (shot === 'wide' || shot === 'inside' || shot === 'ball' || shot === 'windup' || shot === 'bank') this.shot = shot;
     this.buildLights();
     this.water = buildArenaDressing(this.scene, this.visuals);
     this.buildGoals();
@@ -613,11 +613,11 @@ export class SceneView {
       // Basis, not Object3D.lookAt. lookAt nudges the aim axis when up is
       // parallel to facing, and that nudge flips the roll by a half turn.
       this.faceBody(mesh, p.facing, p.up);
-      if (p.actionPose === 'burst') {
+      const rig = swimmerRig(mesh);
+      if (!rig && p.actionPose === 'burst') {
         const follow = THREE.MathUtils.clamp(p.actionPoseTime / 0.14, 0, 1);
         mesh.rotateZ(-0.55 * follow);
       }
-      const rig = swimmerRig(mesh);
       if (rig) {
         updateSwimmerRig(rig, mesh, p, sim, dt);
         // After the mixer and the pose offsets, so the ball sits in the palm
@@ -743,6 +743,17 @@ export class SceneView {
       this.ballHalo.visible = false;
       this.ballRing.visible = false;
       this.pip.visible = false;
+    } else if (this.shot === 'windup' || this.shot === 'bank') {
+      this.camera.position.set(2.15, 1.05, 3.15);
+      this.camera.lookAt(0, 0.28, 0.05);
+      this.camera.fov = 32;
+      this.shotMarker.visible = false;
+      this.catchBeacon.visible = false;
+      this.pip.visible = false;
+      this.ballRing.visible = false;
+      this.scene.traverse((obj) => {
+        if (obj.name === 'youRing' || obj.name === 'carrierRing' || obj.name === 'catchReadyMark') obj.visible = false;
+      });
     } else {
       this.camera.position.set(-2.2, 2.6, -18.5);
       this.camera.lookAt(0.4, 0.5, 14);

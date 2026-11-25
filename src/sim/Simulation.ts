@@ -800,7 +800,10 @@ export class Simulation {
     const speed = player.velocity.length();
     const target = this.tmp.aim;
     target.copy(aim);
-    if (target.lengthSq() < 1e-8) target.copy(player.facing);
+    if (target.lengthSq() < 1e-8 || !Number.isFinite(target.x) || !Number.isFinite(target.y) || !Number.isFinite(target.z)) {
+      target.copy(player.facing);
+    }
+    if (target.lengthSq() < 1e-8) target.set(0, 0, 1);
     else target.normalize();
 
     if (!aimLocked && speed > 1e-4) {

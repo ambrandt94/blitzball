@@ -81,6 +81,8 @@ export function defaultTunables(): Tunables {
     shoulderOffset: CAMERA.shoulderOffset,
     shoulderTransition: CAMERA.shoulderTransition,
     aimPostureBlend: 0.25,
+    blendStiffness: 8,
+    bankAmount: 0.42,
     kickRange: 1.25,
     kickSpeed: 1.25,
     kickCurve: 0.5,
@@ -187,6 +189,8 @@ export class DevPanel {
     this.range('Paddle rate', 'swimAnimRate', 0.2, 4, 0.1);
     this.range('Paddle amount', 'swimAnimAmount', 0, 1.4, 0.05);
     this.range('Strafe speed', 'strafeSpeedMult', 0.25, 1, 0.01);
+    this.range('Blend stiffness', 'blendStiffness', 2, 22, 0.5);
+    this.range('Bank amount', 'bankAmount', 0, 0.9, 0.01);
     this.section('Shot', false);
     this.range('Shoulder offset', 'shoulderOffset', 0, 3.2, 0.05);
     this.range('Shoulder transition', 'shoulderTransition', 1, 18, 0.1);

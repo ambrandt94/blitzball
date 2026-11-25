@@ -126,6 +126,10 @@ export interface Tunables {
   shoulderTransition: number;
   /** Seconds to settle into the upright aim tread, and back to the swim. */
   aimPostureBlend: number;
+  /** Critically damped rate for clip weights and pose layers. Higher is snappier. */
+  blendStiffness: number;
+  /** Radians of body roll at full lateral speed. */
+  bankAmount: number;
   /** Kick landing distance relative to a throw of the same power. */
   kickRange: number;
   /** Kick flight speed relative to a throw of the same power. */
