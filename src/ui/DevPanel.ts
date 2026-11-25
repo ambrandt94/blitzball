@@ -1,4 +1,5 @@
 import { ARENA_RADIUS, BALL, GOALIE, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
+import { TIME_SCALE_DEFAULT, clampTimeScale } from '../sim/timeScale';
 import type { BotBehavior, CameraPresetId, MatchPresetId, PowerMode, RosterSpec, Tunables } from '../game/types';
 import { loadRoster, saveRoster } from './rosterStorage';
 import {
@@ -40,6 +41,7 @@ import {
 
 const POWER_MODE_KEY = 'blitzball.powerMode';
 const CURVE_AIM_OFFSET_KEY = 'blitzball.curveAimOffset';
+const TIME_SCALE_KEY = 'blitzball.timeScale';
 const SECTIONS_KEY = 'blitzball.devSections';
 
 export interface RosterBotView {
@@ -99,6 +101,18 @@ export function parseCurveAimOffset(raw: string | null): number | null {
   const n = Number(raw);
   if (!Number.isFinite(n)) return null;
   return Math.min(1.25, Math.max(0, n));
+}
+
+function loadTimeScale(): number | null {
+  if (typeof localStorage === 'undefined') return null;
+  const parsed = Number(localStorage.getItem(TIME_SCALE_KEY));
+  if (!Number.isFinite(parsed)) return null;
+  return clampTimeScale(parsed);
+}
+
+function saveTimeScale(value: number): void {
+  if (typeof localStorage === 'undefined') return;
+  localStorage.setItem(TIME_SCALE_KEY, String(clampTimeScale(value)));
 }
 
 function saveCurveAimOffset(value: number): void {
@@ -237,6 +251,7 @@ export function defaultTunables(): Tunables {
     goalieReach: GOALIE.reach,
     goalieReaction: GOALIE.reaction,
     goalieCatchDifficulty: GOALIE.catchDifficulty,
+    timeScale: TIME_SCALE_DEFAULT,
     goalieSkill: 70,
     goalieSkillHome: 70,
     goalieSkillAway: 70,
@@ -263,6 +278,9 @@ export class DevPanel {
   private characterSettings: CharacterSettings = defaultCharacterSettings();
   private indicators: IndicatorSettings = loadIndicatorSettings();
   private onIndicators: ((settings: IndicatorSettings) => void) | null = null;
+  private onTogglePause: (() => void) | null = null;
+  private onStepFrame: (() => void) | null = null;
+  private pauseButton: HTMLButtonElement | null = null;
   visible = true;
 
   constructor(
@@ -272,6 +290,7 @@ export class DevPanel {
     roster: RosterControl,
     character?: CharacterMenu,
     onIndicators?: (settings: IndicatorSettings) => void,
+    playback?: { togglePause: () => void; step: () => void },
   ) {
     this.root = root;
     this.tunables = tunables;
@@ -280,12 +299,16 @@ export class DevPanel {
     this.character = character ?? null;
     this.characterSettings = loadCharacterSettings();
     this.onIndicators = onIndicators ?? null;
+    this.onTogglePause = playback?.togglePause ?? null;
+    this.onStepFrame = playback?.step ?? null;
     this.indicators = loadIndicatorSettings();
     this.mount = root;
     const saved = loadPowerMode();
     if (saved) this.tunables.powerMode = saved;
     const savedOffset = loadCurveAimOffset();
     if (savedOffset !== null) this.tunables.curveAimOffset = savedOffset;
+    const savedScale = loadTimeScale();
+    if (savedScale !== null) this.tunables.timeScale = savedScale;
     const savedRoster = loadRoster();
     if (savedRoster) {
       this.matchPreset = savedRoster.preset ?? 'custom';
@@ -301,6 +324,10 @@ export class DevPanel {
     if (savedCamera) applyCameraSave(this.tunables, savedCamera);
     this.collapsed = loadCollapsed();
     this.render();
+  }
+
+  setPaused(paused: boolean): void {
+    if (this.pauseButton) this.pauseButton.textContent = paused ? 'Resume' : 'Pause';
   }
 
   setVisible(v: boolean): void {
@@ -601,6 +628,23 @@ export class DevPanel {
       this.range('Away goalie skill', 'goalieSkillAway', 0, 100, 1);
       this.range('Blue field AI', 'fieldSkillA', 0, 100, 1);
       this.range('Orange field AI', 'fieldSkillB', 0, 100, 1);
+    });
+
+    this.section('Playback', 'playback', () => {
+      this.range('Time scale', 'timeScale', 0.05, 2, 0.05);
+      const row = document.createElement('div');
+      row.className = 'row';
+      const pause = document.createElement('button');
+      pause.type = 'button';
+      pause.textContent = 'Pause';
+      pause.addEventListener('click', () => this.onTogglePause?.());
+      const step = document.createElement('button');
+      step.type = 'button';
+      step.textContent = 'Step frame';
+      step.addEventListener('click', () => this.onStepFrame?.());
+      row.append(pause, step);
+      this.mount.append(row);
+      this.pauseButton = pause;
     });
 
     this.section('Visual / Debug', 'visual', () => {
@@ -1074,6 +1118,11 @@ export class DevPanel {
       value.textContent = n.toFixed(2);
       if (key === 'arenaRadius' || key === 'waterPixelScale' || key === 'causticFps' || key === 'causticScroll') this.onChange(key);
       if (key === 'curveAimOffset') saveCurveAimOffset(n);
+      if (key === 'timeScale') {
+        const clamped = clampTimeScale(n);
+        this.tunables.timeScale = clamped;
+        saveTimeScale(clamped);
+      }
       if (key === 'goalieSkill' || key === 'goalieSkillHome' || key === 'goalieSkillAway') this.persistRoster();
     });
     wrap.append(name, input, value);

@@ -3,7 +3,7 @@
  *   npx tsx src/sim/rotationCheck.ts
  */
 import * as THREE from 'three';
-import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, ROSTER, SHOT_ARC, setArenaRadius } from '../game/constants';
+import { ARENA_RADIUS, BALL, CAMERA, FIXED_DT, GOAL, PLAYER, ROSTER, SHOT_ARC, setArenaRadius } from '../game/constants';
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
@@ -21,6 +21,7 @@ import { kickFootPoint } from './kick';
 import { authoritativeUp, lookBasis, rotateToward, stabilizeUp, transportUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
+import { TIME_SCALE_DEFAULT, clampTimeScale, takeFixedSteps } from './timeScale';
 
 function fail(message: string): never {
   throw new Error(message);
@@ -4276,6 +4277,59 @@ function checkGoalieSaves(): void {
   if (beaten < 5) fail(`fast corner shots were caught too often (${trials - beaten}/${trials} saves)`);
 }
 
+/** The same shot, advanced with the playback clock, matches at 0.1x and 1x. */
+function checkTimeScale(): void {
+  if (clampTimeScale(Number.NaN) !== TIME_SCALE_DEFAULT) fail('a bad time scale did not fall back to 1x');
+  if (clampTimeScale(9) !== 2 || clampTimeScale(0) !== 0.05) fail('time scale was not clamped');
+  const slowFrame = takeFixedSteps(0, 1 / 60, 0.1, FIXED_DT, 8, false, false);
+  if (slowFrame.steps !== 0) fail('0.1x took a physics step on a single rendered frame');
+  if (Math.abs(slowFrame.accum - (1 / 60) * 0.1) > 1e-9) fail('0.1x did not scale the accumulated sim time');
+  const paused = takeFixedSteps(0.02, 1 / 60, 1, FIXED_DT, 8, true, false);
+  if (paused.steps !== 0 || paused.accum !== 0.02) fail('pause still advanced the sim');
+  const stepped = takeFixedSteps(0.02, 1 / 60, 1, FIXED_DT, 8, true, true);
+  if (stepped.steps !== 1) fail('step frame did not run exactly one physics step');
+
+  const fly = (scale: number): { pos: THREE.Vector3; vel: THREE.Vector3 } => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.setSoloOpponent(false);
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(30, 20, -40);
+    human.velocity.set(0, 0, 0);
+    sim.ball.possession = 'free';
+    sim.ball.ownerId = null;
+    sim.ball.arc = null;
+    sim.ball.claimLock = 0;
+    sim.ball.position.set(0, 0.4, 0);
+    sim.ball.velocity.set(2.5, 0.4, 11);
+    let accum = 0;
+    let simulated = 0;
+    const target = 0.5;
+    let guard = 0;
+    while (simulated < target - 1e-8 && guard < 8000) {
+      const next = takeFixedSteps(accum, 1 / 60, scale, FIXED_DT, 8, false, false);
+      accum = next.accum;
+      for (let i = 0; i < next.steps; i++) sim.step(FIXED_DT, blankIntent());
+      simulated += next.steps * FIXED_DT;
+      guard++;
+    }
+    if (Math.abs(simulated - target) > 1e-6) fail(`${scale}x simulated ${simulated.toFixed(4)}s`);
+    return { pos: sim.ball.position.clone(), vel: sim.ball.velocity.clone() };
+  };
+
+  const full = fly(1);
+  const slow = fly(0.1);
+  if (full.pos.distanceTo(slow.pos) > 1e-6) {
+    fail(`0.1x shot landed ${full.pos.distanceTo(slow.pos).toFixed(6)} off the 1x shot`);
+  }
+  if (full.vel.distanceTo(slow.vel) > 1e-6) {
+    fail(`0.1x shot velocity differed by ${full.vel.distanceTo(slow.vel).toFixed(6)}`);
+  }
+}
+
 function checkCameraSettings(): void {
   const tunables = defaultTunables();
   if (tunables.cameraPreset !== 'default') fail('camera did not start on the Default preset');
@@ -4623,6 +4677,7 @@ export function runRotationChecks(): void {
   checkDrillOpponent();
   checkRosterEdit();
   checkGoalies();
+  checkTimeScale();
   checkArenaShell();
   checkWallRicochet();
   checkRimDeflection();
