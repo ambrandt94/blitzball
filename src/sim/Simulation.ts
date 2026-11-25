@@ -1838,7 +1838,7 @@ export class Simulation {
     this.power.setAmount((this.targetReach - minD) / span);
     this.charge.amount = this.power.amount();
     this.refreshShotTarget();
-    if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
+    if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(this.getHuman());
   }
 
   /** Mouse-down lengthens the pull. Mouse-up gives some of it back. */
@@ -1849,7 +1849,7 @@ export class Simulation {
     this.power.setAmount(this.pullTravel / full);
     this.charge.amount = this.power.amount();
     this.refreshShotTarget();
-    if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
+    if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(this.getHuman());
   }
 
   /** Landing distance for a power in 0..1, from a short lob out to the aim range. */
@@ -2476,25 +2476,62 @@ export class Simulation {
     this.match.statusMessage = best ? 'Pass' : 'Pass (no target)';
   }
 
+  /**
+   * Arc the held kick would launch. The flight starts at the foot, with half
+   * the throw bend (`kickCurve`), the same way `launchKick` builds it.
+   * Throw previews use the ball where it is, which is the hand.
+   */
+  private previewArc(player: PlayerState): {
+    p0: THREE.Vector3;
+    p1: THREE.Vector3;
+    p2: THREE.Vector3;
+    duration: number;
+    carryLeft: number;
+    carryDir: THREE.Vector3 | null;
+    carrySpeed: number;
+  } {
+    if (this.charge.kind !== 'kick') return this.plannedArc(this.charge.amount);
+    const savedBall = this.ball.position.clone();
+    const savedTarget = this.shotAim.target.clone();
+    const savedLock = this.shotAim.lockId;
+    this.ball.position.copy(this.footPoint(player, this.tmp.side));
+    this.shotAim.lockId = null;
+    this.pointAlongAim(this.shotAim.target, this.shotReach(this.charge.amount));
+    const arc = this.plannedArc(this.charge.amount);
+    this.ball.position.copy(savedBall);
+    this.shotAim.target.copy(savedTarget);
+    this.shotAim.lockId = savedLock;
+    return arc;
+  }
+
+  private sampleArc(arc: {
+    p0: THREE.Vector3;
+    p1: THREE.Vector3;
+    p2: THREE.Vector3;
+    carryLeft: number;
+    carryDir: THREE.Vector3 | null;
+  }): THREE.Vector3[] {
+    const samples: THREE.Vector3[] = [];
+    const point = new THREE.Vector3();
+    for (let i = 0; i <= SHOT_ARC.samples; i++) {
+      quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
+      samples.push(point.clone());
+    }
+    if (arc.carryLeft > 0.2 && arc.carryDir) {
+      for (let i = 1; i <= 8; i++) {
+        samples.push(arc.p2.clone().addScaledVector(arc.carryDir, arc.carryLeft * (i / 8)));
+      }
+    }
+    return samples;
+  }
+
   private updateChargeGhost(player: PlayerState): void {
     if (!this.tunables.showChargeGhost) {
       this.chargeGhost = [];
       return;
     }
-    if (this.charge.kind === 'shoot' && this.shotAim.active) {
-      const arc = this.plannedArc(this.charge.amount);
-      const samples: THREE.Vector3[] = [];
-      const point = new THREE.Vector3();
-      for (let i = 0; i <= SHOT_ARC.samples; i++) {
-        quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
-        samples.push(point.clone());
-      }
-      if (arc.carryLeft > 0.2 && arc.carryDir) {
-        for (let i = 1; i <= 8; i++) {
-          samples.push(arc.p2.clone().addScaledVector(arc.carryDir, arc.carryLeft * (i / 8)));
-        }
-      }
-      this.chargeGhost = samples;
+    if ((this.charge.kind === 'shoot' || this.charge.kind === 'kick') && this.shotAim.active) {
+      this.chargeGhost = this.sampleArc(this.previewArc(player));
       return;
     }
     const isHuman = player.role === 'human';
@@ -3128,7 +3165,7 @@ export class Simulation {
     const holding = this.ball.possession === 'held' && this.ball.ownerId === human.id;
     if (this.shotAim.active && holding) {
       this.refreshShotTarget();
-      if (this.charge.kind === 'shoot') this.updateChargeGhost(human);
+      if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(human);
       this.landingMarker.visible = true;
       this.landingMarker.position.copy(this.markerShown);
       this.landingMarker.lockId = this.shotAim.lockId;

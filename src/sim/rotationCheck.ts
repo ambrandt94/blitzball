@@ -125,6 +125,117 @@ function checkUpPole(): void {
  * against the shell. A frame whose look or body up jumps more than a few
  * degrees is the disorienting snap.
  */
+/** Lateral miss of a point from the chord between the ends of a preview. */
+function chordOffset(points: THREE.Vector3[]): number {
+  if (points.length < 3) return 0;
+  const a = points[0]!;
+  const b = points[points.length - 1]!;
+  const mid = points[Math.floor(points.length / 2)]!;
+  const chord = b.clone().sub(a);
+  const len = chord.length();
+  if (len < 1e-6) return 0;
+  chord.multiplyScalar(1 / len);
+  const off = mid.clone().sub(a);
+  off.addScaledVector(chord, -off.dot(chord));
+  return off.length();
+}
+
+/**
+ * The held preview is the flight that will be released. Throws use the full
+ * bend. Kicks use half of it, and the line moves when that bend changes.
+ */
+function checkPreviewMatchesFlight(): void {
+  const arm = (kick: boolean) => {
+    const sim = new Simulation(defaultTunables());
+    sim.setSoloOpponent(false);
+    sim.kickoffLock = 0;
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = 0;
+    sim.tunables.kickWindup = 0.05;
+    sim.tunables.kickRange = 1;
+    sim.tunables.kickSpeed = 1;
+    sim.tunables.kickCurve = 0.5;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.lastOwnerId = human.id;
+    sim.ball.position.copy(holdPoint(sim));
+    sim.yaw = 0;
+    sim.pitch = 0;
+    const hold = blankIntent();
+    hold.strafe = kick;
+    if (kick) hold.kickHeld = true;
+    else hold.shootHeld = true;
+    sim.armShotAim(hold);
+    sim.step(1 / 60, hold);
+    return { sim, human };
+  };
+
+  const bend = (sim: Simulation, kick: boolean, x: number) => {
+    const look = blankIntent();
+    look.strafe = kick;
+    if (kick) look.kickHeld = true;
+    else look.shootHeld = true;
+    look.lookDelta.x = x;
+    sim.applyFrameLook(look);
+    sim.step(1 / 60, look);
+  };
+
+  const straight = arm(true);
+  const before = chordOffset(straight.sim.chargeGhost);
+  bend(straight.sim, true, 0.45);
+  const curved = chordOffset(straight.sim.chargeGhost);
+  if (straight.sim.chargeGhost.length < 4) fail('kick hold hid the preview');
+  if (!(curved > before + 0.35)) {
+    fail(`kick preview ignored the bend (${before.toFixed(2)} -> ${curved.toFixed(2)})`);
+  }
+
+  const thrown = arm(false);
+  bend(thrown.sim, false, 0.08);
+  const kick = arm(true);
+  bend(kick.sim, true, 0.08);
+  const throwOff = chordOffset(thrown.sim.chargeGhost);
+  const kickOff = chordOffset(kick.sim.chargeGhost);
+  const ratio = throwOff > 1e-3 ? kickOff / throwOff : 0;
+  if (ratio < 0.35 || ratio > 0.7) {
+    fail(`kick preview curve ${kickOff.toFixed(2)} is not half the throw ${throwOff.toFixed(2)}`);
+  }
+
+  const match = (label: string, kickHold: boolean) => {
+    const { sim } = arm(kickHold);
+    bend(sim, kickHold, 0.4);
+    const ghost = sim.chargeGhost.map((p) => p.clone());
+    const release = blankIntent();
+    release.strafe = kickHold;
+    sim.step(1 / 60, release);
+    let guard = 0;
+    while (!sim.ball.arc && guard < 12) {
+      sim.step(1 / 60, release);
+      guard++;
+    }
+    const arc = sim.ball.arc;
+    if (!arc) fail(`${label} release did not fly an arc`);
+    const point = new THREE.Vector3();
+    let worst = 0;
+    const n = Math.min(ghost.length, SHOT_ARC.samples + 1);
+    for (let i = 0; i < n; i++) {
+      quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
+      worst = Math.max(worst, point.distanceTo(ghost[i]!));
+    }
+    if (worst > 0.35) fail(`${label} preview left the real path by ${worst.toFixed(2)}`);
+  };
+  match('throw', false);
+  match('kick', true);
+}
+
 function checkVerticalLook(): void {
   const spots = [
     new THREE.Vector3(0, 0, 12),
@@ -3595,6 +3706,7 @@ export function runRotationChecks(): void {
   checkPointerLockGuard();
   checkCatchBeacon();
   checkGoalBoundArc();
+  checkPreviewMatchesFlight();
   checkVerticalLook();
   checkCamera(false, false);
   checkCamera(false, true);
