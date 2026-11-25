@@ -164,6 +164,7 @@ export function createSwimmer(team: 0 | 1, marker: 'you' | 'mate' | 'none'): THR
     youRing.rotation.x = Math.PI / 2;
     youRing.position.y = -0.42;
     youRing.name = 'youRing';
+    youRing.visible = false;
     group.add(youRing);
   }
 

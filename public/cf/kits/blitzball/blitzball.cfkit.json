@@ -1,0 +1,346 @@
+{
+ "format": "cf-kit/1",
+ "namespace": "blitzball",
+ "version": "1.0.0",
+ "label": "Blitzball swimwear",
+ "license": "CF-authored (Character Forge for Blitzball): meshes, textures, tint masks and the Swim / Tread clips. No third-party or licensed (KI) content.",
+ "generator": "Character Forge runtime_v2/kitwork/build_kit.py from Character Forge v2 (blitzball_swimmer/build_wardrobe.py)",
+ "authoredOn": {
+  "race": "human",
+  "bodyType": "neutral"
+ },
+ "rig": {
+  "id": "cf-humanoid-29",
+  "joints": [
+   "Root",
+   "Trans",
+   "Hips",
+   "Pelvis",
+   "Thigh_L",
+   "Knee_L",
+   "Shin_L",
+   "Foot_L",
+   "Thigh_R",
+   "Knee_R",
+   "Shin_R",
+   "Foot_R",
+   "Tail_1",
+   "Tail_2",
+   "Tail_3",
+   "Spine",
+   "Chest",
+   "Neck",
+   "Head",
+   "Clavicle_L",
+   "UpperArm_L",
+   "LowerArm_L",
+   "Hand_L",
+   "Wing_L",
+   "Clavicle_R",
+   "UpperArm_R",
+   "LowerArm_R",
+   "Hand_R",
+   "Wing_R"
+  ],
+  "root": "Root",
+  "heightM": 0.9463,
+  "up": "+Y",
+  "forward": "+Z",
+  "units": "metres",
+  "hands": [
+   "Hand_L",
+   "Hand_R"
+  ],
+  "spine": [
+   "Hips",
+   "Spine",
+   "Chest",
+   "Neck",
+   "Head"
+  ]
+ },
+ "bands": [
+  "under",
+  "base",
+  "mid",
+  "armor",
+  "outer"
+ ],
+ "slots": {
+  "smallclothes": {
+   "band": "under",
+   "region": "torso"
+  },
+  "torso_inner": {
+   "band": "base",
+   "region": "torso"
+  },
+  "legs": {
+   "band": "base",
+   "region": "legs"
+  }
+ },
+ "hideRules": {
+  "body:<region>": "hide the body triangles this garment covers in that region (runtime coverage test; regions: pelvis, torso, neck, thigh_L/R, shin_L/R, foot_L/R, upperarm_L/R, forearm_L/R, hand_L/R, covered = any)",
+  "slot:<slotId>": "no painted piece in that slot (e.g. slot:smallclothes drops the default painted drawers under swimwear)",
+  "<garmentId>": "that garment is not shown",
+  "<garmentId>:<segment>": "that garment's segment is not shown (garments[id].segments)",
+  "order": "apply hides of every worn garment; layer/band order is under < base < mid < armor < outer; displaces = cannot be worn together (same slot alternatives)"
+ },
+ "tint": {
+  "dyeKind": "tint",
+  "how": "recipe dye { 'blitzball/<garment>': { team: '#rrggbb' } }: diffuse = mix(tex, tex x team, mask)",
+  "mask": "white = tint, black = keep the trim colour"
+ },
+ "garments": {
+  "trunks": {
+   "slot": "smallclothes",
+   "band": "under",
+   "layer": 0,
+   "kind": "mesh",
+   "label": "Square-leg trunks",
+   "shellOffsetM": 0.002,
+   "hiddenBy": [
+    "onepiece",
+    "boardshorts"
+   ],
+   "displaces": [],
+   "material": "TeamTint",
+   "nodes": [
+    "Garment_trunks_leg_L",
+    "Garment_trunks_leg_R",
+    "Garment_trunks_upper"
+   ],
+   "segments": {
+    "trunks:leg_L": "Garment_trunks_leg_L",
+    "trunks:leg_R": "Garment_trunks_leg_R",
+    "trunks:upper": "Garment_trunks_upper"
+   },
+   "tris": 534,
+   "textureSize": 256,
+   "texelsPerMetre": 280.0,
+   "file": "garments/garment_trunks.glb",
+   "texture": "textures/trunks_tex.png",
+   "mask": "textures/trunks_tintmask.png",
+   "hides": [
+    "slot:smallclothes",
+    "body:pelvis",
+    "body:thigh_L",
+    "body:thigh_R"
+   ],
+   "dye": [
+    {
+     "region": "team",
+     "kind": "tint",
+     "default": "#ffffff",
+     "mask": "textures/trunks_tintmask.png"
+    }
+   ],
+   "variants": {
+    "default": {
+     "label": "team colours"
+    }
+   },
+   "races": "*",
+   "fit": {
+    "mode": "auto",
+    "hugMm": 6,
+    "minGapMm": 2
+   },
+   "bytes": 65692
+  },
+  "onepiece": {
+   "slot": "torso_inner",
+   "band": "base",
+   "layer": 1,
+   "kind": "mesh",
+   "label": "One-piece racer",
+   "shellOffsetM": 0.0025,
+   "hiddenBy": [],
+   "displaces": [],
+   "material": "TeamTint",
+   "nodes": [
+    "Garment_onepiece"
+   ],
+   "segments": {},
+   "tris": 999,
+   "textureSize": 256,
+   "texelsPerMetre": 280.0,
+   "file": "garments/garment_onepiece.glb",
+   "texture": "textures/onepiece_tex.png",
+   "mask": "textures/onepiece_tintmask.png",
+   "hides": [
+    "slot:smallclothes",
+    "body:pelvis",
+    "body:torso",
+    "body:thigh_L",
+    "body:thigh_R",
+    "trunks"
+   ],
+   "dye": [
+    {
+     "region": "team",
+     "kind": "tint",
+     "default": "#ffffff",
+     "mask": "textures/onepiece_tintmask.png"
+    }
+   ],
+   "variants": {
+    "default": {
+     "label": "team colours"
+    }
+   },
+   "races": "*",
+   "fit": {
+    "mode": "auto",
+    "hugMm": 8,
+    "minGapMm": 2
+   },
+   "bytes": 90804
+  },
+  "boardshorts": {
+   "slot": "legs",
+   "band": "base",
+   "layer": 1,
+   "kind": "mesh",
+   "label": "Board shorts (knee)",
+   "shellOffsetM": [
+    0.005,
+    0.023
+   ],
+   "hiddenBy": [],
+   "displaces": [
+    "boardshorts_asym"
+   ],
+   "material": "TeamTint",
+   "nodes": [
+    "Garment_boardshorts"
+   ],
+   "segments": {},
+   "tris": 512,
+   "textureSize": 256,
+   "texelsPerMetre": 280.0,
+   "file": "garments/garment_boardshorts.glb",
+   "texture": "textures/boardshorts_tex.png",
+   "mask": "textures/boardshorts_tintmask.png",
+   "hides": [
+    "slot:smallclothes",
+    "body:pelvis",
+    "body:thigh_L",
+    "body:thigh_R",
+    "trunks"
+   ],
+   "dye": [
+    {
+     "region": "team",
+     "kind": "tint",
+     "default": "#ffffff",
+     "mask": "textures/boardshorts_tintmask.png"
+    }
+   ],
+   "variants": {
+    "default": {
+     "label": "team colours"
+    }
+   },
+   "races": "*",
+   "fit": {
+    "mode": "auto",
+    "hugMm": 8,
+    "minGapMm": 2
+   },
+   "bytes": 29116
+  },
+  "boardshorts_asym": {
+   "slot": "legs",
+   "band": "base",
+   "layer": 1,
+   "kind": "mesh",
+   "label": "Board shorts (asymmetric: L below knee, R mid-thigh)",
+   "shellOffsetM": [
+    0.005,
+    0.023
+   ],
+   "hiddenBy": [],
+   "displaces": [
+    "boardshorts"
+   ],
+   "wornOver": [
+    "trunks"
+   ],
+   "material": "TeamTint",
+   "nodes": [
+    "Garment_boardshorts_asym"
+   ],
+   "segments": {},
+   "tris": 468,
+   "textureSize": 256,
+   "texelsPerMetre": 280.0,
+   "file": "garments/garment_boardshorts_asym.glb",
+   "texture": "textures/boardshorts_asym_tex.png",
+   "mask": "textures/boardshorts_asym_tintmask.png",
+   "hides": [
+    "slot:smallclothes",
+    "body:pelvis",
+    "body:thigh_L",
+    "body:thigh_R",
+    "trunks:upper",
+    "trunks:leg_L"
+   ],
+   "dye": [
+    {
+     "region": "team",
+     "kind": "tint",
+     "default": "#ffffff",
+     "mask": "textures/boardshorts_asym_tintmask.png"
+    }
+   ],
+   "variants": {
+    "default": {
+     "label": "team colours"
+    }
+   },
+   "races": "*",
+   "fit": {
+    "mode": "auto",
+    "hugMm": 8,
+    "minGapMm": 2
+   },
+   "bytes": 28092
+  }
+ },
+ "clips": {
+  "Swim": {
+   "file": "clips/swim.json",
+   "license": "CF-authored (Character Forge), free to use in Blitzball",
+   "loop": true
+  },
+  "Tread": {
+   "file": "clips/tread.json",
+   "license": "CF-authored (Character Forge), free to use in Blitzball",
+   "loop": true
+  }
+ },
+ "looks": {
+  "onepiece": [
+   "onepiece"
+  ],
+  "trunks": [
+   "trunks"
+  ],
+  "boardshorts": [
+   "boardshorts"
+  ],
+  "boardshorts_asym": [
+   "trunks",
+   "boardshorts_asym"
+  ]
+ },
+ "usage": {
+  "runtime": "Character Forge runtime >= 2.2.0 (cf-runtime.mjs, three >=0.187 <0.190)",
+  "load": "await CF.loadKit('<url of this folder>/blitzball.cfkit.json')  // assets resolve relative to this manifest",
+  "equip": "CF.equip(recipe, 'legs', 'blitzball/boardshorts') | ('torso_inner', 'blitzball/onepiece') | ('smallclothes', 'blitzball/trunks'); asym look = trunks + ('legs', 'blitzball/boardshorts_asym')",
+  "tint": "CF.dye(recipe, 'blitzball/boardshorts', 'team', '#rrggbb')  // painted change, no rebuild",
+  "clips": "body.play('Swim') | body.play('Tread')  // CF-authored, every race"
+ }
+}

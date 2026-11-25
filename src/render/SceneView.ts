@@ -13,14 +13,17 @@ import { BubblePool } from './bubbles';
 import { createCatchBeacon } from './catchBeacon';
 import { blendLimbPose, swimLimbPose } from './limbs';
 import { buildGoalFrame } from './goalFrame';
-import { BLITZBALL_OUTFITS, createBlitzballKit, type OutfitId } from '../characters/blitzball';
-import { loadCharacter, loadTintMask } from '../../packages/character-kit/src/index.ts';
-import type { WardrobeManifest } from '../../packages/character-kit/src/index.ts';
+import type { Body } from '../characters/cfRuntime';
+import { buildOutfit, forgeRuntime, initForge, recipeForOutfit } from '../characters/forge';
+import type { OutfitId } from '../characters/outfits';
 import { loadCharacterSettings, type CharacterSettings } from '../ui/characterSettings';
+import { defaultIndicatorSettings, type IndicatorSettings } from '../ui/indicatorSettings';
 import { createSwimmer } from './swimmer';
 import {
+  attachForgeSwimmer,
   prepareSwimmerTemplate,
   readCarrierPalm,
+  releaseSwimmerRig,
   replaceSwimmerModel,
   swimmerRig,
   updateSwimmerRig,
@@ -152,7 +155,11 @@ export class SceneView {
   private nearBubbleAcc = 0;
   private swimmerTemplate: SwimmerTemplate | null = null;
   private characters: CharacterSettings = loadCharacterSettings();
-  private outfitTemplates = new Map<OutfitId, { template: SwimmerTemplate; masks: Record<string, THREE.Texture | null> }>();
+  private forgeReady = false;
+  private pendingBuilds = 0;
+  private indicators: IndicatorSettings = defaultIndicatorSettings();
+  private readonly holdTint = new THREE.Color();
+  private readonly holdTeam = new THREE.Color();
   private visuals: ArenaVisuals = {
     waterStyle: 'trailbound',
     waterPreset: 'Clearer',
@@ -199,6 +206,8 @@ export class SceneView {
     const shot = new URLSearchParams(location.search).get('shot');
     if (shot === 'wide' || shot === 'inside' || shot === 'ball' || shot === 'windup' || shot === 'bank' || shot === 'play') {
       this.shot = shot;
+      const boot = document.getElementById('boot');
+      if (boot) boot.hidden = true;
     }
     this.buildLights();
     this.water = buildArenaDressing(this.scene, this.visuals);
@@ -266,10 +275,16 @@ export class SceneView {
     }
   }
 
-  /** Live outfit picks. The next player sync dresses anyone who changed. */
+  /** Live marker picks. Clean is the default; Debug restores the full gizmos. */
+  setIndicators(settings: IndicatorSettings): void {
+    this.indicators = settings;
+    this.applyGoalIndicators();
+  }
+
+  /** Live outfit picks. A change rebuilds that swimmer before play continues. */
   setCharacters(settings: CharacterSettings): void {
     this.characters = settings;
-    for (const group of this.playerMeshes.values()) this.dress(group);
+    for (const group of this.playerMeshes.values()) void this.dress(group);
   }
 
   private outfitFor(group: THREE.Group): OutfitId {
@@ -278,64 +293,77 @@ export class SceneView {
     return this.characters.team[team];
   }
 
-  private dress(group: THREE.Group): void {
+  private showBoot(text: string): void {
+    if (this.shot) return;
+    const boot = document.getElementById('boot');
+    if (!boot) return;
+    boot.textContent = text;
+    boot.hidden = false;
+  }
+
+  private hideBoot(): void {
+    const boot = document.getElementById('boot');
+    if (boot) boot.hidden = true;
+    if (typeof document !== 'undefined') document.body.dataset.characters = 'ready';
+  }
+
+  private async dress(group: THREE.Group): Promise<void> {
     const outfit = this.outfitFor(group);
-    const packed = this.outfitTemplates.get(outfit) ?? this.outfitTemplates.values().next().value;
-    if (!packed) {
+    const team = group.userData.team === 1 ? 1 : 0;
+    const playerId = typeof group.userData.playerId === 'number' ? group.userData.playerId : 0;
+    if (group.userData.outfit === outfit && swimmerRig(group)) return;
+    if (group.userData.building === outfit) return;
+    const cf = forgeRuntime();
+    if (!cf) {
       if (this.swimmerTemplate && !swimmerRig(group)) {
-        const team = group.userData.team === 1 ? 1 : 0;
-        const playerId = typeof group.userData.playerId === 'number' ? group.userData.playerId : 0;
         replaceSwimmerModel(group, this.swimmerTemplate, team, playerId);
         this.markGameplay(group);
       }
       return;
     }
-    if (group.userData.outfit === outfit && swimmerRig(group)) return;
-    const team = group.userData.team === 1 ? 1 : 0;
-    const playerId = typeof group.userData.playerId === 'number' ? group.userData.playerId : 0;
-    replaceSwimmerModel(group, packed.template, team, playerId, packed.masks);
-    group.userData.outfit = outfit;
-    this.markGameplay(group);
+    group.userData.building = outfit;
+    this.pendingBuilds += 1;
+    this.showBoot('Suiting up…');
+    try {
+      const built: Body = await buildOutfit(cf, outfit, team === 1 ? '#f2642a' : '#1c6fe0');
+      if (group.userData.building !== outfit) {
+        built.dispose();
+        return;
+      }
+      if (swimmerRig(group)) releaseSwimmerRig(group);
+      const rig = attachForgeSwimmer(group, built, playerId);
+      if (!rig) {
+        built.dispose();
+        return;
+      }
+      group.userData.outfit = outfit;
+      group.userData.forgeRecipe = recipeForOutfit(cf, outfit, team === 1 ? '#f2642a' : '#1c6fe0');
+      this.markGameplay(group);
+    } catch (err) {
+      console.warn('forge build failed', err);
+    } finally {
+      if (group.userData.building === outfit) delete group.userData.building;
+      this.pendingBuilds = Math.max(0, this.pendingBuilds - 1);
+      if (this.forgeReady && this.pendingBuilds === 0) this.hideBoot();
+    }
   }
 
   /**
-   * Character Forge swimwear, one prebaked GLB per outfit so bots stay on a few
-   * materials. A failed load falls back to the older single wetsuit.
+   * Character Forge runtime 2.2.0. Bodies are built at load, before play, because
+   * each garment fit blocks the frame for a stretch.
    */
   private async tryLoadSwimmerModel(): Promise<void> {
-    const root = `${import.meta.env.BASE_URL}characters/`;
+    this.showBoot('Suiting up…');
     try {
-      const response = await fetch(`${root}wardrobe.json`);
-      if (!response.ok) throw new Error('wardrobe missing');
-      const manifest = (await response.json()) as WardrobeManifest;
-      const kit = createBlitzballKit(manifest);
-      const masks = new Map<string, THREE.Texture>();
-      for (const outfit of BLITZBALL_OUTFITS) {
-        const asset = await loadCharacter(kit, kit.loadoutFromOutfit(outfit.id), root, { preferBaked: true });
-        const template = prepareSwimmerTemplate(asset.scene, asset.animations);
-        if (!template) continue;
-        const tex: Record<string, THREE.Texture | null> = {};
-        for (const [materialName, garmentId] of Object.entries(asset.tintMaterials)) {
-          const garment = kit.garment(garmentId);
-          if (!garment?.mask) {
-            tex[materialName] = null;
-            continue;
-          }
-          let mask = masks.get(garment.mask);
-          if (!mask) {
-            mask = await loadTintMask(`${root}${garment.mask}`);
-            masks.set(garment.mask, mask);
-          }
-          tex[materialName] = mask;
-        }
-        this.outfitTemplates.set(outfit.id, { template, masks: tex });
-      }
-      if (this.outfitTemplates.size > 0) {
-        for (const group of this.playerMeshes.values()) this.dress(group);
-        return;
-      }
-    } catch {
-      // Fall through to the single wetsuit.
+      await initForge();
+      this.forgeReady = true;
+      const groups = [...this.playerMeshes.values()];
+      for (const group of groups) await this.dress(group);
+      if (this.pendingBuilds === 0) this.hideBoot();
+      return;
+    } catch (err) {
+      console.warn('forge init failed', err);
+      this.hideBoot();
     }
     await this.tryLoadLegacySwimmer();
   }
@@ -383,6 +411,7 @@ export class SceneView {
     for (const team of [0, 1] as const) root.add(buildGoalFrame(team));
     this.scene.add(root);
     this.markGameplay(root);
+    this.applyGoalIndicators();
   }
 
   /** Ring that sits on the glass where the ball meets it. */
@@ -448,6 +477,7 @@ export class SceneView {
         depthWrite: false,
       }),
     );
+    this.ballHalo.visible = false;
     this.scene.add(this.ballHalo);
 
     this.ballRing = new THREE.Mesh(
@@ -455,6 +485,7 @@ export class SceneView {
       new THREE.MeshBasicMaterial({ color: 0xffffff }),
     );
     this.ballRing.rotation.x = Math.PI / 2;
+    this.ballRing.visible = false;
     this.scene.add(this.ballRing);
 
     const trailGeo = new THREE.BufferGeometry();
@@ -475,6 +506,7 @@ export class SceneView {
       }),
     );
     this.pip.scale.set(1.4, 1.4, 1.4);
+    this.pip.visible = false;
     this.scene.add(this.pip);
   }
 
@@ -878,15 +910,34 @@ export class SceneView {
         mat.opacity = p.hitFlash * 0.85;
         flash.visible = p.hitFlash > 0.02;
       }
+      const youRing = mesh.getObjectByName('youRing');
+      if (youRing) {
+        youRing.visible = this.indicators.rings;
+        if (this.indicators.rings && !this.indicators.bold) {
+          youRing.scale.setScalar(0.42);
+          const mat = youRing instanceof THREE.Mesh ? (youRing.material as THREE.MeshBasicMaterial) : null;
+          if (mat) mat.opacity = 0.28;
+        } else if (youRing instanceof THREE.Mesh) {
+          youRing.scale.setScalar(1);
+          const mat = youRing.material as THREE.MeshBasicMaterial;
+          mat.opacity = 0.8;
+        }
+      }
       const ring = mesh.getObjectByName('carrierRing');
       const locked = sim.landingMarker.lockId === p.id || sim.shotAim.lockId === p.id;
       if (ring) {
-        ring.visible = p.hasBall || locked;
+        ring.visible = this.indicators.rings && (p.hasBall || locked);
         ring.rotation.z = this.pulse * 2.5;
         const ringMat = ring instanceof THREE.Mesh ? (ring.material as THREE.MeshBasicMaterial) : null;
         if (ringMat) {
-          ringMat.color.setHex(locked ? 0xc6ff6a : 0xffe066);
-          const pulse = locked ? 1.35 + Math.sin(this.pulse * 9) * 0.12 : 1;
+          ringMat.color.setHex(locked ? 0xc6ff6a : p.hasBall ? TEAM_COLORS[p.team] ?? 0xffe066 : 0xffe066);
+          ringMat.transparent = true;
+          ringMat.opacity = this.indicators.bold ? 1 : 0.4;
+          const pulse = this.indicators.bold
+            ? locked
+              ? 1.35 + Math.sin(this.pulse * 9) * 0.12
+              : 1
+            : 0.46;
           ring.scale.setScalar(pulse);
         }
       }
@@ -910,13 +961,15 @@ export class SceneView {
     const trailMat = this.ballTrail.material as THREE.LineBasicMaterial;
     const pipMat = this.pip.material as THREE.SpriteMaterial;
 
-    if (sim.ball.possession === 'held' && sim.ball.ownerId !== null) {
-      const owner = sim.players[sim.ball.ownerId];
+    const held = sim.ball.possession === 'held' && sim.ball.ownerId !== null;
+    const showBubble = this.indicators.ballBubble;
+    this.ballHalo.visible = showBubble;
+    if (held) {
+      const owner = sim.players[sim.ball.ownerId!];
       const team = owner?.team ?? 0;
       const teamColor = TEAM_COLORS[team]!;
       haloMat.color.setHex(teamColor);
-      haloMat.opacity = 0.28;
-      // Carrier ring on the swimmer already marks possession.
+      haloMat.opacity = this.indicators.bold ? 0.28 : 0.12;
       this.ballRing.visible = false;
       trailMat.color.setHex(teamColor);
       if (sim.ball.ownerId === sim.humanId) {
@@ -927,29 +980,33 @@ export class SceneView {
         pipMat.map = this.pipBlue;
       }
       pipMat.needsUpdate = true;
-      const pulse = 1 + Math.sin(this.pulse * 6) * 0.08;
-      this.ballHalo.scale.setScalar(pulse);
+      const pulse = 1 + Math.sin(this.pulse * 6) * (this.indicators.bold ? 0.08 : 0.03);
+      this.ballHalo.scale.setScalar(this.indicators.bold ? pulse : pulse * 0.72);
+      this.tintHeldBall(team);
     } else {
       haloMat.color.setHex(0xffe066);
       const pulse = 0.1 + Math.sin(this.pulse * 5) * 0.04;
-      haloMat.opacity = pulse;
+      haloMat.opacity = this.indicators.bold ? pulse : pulse * 0.45;
       ringMat.color.setHex(0xfff3b0);
       ringMat.transparent = true;
-      ringMat.opacity = 0.45;
-      this.ballRing.visible = true;
+      ringMat.opacity = this.indicators.bold ? 0.45 : 0.22;
+      this.ballRing.visible = showBubble;
       trailMat.color.setHex(0xffe066);
       trailMat.opacity = 0.55;
       pipMat.map = this.pipFree;
       pipMat.needsUpdate = true;
-      this.ballHalo.scale.setScalar(1.1 + Math.sin(this.pulse * 5) * 0.12);
+      const haloScale = 1.1 + Math.sin(this.pulse * 5) * 0.12;
+      this.ballHalo.scale.setScalar(this.indicators.bold ? haloScale : haloScale * 0.7);
+      this.tintHeldBall(null);
     }
 
     this.writeLine(this.ballTrail, this.trailPositions, sim.ball.trail, TRAIL_MAX);
 
     this.worldUp.set(0, sim.tunables.goalAxisUp ? 0 : 1, sim.tunables.goalAxisUp ? 1 : 0);
-    this.pip.position.copy(sim.ball.position).addScaledVector(this.worldUp, 1.15);
-    this.pip.visible = true;
-    const pipPulse = 1.35 + Math.sin(this.pulse * 4) * 0.12;
+    this.pip.position.copy(sim.ball.position).addScaledVector(this.worldUp, this.indicators.bold ? 1.15 : 0.72);
+    this.pip.visible = this.indicators.prompt;
+    pipMat.opacity = this.indicators.bold ? 1 : 0.55;
+    const pipPulse = (this.indicators.bold ? 1.35 : 0.48) + Math.sin(this.pulse * 4) * (this.indicators.bold ? 0.12 : 0.03);
     this.pip.scale.set(pipPulse, pipPulse, pipPulse);
 
     this.writeArc(sim.chargeGhost);
@@ -1074,7 +1131,7 @@ export class SceneView {
 
   private syncCatchBeacon(sim: Simulation): void {
     const beacon = sim.catchBeacon;
-    this.catchBeacon.visible = beacon.visible;
+    this.catchBeacon.visible = this.indicators.beacons && beacon.visible;
     if (!beacon.visible) return;
     this.catchBeacon.position.copy(beacon.position);
     const pulse = 1 + Math.sin(this.pulse * 5) * 0.08;
@@ -1292,7 +1349,7 @@ export class SceneView {
   /** Small ring and hand glows while catch-ready is on. Hidden the rest of the time. */
   private syncCatchReadyMark(group: THREE.Group, ready: boolean): void {
     let mark = group.getObjectByName('catchReadyMark');
-    if (!ready) {
+    if (!ready || !this.indicators.beacons) {
       if (mark) mark.visible = false;
       return;
     }
@@ -1333,6 +1390,63 @@ export class SceneView {
       const mat = child.material;
       if (mat instanceof THREE.MeshBasicMaterial) mat.opacity = child.name === 'catchReadyRing' ? 0.4 + pulse * 0.35 : pulse;
     });
+  }
+
+  /** A quiet team wash on the ball while someone holds it. The big bubble is separate. */
+  private tintHeldBall(team: 0 | 1 | null): void {
+    this.ballPivot.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of list) {
+        if (!(material instanceof THREE.MeshStandardMaterial) && !(material instanceof THREE.MeshBasicMaterial)) continue;
+        const data = material.userData as { holdBase?: THREE.Color; holdEmissive?: THREE.Color; holdEmissiveIntensity?: number };
+        if (!data.holdBase) {
+          data.holdBase = material.color.clone();
+          if (material instanceof THREE.MeshStandardMaterial) {
+            data.holdEmissive = material.emissive.clone();
+            data.holdEmissiveIntensity = material.emissiveIntensity;
+          }
+        }
+        if (team === null) {
+          material.color.copy(data.holdBase);
+          if (material instanceof THREE.MeshStandardMaterial && data.holdEmissive) {
+            material.emissive.copy(data.holdEmissive);
+            material.emissiveIntensity = data.holdEmissiveIntensity ?? material.emissiveIntensity;
+          }
+          continue;
+        }
+        this.holdTeam.setHex(team === 0 ? 0x2b9fff : 0xff6a3d);
+        this.holdTint.copy(data.holdBase).lerp(this.holdTeam, 0.38);
+        material.color.copy(this.holdTint);
+        if (material instanceof THREE.MeshStandardMaterial) {
+          material.emissive.copy(this.holdTeam);
+          material.emissiveIntensity = 0.22;
+        }
+      }
+    });
+  }
+
+  private applyGoalIndicators(): void {
+    const show = this.indicators.goalTarget;
+    const amount = this.indicators.bold ? 1 : 0.28;
+    for (const name of ['goal-blue', 'goal-orange']) {
+      const target = this.scene.getObjectByName(name)?.getObjectByName('goalTarget');
+      if (!target) continue;
+      target.visible = show;
+      target.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of list) {
+          if (!('opacity' in material)) continue;
+          const data = material.userData as { baseOpacity?: number };
+          if (typeof data.baseOpacity !== 'number') data.baseOpacity = material.opacity;
+          material.transparent = true;
+          material.opacity = data.baseOpacity * amount;
+        }
+      });
+    }
   }
 
   /** Point local +Z along facing and local +Y along up, with no lookAt branch. */

@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { installTeamTint } from '../../packages/character-kit/src/index.ts';
 import { ensureWaterFog } from './waterFog';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { BALL, PLAYER } from '../game/constants';
@@ -91,6 +90,8 @@ export interface SwimmerRig {
   upperR: THREE.Bone;
   lowerR: THREE.Bone;
   handR: THREE.Bone;
+  /** Grip on the throw hand. The held ball sits here when the Forge rig built one. */
+  palmSocket: THREE.Object3D | null;
   hips: THREE.Bone | null;
   thighL: THREE.Bone | null;
   thighR: THREE.Bone | null;
@@ -303,11 +304,7 @@ function requireBone(root: THREE.Object3D, name: string): THREE.Bone {
   return found as THREE.Bone;
 }
 
-function tintClone(
-  root: THREE.Object3D,
-  team: 0 | 1,
-  masks?: Record<string, THREE.Texture | null>,
-): void {
+function tintClone(root: THREE.Object3D, team: 0 | 1): void {
   const suit = TEAM[team].suit;
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
@@ -317,11 +314,8 @@ function tintClone(
       const cloned = material.clone();
       cloned.userData.waterFog = false;
       nearestTextures(cloned);
-      if (
-        cloned instanceof THREE.MeshStandardMaterial &&
-        (cloned.name === 'TeamTint' || cloned.name === 'TeamTint_under')
-      ) {
-        installTeamTint(cloned, suit, masks?.[cloned.name] ?? null, { invertMask: true });
+      if (cloned instanceof THREE.MeshStandardMaterial && cloned.name === 'TeamTint') {
+        cloned.color.setHex(suit);
       }
       ensureWaterFog(cloned);
       return cloned;
@@ -351,13 +345,12 @@ export function attachSwimmerModel(
   template: SwimmerTemplate,
   team: 0 | 1,
   playerId: number,
-  masks?: Record<string, THREE.Texture | null>,
 ): SwimmerRig | null {
   const existing = group.userData.swimmerRig as SwimmerRig | undefined;
   if (existing) return existing;
   const clone = cloneSkinned(template.scene) as THREE.Group;
   try {
-    tintClone(clone, team, masks);
+    tintClone(clone, team);
     const wrapper = new THREE.Group();
     wrapper.name = 'swimmerModel';
     wrapper.scale.setScalar(SWIMMER_MODEL_SCALE);
@@ -407,6 +400,7 @@ export function attachSwimmerModel(
       upperR,
       lowerR,
       handR,
+      palmSocket: null,
       hips: findBone(wrapper, 'Hips') ?? findBone(wrapper, 'Pelvis'),
       thighL: findBone(wrapper, 'Thigh_L'),
       thighR: findBone(wrapper, 'Thigh_R'),
@@ -487,7 +481,6 @@ export function replaceSwimmerModel(
   template: SwimmerTemplate,
   team: 0 | 1,
   playerId: number,
-  masks?: Record<string, THREE.Texture | null>,
 ): SwimmerRig | null {
   const existing = group.userData.swimmerRig as SwimmerRig | undefined;
   if (existing) {
@@ -498,7 +491,159 @@ export function replaceSwimmerModel(
     releaseModel(existing.model);
     delete group.userData.swimmerRig;
   }
-  return attachSwimmerModel(group, template, team, playerId, masks);
+  return attachSwimmerModel(group, template, team, playerId);
+}
+
+export interface ForgeBody {
+  object3D: THREE.Group;
+  mixer: THREE.AnimationMixer;
+  clips: Record<string, THREE.AnimationClip>;
+  socket(name: string): THREE.Object3D | null;
+  dispose(): void;
+}
+
+/**
+ * Dress a swimmer in a Character Forge body. Swim, Tread, and Idle keep the
+ * same crossfade as the old GLB. The throw hand's ball sits on `hand_r`.
+ */
+export function attachForgeSwimmer(group: THREE.Group, body: ForgeBody, playerId: number): SwimmerRig | null {
+  const existing = group.userData.swimmerRig as SwimmerRig | undefined;
+  if (existing) return existing;
+  const swimClip = body.clips.Swim;
+  const treadClip = body.clips.Tread;
+  if (!swimClip || !treadClip) return null;
+  const wrapper = new THREE.Group();
+  wrapper.name = 'swimmerModel';
+  wrapper.add(body.object3D);
+  body.object3D.updateWorldMatrix(true, true);
+  const trans = body.object3D.getObjectByName('Trans');
+  const transHeight = new THREE.Vector3();
+  if (trans) trans.getWorldPosition(transHeight);
+  const pivotY = trans ? transHeight.y : MODEL_PIVOT_Y;
+  wrapper.scale.setScalar(SWIMMER_MODEL_SCALE);
+  wrapper.position.y = -pivotY * SWIMMER_MODEL_SCALE;
+  try {
+    const spine = requireBone(wrapper, 'Spine');
+    const chest = requireBone(wrapper, 'Chest');
+    const upperL = requireBone(wrapper, 'UpperArm_L');
+    const lowerL = requireBone(wrapper, 'LowerArm_L');
+    const handL = requireBone(wrapper, 'Hand_L');
+    const upperR = requireBone(wrapper, 'UpperArm_R');
+    const lowerR = requireBone(wrapper, 'LowerArm_R');
+    const handR = requireBone(wrapper, 'Hand_R');
+    const mixer = body.mixer;
+    const swim = mixer.clipAction(swimClip);
+    const tread = mixer.clipAction(treadClip);
+    const idleClip = body.clips.Idle ?? null;
+    const idle = idleClip ? mixer.clipAction(idleClip) : null;
+    swim.setLoop(THREE.LoopRepeat, Infinity);
+    tread.setLoop(THREE.LoopRepeat, Infinity);
+    swim.play();
+    tread.play();
+    if (idle) {
+      idle.setLoop(THREE.LoopRepeat, Infinity);
+      idle.play();
+      idle.setEffectiveWeight(0);
+    }
+    swim.time = (playerId * 0.41) % Math.max(0.01, swim.getClip().duration);
+    tread.time = (playerId * 0.27) % Math.max(0.01, tread.getClip().duration);
+    tread.setEffectiveWeight(1);
+    swim.setEffectiveWeight(0);
+    mixer.update(0);
+    const rig: SwimmerRig = {
+      model: wrapper,
+      mixer,
+      swim,
+      tread,
+      spine,
+      chest,
+      upperL,
+      lowerL,
+      handL,
+      upperR,
+      lowerR,
+      handR,
+      palmSocket: body.socket('hand_r'),
+      hips: findBone(wrapper, 'Hips') ?? findBone(wrapper, 'Pelvis'),
+      thighL: findBone(wrapper, 'Thigh_L'),
+      thighR: findBone(wrapper, 'Thigh_R'),
+      idle,
+      head: findBone(wrapper, 'Head'),
+      neck: findBone(wrapper, 'Neck'),
+      posed: [],
+      hasClip: false,
+      aimSpring: spring1(),
+      wIdle: spring1(),
+      wTread: spring1(1),
+      wSwim: spring1(),
+      stroke: spring1(),
+      catchSpring: spring1(),
+      holdSpring: spring1(),
+      throwSpring: spring1(),
+      curveRightSpring: spring1(),
+      curveUpSpring: spring1(),
+      kickSpring: spring1(),
+      burstSpring: spring1(),
+      bankSpring: spring1(),
+      pitchSpring: spring1(),
+      headYaw: spring1(),
+      headPitch: spring1(),
+      armLag: spring1(),
+      legLag: spring1(),
+      prevFacing: new THREE.Vector3(),
+      lenUpperL: lowerL.position.length(),
+      lenLowerL: handL.position.length(),
+      lenUpperR: lowerR.position.length(),
+      lenLowerR: handR.position.length(),
+      swimWeight: 0,
+      catchBlend: 0,
+      holdBlend: 0,
+      throwShown: 0,
+      curveRightShown: 0,
+      curveUpShown: 0,
+      speedSwim: 0,
+      aimPosture: 0,
+    };
+    body.object3D.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of list) ensureWaterFog(material);
+    });
+    disposeProcedural(group);
+    group.add(wrapper);
+    const flash = group.getObjectByName('hitFlash');
+    if (flash) flash.scale.setScalar(1.35);
+    const head = requireBone(wrapper, 'Head');
+    const badge = group.getObjectByName('teamBadge');
+    if (badge) {
+      head.add(badge);
+      badge.position.set(0, 0.46, 0.02);
+      badge.scale.setScalar(0.62 / SWIMMER_MODEL_SCALE);
+    }
+    const ring = group.getObjectByName('youRing');
+    if (ring) ring.position.y = -0.08;
+    group.userData.swimmerRig = rig;
+    group.userData.forgeBody = body;
+    return rig;
+  } catch {
+    wrapper.remove(body.object3D);
+    return null;
+  }
+}
+
+export function releaseSwimmerRig(group: THREE.Group): void {
+  const existing = group.userData.swimmerRig as SwimmerRig | undefined;
+  if (!existing) return;
+  const badge = existing.model.getObjectByName('teamBadge');
+  if (badge) group.add(badge);
+  existing.mixer.stopAllAction();
+  group.remove(existing.model);
+  const forge = group.userData.forgeBody as ForgeBody | undefined;
+  if (forge) forge.dispose();
+  else releaseModel(existing.model);
+  delete group.userData.swimmerRig;
+  delete group.userData.forgeBody;
 }
 
 export function swimmerRig(group: THREE.Object3D): SwimmerRig | null {
@@ -972,6 +1117,20 @@ export function readCarrierPalm(rig: SwimmerRig, player: PlayerState, out: THREE
   const right = player.throwArm !== 'left';
   const hand = right ? rig.handR : rig.handL;
   const axis = right ? PALM_AXIS_R : PALM_AXIS_L;
+  const socket = right ? rig.palmSocket : null;
+  if (socket) {
+    socket.updateWorldMatrix(true, false);
+    socket.getWorldPosition(_palmOrigin);
+    hand.updateWorldMatrix(true, false);
+    hand.getWorldPosition(_palmWant);
+    _palmNormal.copy(_palmOrigin).sub(_palmWant);
+    if (_palmNormal.lengthSq() < 1e-8) {
+      hand.getWorldQuaternion(_parentQ);
+      _palmNormal.copy(axis).applyQuaternion(_parentQ);
+    }
+    if (_palmNormal.lengthSq() > 1e-8) _palmNormal.normalize();
+    return out.copy(_palmOrigin).addScaledVector(_palmNormal, BALL.radius * 0.35);
+  }
   hand.updateWorldMatrix(true, false);
   hand.getWorldPosition(_palmOrigin);
   hand.getWorldQuaternion(_parentQ);

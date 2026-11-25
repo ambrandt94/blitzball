@@ -1,4 +1,5 @@
-import { DEFAULT_OUTFIT, isOutfitId, type OutfitId } from '../characters/blitzball';
+import { outfitFromSaved } from '../characters/forge';
+import { DEFAULT_OUTFIT, type OutfitId } from '../characters/outfits';
 
 const STORAGE_KEY = 'blitzball.characters';
 
@@ -21,13 +22,17 @@ export function parseCharacterSettings(raw: string | null): CharacterSettings | 
   }
   if (!data || typeof data !== 'object') return null;
   const record = data as Record<string, unknown>;
-  if (typeof record.human !== 'string' || !isOutfitId(record.human)) return null;
+  if (typeof record.human !== 'string') return null;
+  const human = outfitFromSaved(record.human);
+  if (!human) return null;
   if (!Array.isArray(record.team) || record.team.length < 2) return null;
   const blue = record.team[0];
   const orange = record.team[1];
   if (typeof blue !== 'string' || typeof orange !== 'string') return null;
-  if (!isOutfitId(blue) || !isOutfitId(orange)) return null;
-  return { human: record.human, team: [blue, orange] };
+  const home = outfitFromSaved(blue);
+  const away = outfitFromSaved(orange);
+  if (!home || !away) return null;
+  return { human, team: [home, away] };
 }
 
 export function loadCharacterSettings(): CharacterSettings {

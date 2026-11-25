@@ -7,6 +7,13 @@ import {
   saveCharacterSettings,
   type CharacterSettings,
 } from './characterSettings';
+import {
+  cleanIndicatorSettings,
+  debugIndicatorSettings,
+  loadIndicatorSettings,
+  saveIndicatorSettings,
+  type IndicatorSettings,
+} from './indicatorSettings';
 import { matchRoster, presetAllowsGoalieToggle } from './matchPresets';
 import {
   applyCameraPreset,
@@ -247,6 +254,8 @@ export class DevPanel {
   private withGoalies = true;
   private character: CharacterMenu | null = null;
   private characterSettings: CharacterSettings = defaultCharacterSettings();
+  private indicators: IndicatorSettings = loadIndicatorSettings();
+  private onIndicators: ((settings: IndicatorSettings) => void) | null = null;
   visible = true;
 
   constructor(
@@ -255,6 +264,7 @@ export class DevPanel {
     onChange: (key: keyof Tunables) => void,
     roster: RosterControl,
     character?: CharacterMenu,
+    onIndicators?: (settings: IndicatorSettings) => void,
   ) {
     this.root = root;
     this.tunables = tunables;
@@ -262,6 +272,8 @@ export class DevPanel {
     this.roster = roster;
     this.character = character ?? null;
     this.characterSettings = loadCharacterSettings();
+    this.onIndicators = onIndicators ?? null;
+    this.indicators = loadIndicatorSettings();
     this.mount = root;
     const saved = loadPowerMode();
     if (saved) this.tunables.powerMode = saved;
@@ -343,6 +355,70 @@ export class DevPanel {
     });
   }
 
+  private renderIndicators(): void {
+    this.section('HUD / Indicators', 'indicators', () => {
+      const toggle = (label: string, key: keyof IndicatorSettings) => {
+        const row = document.createElement('div');
+        row.className = 'row';
+        const lab = document.createElement('label');
+        lab.style.flex = '1';
+        lab.textContent = label;
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.dataset.indicator = key;
+        input.checked = this.indicators[key];
+        input.addEventListener('change', () => {
+          this.indicators = { ...this.indicators, [key]: input.checked };
+          this.commitIndicators();
+        });
+        row.append(lab, input);
+        this.mount.append(row);
+      };
+      toggle('Player rings', 'rings');
+      toggle('Ball bubble', 'ballBubble');
+      toggle('Y prompt', 'prompt');
+      toggle('Goal target', 'goalTarget');
+      toggle('Beacons and marks', 'beacons');
+      toggle('Bold gizmos', 'bold');
+
+      const row = document.createElement('div');
+      row.className = 'row';
+      const clean = document.createElement('button');
+      clean.type = 'button';
+      clean.textContent = 'Clean';
+      clean.title = 'Hide the rings, bubble, prompt, and beacons. Keep a faint goal target.';
+      clean.addEventListener('click', () => {
+        this.indicators = cleanIndicatorSettings();
+        this.syncIndicatorWidgets();
+        this.commitIndicators();
+      });
+      const debug = document.createElement('button');
+      debug.type = 'button';
+      debug.textContent = 'Debug';
+      debug.title = 'Show every marker at full strength.';
+      debug.addEventListener('click', () => {
+        this.indicators = debugIndicatorSettings();
+        this.syncIndicatorWidgets();
+        this.commitIndicators();
+      });
+      row.append(clean, debug);
+      this.mount.append(row);
+    });
+  }
+
+  private commitIndicators(): void {
+    saveIndicatorSettings(this.indicators);
+    this.onIndicators?.(this.indicators);
+  }
+
+  private syncIndicatorWidgets(): void {
+    for (const input of this.root.querySelectorAll<HTMLInputElement>('input[data-indicator]')) {
+      const key = input.dataset.indicator as keyof IndicatorSettings | undefined;
+      if (!key) continue;
+      input.checked = this.indicators[key];
+    }
+  }
+
   private render(): void {
     this.root.innerHTML = '';
     this.mount = this.root;
@@ -351,6 +427,7 @@ export class DevPanel {
     this.root.appendChild(h);
     this.renderRosterCard();
     this.renderCharacter();
+    this.renderIndicators();
 
     this.section('Throwing / Power', 'throwing', () => {
       this.choice('Power mode', 'powerMode', [
