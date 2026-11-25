@@ -84,12 +84,16 @@ export class Game {
         this.sim.resizeArena(this.tunables.arenaRadius);
         this.view.rebuildArena();
       }
-      if (key === 'waterStyle' || key === 'stadiumDetail' || key === 'crowdDensity') {
-        this.view.applyVisuals({
-          waterStyle: this.tunables.waterStyle,
-          stadiumDetail: this.tunables.stadiumDetail,
-          crowdDensity: this.tunables.crowdDensity,
-        });
+      if (
+        key === 'waterStyle' ||
+        key === 'waterPreset' ||
+        key === 'waterRefraction' ||
+        key === 'waterQuality' ||
+        key === 'waterPixelScale' ||
+        key === 'stadiumDetail' ||
+        key === 'crowdDensity'
+      ) {
+        this.view.applyVisuals(this.visuals());
       }
     });
     const shot = new URLSearchParams(location.search).get('shot');
@@ -116,6 +120,18 @@ export class Game {
 
     this.onResize();
     window.addEventListener('resize', this.onResize);
+  }
+
+  private visuals() {
+    return {
+      waterStyle: this.tunables.waterStyle,
+      waterPreset: this.tunables.waterPreset,
+      waterRefraction: this.tunables.waterRefraction,
+      waterQuality: this.tunables.waterQuality,
+      waterPixelScale: this.tunables.waterPixelScale,
+      stadiumDetail: this.tunables.stadiumDetail,
+      crowdDensity: this.tunables.crowdDensity,
+    };
   }
 
   /** Park the human in frame for the windup and bank stills. Physics does not step. */

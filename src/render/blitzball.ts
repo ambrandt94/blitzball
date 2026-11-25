@@ -359,6 +359,7 @@ export function mountStadiumBall(root: THREE.Object3D, radius: number): boolean 
       material.opacity = 1;
       material.depthWrite = true;
       if (material.map) {
+        // The band sheet is 256 px around the 0.35 m hero, about 116 px/m.
         applyPixelTexel(material.map);
         material.emissive.set(0xffffff);
         material.emissiveMap = material.map;

@@ -6,6 +6,8 @@ export type TeamId = 0 | 1;
 export type PowerMode = 'meter' | 'tap' | 'hold' | 'target' | 'pull';
 
 export type WaterStyle = 'trailbound' | 'classic';
+export type WaterPreset = 'Mockup' | 'Clearer' | 'Deeper';
+export type WaterQuality = 'high' | 'low' | 'basic';
 export type StadiumDetail = 'off' | 'low' | 'high';
 export type CrowdDensity = 'off' | 'low' | 'high';
 
@@ -158,8 +160,16 @@ export interface Tunables {
   showSunbeams: boolean;
   /** 0 hides the shafts. 1 is the tuned rim brightness. */
   sunbeamIntensity: number;
-  /** Trailbound shell, or the earlier smooth shader. */
+  /** Trailbound v2 shell, or the earlier smooth shader. */
   waterStyle: WaterStyle;
+  /** v2 look. Clearer keeps swimmers upright through the lens. */
+  waterPreset: WaterPreset;
+  /** Off uses the shader's flat tint instead of a background render. */
+  waterRefraction: boolean;
+  /** High is a full refraction target. Low is half res. Basic skips the shader. */
+  waterQuality: WaterQuality;
+  /** 1 is native. 2 and 3 render smaller and upscale with hard pixels. */
+  waterPixelScale: number;
   /** Instanced colosseum. Off hides it. Low drops towers, banners, and halos. */
   stadiumDetail: StadiumDetail;
   /** Instanced spectator billboards. */

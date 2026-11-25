@@ -136,9 +136,15 @@ export class SceneView {
   private swimmerTemplate: SwimmerTemplate | null = null;
   private visuals: ArenaVisuals = {
     waterStyle: 'trailbound',
+    waterPreset: 'Clearer',
+    waterRefraction: true,
+    waterQuality: 'high',
+    waterPixelScale: 1,
     stadiumDetail: 'high',
     crowdDensity: 'high',
   };
+  private cssWidth = 1;
+  private cssHeight = 1;
   private fogTick = 0;
   private shot: 'wide' | 'inside' | 'ball' | 'windup' | 'bank' | null = null;
   private aiIntentLine!: THREE.LineSegments;
@@ -153,6 +159,8 @@ export class SceneView {
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x1e68d0, 1);
+    this.camera.layers.enable(1);
+    this.camera.layers.enable(2);
     this.scene.fog = new THREE.FogExp2(0x0a4d66, 0.0065 * (ARENA_REFERENCE / ARENA_RADIUS));
 
     this.trailPositions = new Float32Array(TRAIL_MAX * 3);
@@ -176,6 +184,20 @@ export class SceneView {
     this.trails = new BubblePool(this.scene, 420, 0xd7f6ff, 0.42);
     this.motes = new BubblePool(this.scene, 160, 0xc5f4ff, 0.28);
     this.motes.seedMotes(160, ARENA_RADIUS * 0.86);
+    this.markGameplay(this.ballPivot);
+    this.markGameplay(this.ballHalo);
+    this.markGameplay(this.ballRing);
+    this.markGameplay(this.ballTrail);
+    this.markGameplay(this.pip);
+    this.markGameplay(this.chargeGhost);
+    this.markGameplay(this.aiIntentLine);
+    this.markGameplay(this.pullLine);
+    this.markGameplay(this.shotMarker);
+    this.markGameplay(this.reachMin);
+    this.markGameplay(this.reachMax);
+    this.markGameplay(this.distanceSprite);
+    this.markGameplay(this.catchBeacon);
+    this.markGameplay(this.splashRing);
     void this.tryLoadCustomBall();
     void this.tryLoadSwimmerModel();
   }
@@ -206,6 +228,7 @@ export class SceneView {
       if (!hero) tuneUnderwaterBallMaterials(model);
       for (const child of [...this.ballPivot.children]) this.ballPivot.remove(child);
       this.ballPivot.add(model);
+      this.markGameplay(model);
       if (typeof document !== 'undefined') document.body.dataset.ball = hero ? 'hero' : 'legacy';
       return true;
     } catch {
@@ -230,6 +253,7 @@ export class SceneView {
         const team = group.userData.team === 1 ? 1 : 0;
         const playerId = typeof group.userData.playerId === 'number' ? group.userData.playerId : 0;
         attachSwimmerModel(group, template, team, playerId);
+        this.markGameplay(group);
       }
     } catch {
       // Procedural swimmers stay.
@@ -249,6 +273,11 @@ export class SceneView {
     warm.position.set(-24, 28, -12);
     this.scene.add(warm);
     this.scene.add(new THREE.AmbientLight(0x1a4e68, 0.38));
+    this.scene.traverse((obj) => {
+      const light = obj as THREE.Light;
+      if (!light.isLight) return;
+      light.layers.enable(1);
+    });
   }
 
   /** Triangular frames on the shell. Rebuilt when the arena radius changes. */
@@ -257,6 +286,7 @@ export class SceneView {
     root.name = 'goals';
     for (const team of [0, 1] as const) root.add(buildGoalFrame(team));
     this.scene.add(root);
+    this.markGameplay(root);
   }
 
   /** Ring that sits on the glass where the ball meets it. */
@@ -288,6 +318,7 @@ export class SceneView {
   applyVisuals(visuals: ArenaVisuals): void {
     this.visuals = visuals;
     this.water.applyVisuals(visuals);
+    this.applyPixelScale();
   }
 
   private disposeNamed(name: string): void {
@@ -507,15 +538,46 @@ export class SceneView {
       group.userData.playerId = p.id;
       if (this.swimmerTemplate) attachSwimmerModel(group, this.swimmerTemplate, p.team, p.id);
       group.visible = p.active && p.role !== 'stub';
+      this.markGameplay(group);
       this.scene.add(group);
       this.playerMeshes.set(p.id, group);
     }
   }
 
   setSize(w: number, h: number): void {
-    this.camera.aspect = w / h;
+    this.cssWidth = Math.max(1, w);
+    this.cssHeight = Math.max(1, h);
+    this.camera.aspect = this.cssWidth / this.cssHeight;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h, false);
+    this.applyPixelScale();
+  }
+
+  /** Swimmers, the ball, and bubbles draw after the water shell so they stay crisp. */
+  private markGameplay(root: THREE.Object3D): void {
+    root.traverse((obj) => {
+      obj.layers.set(1);
+      if (obj.renderOrder < 12) obj.renderOrder = 12;
+    });
+  }
+
+  private applyPixelScale(): void {
+    const scale = Math.max(1, Math.round(this.visuals.waterPixelScale));
+    const canvas = this.renderer.domElement;
+    if (scale <= 1) {
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      this.renderer.setSize(this.cssWidth, this.cssHeight, false);
+      canvas.style.imageRendering = 'auto';
+    } else {
+      this.renderer.setPixelRatio(1);
+      this.renderer.setSize(
+        Math.max(1, Math.floor(this.cssWidth / scale)),
+        Math.max(1, Math.floor(this.cssHeight / scale)),
+        false,
+      );
+      canvas.style.imageRendering = 'pixelated';
+    }
+    canvas.style.width = `${this.cssWidth}px`;
+    canvas.style.height = `${this.cssHeight}px`;
   }
 
   private writeLine(
@@ -1205,6 +1267,7 @@ export class SceneView {
   }
 
   render(): void {
+    this.water.beforeRender(this.renderer, this.scene, this.camera, this.pulse);
     this.renderer.render(this.scene, this.camera);
   }
 }

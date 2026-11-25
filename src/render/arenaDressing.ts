@@ -4,11 +4,18 @@ import { attachStadium, type StadiumDetail } from './stadiumKit';
 import type { CrowdDensity } from './stadiumLayout';
 import { createWaterMeshes } from './waterShell';
 import { patchSceneWaterFog, setWaterFogState } from './waterFog';
+import { createWaterFallback, createWaterSphere, type WaterPresetName } from './waterSphere';
 
 export type WaterStyle = 'trailbound' | 'classic';
+export type WaterQuality = 'high' | 'low' | 'basic';
 
 export interface ArenaVisuals {
   waterStyle: WaterStyle;
+  waterPreset: WaterPresetName;
+  waterRefraction: boolean;
+  waterQuality: WaterQuality;
+  /** 1 keeps the full buffer. 2 and 3 render smaller and upscale with hard pixels. */
+  waterPixelScale: number;
   stadiumDetail: StadiumDetail;
   crowdDensity: CrowdDensity;
 }
@@ -27,6 +34,8 @@ export interface WaterRig {
   applyVisuals(visuals: ArenaVisuals): void;
   setCheer(amount: number): void;
   patchFog(root: THREE.Object3D): void;
+  /** Refraction pass. Call immediately before the main render. */
+  beforeRender(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, time: number): void;
 }
 
 const beamVertex = /* glsl */ `
@@ -89,7 +98,8 @@ function buildSunbeams(): { group: THREE.Group; material: THREE.ShaderMaterial }
   });
   const group = new THREE.Group();
   group.name = 'sunbeams';
-  group.renderOrder = 2;
+  group.renderOrder = 12;
+  group.layers.set(1);
   const count = 10;
   const dress = ARENA_RADIUS / ARENA_REFERENCE;
   for (let i = 0; i < count; i++) {
@@ -106,6 +116,8 @@ function buildSunbeams(): { group: THREE.Group; material: THREE.ShaderMaterial }
     beam.userData.baseZ = beam.rotation.z;
     beam.userData.baseX = beam.rotation.x;
     beam.userData.phase = a;
+    beam.layers.set(1);
+    beam.renderOrder = 12;
     group.add(beam);
   }
   return { group, material };
@@ -159,6 +171,20 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
   const water = createWaterMeshes();
   root.add(water.trailGroup, water.classicMesh);
   water.resize(ARENA_RADIUS);
+  water.trailGroup.visible = false;
+
+  const waterBase = `${import.meta.env.BASE_URL}stadium/textures/water/`;
+  const sphere = createWaterSphere({
+    radius: ARENA_RADIUS,
+    base: waterBase,
+    pixel: 2,
+    preset: visuals.waterPreset,
+    refraction: visuals.waterRefraction,
+  });
+  root.add(sphere.mesh);
+  const fallback = createWaterFallback(ARENA_RADIUS, waterBase);
+  root.add(fallback.group);
+  fallback.group.visible = false;
 
   let beams = buildSunbeams();
   root.add(beams.group);
@@ -171,26 +197,42 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
   stadium.setCrowd(visuals.crowdDensity);
 
   let style = visuals.waterStyle;
+  let preset = visuals.waterPreset;
+  let refraction = visuals.waterRefraction;
+  let quality = visuals.waterQuality;
+  let pixelScale = visuals.waterPixelScale;
   let detail = visuals.stadiumDetail;
   let crowd: CrowdDensity = visuals.crowdDensity;
   const fog = scene.fog instanceof THREE.FogExp2 ? scene.fog : new THREE.FogExp2(0x0a4d66, 0.0065);
   scene.fog = fog;
 
+  const showV2 = () => {
+    const v2 = style === 'trailbound';
+    const basic = v2 && quality === 'basic';
+    sphere.mesh.visible = v2 && !basic;
+    fallback.group.visible = basic;
+    water.trailGroup.visible = false;
+    water.classicMesh.visible = !v2;
+    water.caustic.visible = false;
+  };
+
   const applyFogLook = (inside: boolean) => {
-    setWaterFogState(style, inside, ARENA_RADIUS);
+    // v2 paints its own inside steps. The older per-material fog stays on Classic only.
+    setWaterFogState('classic', inside, ARENA_RADIUS);
     const dress = ARENA_REFERENCE / ARENA_RADIUS;
     if (style === 'trailbound' && !inside) {
       fog.color.set(0x8ec8ea);
-      fog.density = 0.0013 * dress;
+      fog.density = 0.0011 * dress;
     } else if (style === 'classic') {
       fog.color.set(0x0a4d66);
       fog.density = 0.0065 * dress;
     } else {
       fog.color.set(0x1f6066);
-      fog.density = 0.0035 * dress;
+      fog.density = 0.0022 * dress;
     }
     guides.visible = style === 'classic';
     beams.material.uniforms.uPixel!.value = style === 'trailbound' ? 1 : 0;
+    showV2();
   };
 
   applyFogLook(true);
@@ -199,7 +241,7 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
     update(time, cameraPosition, sunbeams, intensity, ballPosition, nearShell, impact) {
       const inside = cameraPosition.length() < ARENA_RADIUS - 0.35;
       water.update(time, cameraPosition, ballPosition, nearShell, impact, style, ARENA_RADIUS);
-      water.caustic.visible = style === 'trailbound' && detail !== 'off';
+      showV2();
       stadium.update(time);
       applyFogLook(inside);
       const strength = sunbeams ? Math.max(0, intensity) : 0;
@@ -216,6 +258,8 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
     },
     resize() {
       water.resize(ARENA_RADIUS);
+      sphere.setRadius(ARENA_RADIUS);
+      fallback.setRadius(ARENA_RADIUS);
       stadium.resize(ARENA_RADIUS);
       root.remove(beams.group);
       disposeObject(beams.group);
@@ -229,16 +273,38 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
     },
     applyVisuals(next) {
       style = next.waterStyle;
+      preset = next.waterPreset;
+      refraction = next.waterRefraction;
+      quality = next.waterQuality;
+      pixelScale = next.waterPixelScale;
       detail = next.stadiumDetail;
       crowd = next.crowdDensity;
+      sphere.applyPreset(preset);
+      sphere.setRefraction(refraction && quality !== 'basic');
+      if (quality === 'high' || quality === 'low') sphere.setQuality(quality);
       stadium.setDetail(detail);
       stadium.setCrowd(detail === 'off' ? 'off' : crowd);
+      showV2();
     },
     setCheer(amount) {
       stadium.setCheer(amount);
     },
     patchFog(rootObject) {
       patchSceneWaterFog(rootObject);
+    },
+    beforeRender(renderer, scene, camera, time) {
+      if (style !== 'trailbound') return;
+      const fps = preset === 'Deeper' ? 4 : 6;
+      if (quality === 'basic') {
+        fallback.update(camera, time, fps);
+        return;
+      }
+      const chunk = pixelScale > 1 ? 1 : 2;
+      sphere.setPixel(chunk);
+      sphere.setRefraction(refraction);
+      sphere.setQuality(quality === 'low' ? 'low' : 'high');
+      sphere.applyPreset(preset);
+      sphere.update(renderer, scene, camera, time);
     },
   };
 }

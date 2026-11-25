@@ -120,6 +120,8 @@ export class BubblePool {
     });
     this.mesh = new THREE.InstancedMesh(geo, mat, count);
     this.mesh.frustumCulled = false;
+    this.mesh.layers.set(1);
+    this.mesh.renderOrder = 12;
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     parent.add(this.mesh);
     this.slots = [];

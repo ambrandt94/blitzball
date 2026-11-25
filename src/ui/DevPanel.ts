@@ -98,6 +98,10 @@ export function defaultTunables(): Tunables {
     showSunbeams: true,
     sunbeamIntensity: 0.7,
     waterStyle: 'trailbound',
+    waterPreset: 'Clearer',
+    waterRefraction: true,
+    waterQuality: 'high',
+    waterPixelScale: 1,
     stadiumDetail: 'high',
     crowdDensity: 'high',
   };
@@ -137,9 +141,20 @@ export class DevPanel {
 
     this.section('Visuals', true);
     this.pick('Water style', 'waterStyle', [
-      { value: 'trailbound', label: 'Trailbound' },
+      { value: 'trailbound', label: 'Trailbound v2' },
       { value: 'classic', label: 'Classic' },
     ]);
+    this.select('Water preset', 'waterPreset', [
+      { value: 'Mockup', label: 'Mockup' },
+      { value: 'Clearer', label: 'Clearer' },
+      { value: 'Deeper', label: 'Deeper' },
+    ], () => this.onChange('waterPreset'));
+    this.select('Water quality', 'waterQuality', [
+      { value: 'high', label: 'High' },
+      { value: 'low', label: 'Low' },
+      { value: 'basic', label: 'Basic' },
+    ], () => this.onChange('waterQuality'));
+    this.bool('Water refraction', 'waterRefraction');
     this.pick('Stadium detail', 'stadiumDetail', [
       { value: 'off', label: 'Off' },
       { value: 'low', label: 'Low' },
@@ -151,6 +166,7 @@ export class DevPanel {
       { value: 'high', label: 'High' },
     ]);
     this.range('Arena radius', 'arenaRadius', 44, 96, 0.5);
+    this.range('Pixel scale', 'waterPixelScale', 1, 3, 1);
     this.bool('Sunbeams', 'showSunbeams');
     this.range('Sunbeam strength', 'sunbeamIntensity', 0, 1.5, 0.05);
 
@@ -260,7 +276,7 @@ export class DevPanel {
       (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
       // Only the up-axis change rebuilds the chase basis. Invert toggles and
       // other checkboxes must not snap yaw/pitch back to kickoff.
-      if (key === 'goalAxisUp') this.onChange(key);
+      if (key === 'goalAxisUp' || key === 'waterRefraction') this.onChange(key);
     });
     row.appendChild(lab);
     row.appendChild(input);
@@ -354,7 +370,7 @@ export class DevPanel {
       const n = parseFloat(input.value);
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
       value.textContent = n.toFixed(2);
-      if (key === 'arenaRadius') this.onChange(key);
+      if (key === 'arenaRadius' || key === 'waterPixelScale') this.onChange(key);
     });
     wrap.appendChild(name);
     wrap.appendChild(input);
