@@ -644,6 +644,7 @@ export class SceneView {
       }
       const badge = mesh.getObjectByName('teamBadge');
       if (badge) badge.lookAt(this.camera.position);
+      this.syncCatchReadyMark(mesh, p.catchReady);
     }
 
     this.ballPivot.position.copy(sim.ball.position);
@@ -1003,6 +1004,52 @@ export class SceneView {
     mesh.lookAt(this.camera.position);
   }
 
+  /** Small ring and hand glows while catch-ready is on. Hidden the rest of the time. */
+  private syncCatchReadyMark(group: THREE.Group, ready: boolean): void {
+    let mark = group.getObjectByName('catchReadyMark');
+    if (!ready) {
+      if (mark) mark.visible = false;
+      return;
+    }
+    if (!mark) {
+      mark = new THREE.Group();
+      mark.name = 'catchReadyMark';
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.38, 0.03, 6, 22),
+        new THREE.MeshBasicMaterial({
+          color: 0xbdf6f0,
+          transparent: true,
+          opacity: 0.7,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      );
+      ring.name = 'catchReadyRing';
+      ring.position.set(0, 0.28, 1.05);
+      const glowMat = new THREE.MeshBasicMaterial({
+        color: 0x8ce6e8,
+        transparent: true,
+        opacity: 0.45,
+        depthWrite: false,
+        toneMapped: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const left = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), glowMat);
+      const right = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), glowMat);
+      left.position.set(0.22, 0.32, 0.78);
+      right.position.set(-0.22, 0.32, 0.78);
+      mark.add(ring, left, right);
+      group.add(mark);
+    }
+    mark.visible = true;
+    const pulse = 0.45 + Math.sin(this.pulse * 6) * 0.15;
+    mark.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      const mat = child.material;
+      if (mat instanceof THREE.MeshBasicMaterial) mat.opacity = child.name === 'catchReadyRing' ? 0.4 + pulse * 0.35 : pulse;
+    });
+  }
+
   /** Point local +Z along facing and local +Y along up, with no lookAt branch. */
   private faceBody(mesh: THREE.Object3D, facing: THREE.Vector3, up: THREE.Vector3): void {
     const z = this.bodyZ.copy(facing);
@@ -1042,14 +1089,7 @@ export class SceneView {
     // Aiming keeps the carry pose. The shoot charge would pull both arms back
     // and leave the ball floating in front of an empty chest.
     const aimingShot = sim.shotAim.active && player.id === sim.humanId;
-    const ready =
-      pose === 'claim' ||
-      (player.id === sim.humanId &&
-        sim.catchStance &&
-        !player.hasBall &&
-        pose !== 'pass' &&
-        pose !== 'shoot' &&
-        pose !== 'burst');
+    const ready = pose === 'claim' || player.catchReady;
     const catchTarget = ready ? 1 : 0;
     const holdTarget = pose === 'hold' || aimingShot ? 1 : 0;
     const ease = (current: number, target: number, rate: number) =>

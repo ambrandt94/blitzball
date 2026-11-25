@@ -767,11 +767,16 @@ function checkCatch(): void {
   for (let i = 0; i < 6; i++) wide.step(1 / 60, blankIntent());
   if (swimmer.hasBall) fail('normal mitt reached a ball that belongs to the catch stance');
 
+  const squared = blankIntent();
+  squared.strafe = true;
+  wide.ball.claimLock = 0;
+  wide.step(1 / 60, squared);
+  if (swimmer.hasBall) fail('square up caught a ball without catch-ready');
   const stance = blankIntent();
   stance.strafe = true;
-  wide.ball.claimLock = 0;
+  stance.claim = true;
   wide.step(1 / 60, stance);
-  if (!swimmer.hasBall) fail('catch stance did not take the ball in front of the hands');
+  if (!swimmer.hasBall) fail('catch-ready did not take the ball in front of the hands');
 
   const pull = new Simulation(defaultTunables());
   pull.kickoffLock = 0;
@@ -792,6 +797,10 @@ function checkCatch(): void {
   const still = blankIntent();
   for (let i = 0; i < 20; i++) pull.step(1 / 60, still);
   if (reacher.hasBall || pull.ball.position.x < 1.9) fail('the ball drifted in without the catch stance');
+  const armCatch = blankIntent();
+  armCatch.strafe = true;
+  armCatch.claim = true;
+  pull.step(1 / 60, armCatch);
   const reaching = blankIntent();
   reaching.strafe = true;
   for (let i = 0; i < 45; i++) pull.step(1 / 60, reaching);
@@ -804,6 +813,85 @@ function checkCatch(): void {
  * A return pass has to reach the player. The passer used to turn back into
  * the enlarged mitt and take the ball before it arrived.
  */
+/** A slow pass into a squared-up catch-ready mitt is caught. */
+function checkCatchReadyPass(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  quietRoster(sim);
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.lastOwnerId = 3;
+  sim.ball.claimLock = 0;
+  sim.ball.arc = null;
+  sim.ball.position.set(0, 0.15, 9);
+  sim.ball.velocity.set(0, 0, -16);
+  const arm = blankIntent();
+  arm.strafe = true;
+  arm.claim = true;
+  sim.step(1 / 60, arm);
+  if (!human.catchReady) fail('E while squared up did not enter catch-ready');
+  if (human.hasBall) fail('catch-ready grabbed a pass that was still out of the cone');
+  const hold = blankIntent();
+  hold.strafe = true;
+  let caught = false;
+  for (let i = 0; i < 80; i++) {
+    sim.step(1 / 60, hold);
+    if (human.hasBall) {
+      caught = true;
+      break;
+    }
+  }
+  if (!caught || sim.ball.ownerId !== human.id) fail('catch-ready missed a slow pass');
+}
+
+/** A slap in catch-ready sends the ball along the aim and does not take it. */
+function checkDeflect(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  quietRoster(sim);
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.lastOwnerId = null;
+  sim.ball.claimLock = 0;
+  sim.ball.arc = null;
+  sim.ball.position.set(0, 0.2, 20);
+  sim.ball.velocity.set(0, 0, 0);
+  const arm = blankIntent();
+  arm.strafe = true;
+  arm.claim = true;
+  sim.step(1 / 60, arm);
+  if (!human.catchReady) fail('deflect setup did not enter catch-ready');
+  sim.ball.position.set(0, 0.15, 2.1);
+  sim.ball.velocity.set(1, 0, -6);
+  sim.ball.claimLock = 0;
+  sim.ball.possession = 'free';
+  const slap = blankIntent();
+  slap.strafe = true;
+  slap.burst = true;
+  sim.step(1 / 60, slap);
+  if (human.hasBall || sim.ball.possession !== 'free' || sim.ball.ownerId !== null) {
+    fail('deflect claimed the ball');
+  }
+  if (sim.ball.velocity.z < sim.tunables.deflectStrength * 0.8) {
+    fail(`deflect did not send the ball along the aim (${sim.ball.velocity.z.toFixed(1)})`);
+  }
+  if (human.velocity.z > sim.tunables.burstSpeed * 0.4) fail('deflect lunged like a shoulder check');
+}
+
 function checkTeammatePassReachesPlayer(): void {
   const sim = new Simulation(defaultTunables());
   sim.setSoloOpponent(false);
@@ -2483,7 +2571,7 @@ function checkAimPosture(): void {
     human: true,
     strafing: false,
     hasBall: false,
-    catchStance: false,
+    catchReady: false,
     throwing: false,
     burst: false,
     pose: 'none' as const,
@@ -2491,8 +2579,8 @@ function checkAimPosture(): void {
   if (!wantsAimPosture({ ...base, strafing: true, hasBall: true, pose: 'hold' })) {
     fail('right-click aim should stand up into the tread');
   }
-  if (wantsAimPosture({ ...base, strafing: true, catchStance: true })) {
-    fail('off-ball catch should stay on the swim blend');
+  if (!wantsAimPosture({ ...base, strafing: true, catchReady: false })) {
+    fail('square up without the ball should tread');
   }
   if (wantsAimPosture({ ...base, hasBall: true, pose: 'hold' })) {
     fail('carrying without aim should stay on the speed swim');
@@ -2508,6 +2596,9 @@ function checkAimPosture(): void {
   }
   if (!wantsAimPosture({ ...base, human: false, hasBall: true, throwing: true, pose: 'pass' })) {
     fail('an AI pass should tread');
+  }
+  if (!wantsAimPosture({ ...base, human: false, catchReady: true })) {
+    fail('a receiver in catch-ready should tread');
   }
 
   let blend = 0;
@@ -2566,6 +2657,8 @@ export function runRotationChecks(): void {
   checkShoulder();
   checkStraightAimMarker();
   checkCatch();
+  checkCatchReadyPass();
+  checkDeflect();
   checkTeammatePassReachesPlayer();
   checkOpponentInterceptsPass();
   checkTackleStillStrips();

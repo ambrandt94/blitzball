@@ -37,6 +37,10 @@ export function defaultTunables(): Tunables {
     catchStanceReach: PLAYER.catchStanceReach,
     catchStanceWidth: PLAYER.catchStanceWidth,
     catchPull: PLAYER.catchPull,
+    catchReadyRadius: 6.5,
+    catchReadyCone: 0.7,
+    fumbleSpeed: 48,
+    deflectStrength: 28,
     holdLag: BALL.holdLag,
     playerAccel: PLAYER.accel,
     playerMaxSpeed: PLAYER.maxSpeed,
@@ -154,6 +158,10 @@ export class DevPanel {
     this.range('Catch stance reach', 'catchStanceReach', 1, 2.4, 0.05);
     this.range('Catch stance width', 'catchStanceWidth', 1, 2.4, 0.05);
     this.range('Catch pull', 'catchPull', 0, 60, 0.5);
+    this.range('Catch radius', 'catchReadyRadius', 2, 12, 0.1);
+    this.range('Catch cone', 'catchReadyCone', 0.2, 1.3, 0.01);
+    this.range('Fumble speed', 'fumbleSpeed', 16, 90, 1);
+    this.range('Deflect strength', 'deflectStrength', 6, 70, 1);
     this.range('Hold lag', 'holdLag', 2, 20, 0.1);
     this.range('Player accel', 'playerAccel', 30, 170, 1);
     this.range('Cruise speed', 'playerMaxSpeed', 8, 40, 0.5);

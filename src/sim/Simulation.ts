@@ -32,7 +32,7 @@ import {
   rotateToward,
   stabilizeUp,
 } from './math';
-import { inCatchVolume, segmentHitsCatch } from './catch';
+import { fumbleChance, inCatchCone, inCatchVolume, segmentHitsCatch, segmentHitsCone } from './catch';
 import {
   containInNet,
   inGoalPocket,
@@ -82,6 +82,8 @@ function makePlayer(
     hitFlash: 0,
     hitBurst: 0,
     catchStance: false,
+    catchReady: false,
+    deflectTime: 0,
     active,
     actionPose: 'none',
     actionPoseTime: 0,
@@ -308,6 +310,8 @@ export class Simulation {
         p.hitFlash = 0;
         p.hitBurst = 0;
         p.catchStance = false;
+        p.catchReady = false;
+        p.deflectTime = 0;
         p.actionPose = 'none';
         p.actionPoseTime = 0;
         p.actionPoseDuration = 0;
@@ -541,6 +545,7 @@ export class Simulation {
       if (p.burstCooldown > 0) p.burstCooldown = Math.max(0, p.burstCooldown - dt);
       if (p.burstTime > 0) p.burstTime = Math.max(0, p.burstTime - dt);
       if (p.burstPuff > 0) p.burstPuff = Math.max(0, p.burstPuff - dt * 3.2);
+      if (p.deflectTime > 0) p.deflectTime = Math.max(0, p.deflectTime - dt);
       if (p.actionPoseTime > 0) {
         p.actionPoseTime -= dt;
         if (p.actionPoseTime <= 0) {
@@ -699,13 +704,16 @@ export class Simulation {
       isHuman &&
       intent.burst &&
       !player.hasBall &&
+      !player.catchReady &&
       !aimingShot &&
       !this.shotAim.active &&
       !this.power.capturing() &&
       player.burstCooldown <= 0 &&
       this.kickoffLock <= 0 &&
       this.match.resetTimer <= 0;
-    if (canBurst) {
+    if (isHuman && player.catchReady && intent.burst && !player.hasBall && !aimingShot) {
+      this.tryDeflect(player);
+    } else if (canBurst) {
       const dir = player.burstDir;
       if (wish.lengthSq() > 1e-6) dir.copy(wish).normalize();
       else if (player.facing.lengthSq() > 1e-8) dir.copy(player.facing).normalize();
@@ -727,6 +735,12 @@ export class Simulation {
     // A lunge ignores that tax so the catch or tackle still closes.
     const aimLocked = isHuman && intent.strafe;
     player.catchStance = aimLocked && !player.hasBall && !bursting && !aimingShot;
+    if (!player.catchStance || player.hasBall) player.catchReady = false;
+    else if (intent.claim) {
+      player.catchReady = !player.catchReady;
+      this.match.statusMessage = player.catchReady ? 'Catch ready' : 'Squared up';
+    }
+    if (!isHuman) this.trackIncomingPass(player, dt);
     player.sprinting = intent.sprint && !player.hasBall && !bursting;
     let maxSpeed = Math.max(4, this.tunables.playerMaxSpeed);
     let accel = bursting ? this.tunables.playerAccel * 1.65 : this.tunables.playerAccel;
@@ -869,7 +883,8 @@ export class Simulation {
       }
     } else {
       if (this.shotAim.active || this.charge.active) this.clearShotAim();
-      if (intent.claim) this.tryClaim(human);
+      // While squared up, E toggles catch-ready instead of grabbing.
+      if (intent.claim && !(intent.strafe && !human.hasBall)) this.tryClaim(human);
     }
 
     // Tackle / strip when AI has ball
@@ -902,18 +917,13 @@ export class Simulation {
     return true;
   }
 
-  /** Mitt size. The human's catch stance, then a fresh claim press, widen it. */
+  /** Mitt size. A fresh claim press widens it. Catch-ready uses the cone instead. */
   private catchScales(player: PlayerState): { reach: number; radius: number } {
     let reach = Math.max(0.2, this.tunables.catchReach);
     let radius = Math.max(0.2, this.tunables.claimRadius);
-    if (player.id === this.humanId) {
-      if (this.catchStance) {
-        reach *= Math.max(1, this.tunables.catchStanceReach);
-        radius *= Math.max(1, this.tunables.catchStanceWidth);
-      } else if (this.claimLatch > 0) {
-        reach *= PLAYER.claimPressReach;
-        radius *= PLAYER.claimPressWidth;
-      }
+    if (player.id === this.humanId && this.claimLatch > 0 && !player.catchReady) {
+      reach *= PLAYER.claimPressReach;
+      radius *= PLAYER.claimPressWidth;
     }
     return { reach, radius };
   }
@@ -924,8 +934,16 @@ export class Simulation {
   }
 
   private sweptReach(player: PlayerState): boolean {
-    const { reach, radius } = this.catchScales(player);
     const forward = this.lookForward(player);
+    if (player.catchReady) {
+      const radius = Math.max(0.4, this.tunables.catchReadyRadius);
+      const cone = Math.max(0.05, this.tunables.catchReadyCone);
+      return (
+        inCatchCone(player.position, forward, this.ball.position, radius, cone) ||
+        segmentHitsCone(player.position, forward, this.ballFrom, this.ball.position, radius, cone)
+      );
+    }
+    const { reach, radius } = this.catchScales(player);
     return (
       inCatchVolume(player.position, forward, this.ball.position, reach, radius) ||
       segmentHitsCatch(player.position, forward, this.ballFrom, this.ball.position, reach, radius)
@@ -941,6 +959,39 @@ export class Simulation {
   private tryClaim(player: PlayerState): void {
     if (this.ball.possession === 'held' && this.ball.ownerId !== player.id) return;
     if (!this.canTake(player) || !this.pointInReach(player, this.ball.position)) return;
+    this.takeBall(player);
+  }
+
+  /**
+   * Loose-ball pickup after the ball has moved. The mitt is a forward capsule, and the
+   * segment from the previous position is tested so a pass cannot step through it.
+   * Human wins a tie. Catch stance uses the wider mitt.
+   */
+  private resolveCatches(): void {
+    if (this.ball.possession !== 'free' || this.ball.claimLock > 0) return;
+    const ready = this.players.some((player) => player.catchReady);
+    if (this.ball.arc && !ready) return;
+    const human = this.getHuman();
+    if (this.canTake(human) && this.sweptReach(human)) {
+      this.takeBall(human);
+      return;
+    }
+    for (const player of this.players) {
+      if (player.id === human.id || !this.canTake(player) || !this.sweptReach(player)) continue;
+      this.takeBall(player);
+      return;
+    }
+  }
+
+  /** Catch-ready keeps a soft pass and can pop a ball that arrives too hard. */
+  private takeBall(player: PlayerState): void {
+    if (player.catchReady) {
+      const chance = fumbleChance(this.ball.velocity.length(), this.tunables.fumbleSpeed);
+      if (chance > 0 && Math.random() < chance) {
+        this.popFumble(player);
+        return;
+      }
+    }
     this.giveBall(player);
     this.match.statusMessage =
       player.role === 'human'
@@ -950,25 +1001,71 @@ export class Simulation {
           : 'AI claimed the ball';
   }
 
+  /** The hands met the ball and lost it. It stays free. */
+  private popFumble(player: PlayerState): void {
+    const away = this.tmp.side.copy(this.ball.position).sub(player.position);
+    if (away.lengthSq() < 1e-6) away.copy(this.lookForward(player));
+    else away.normalize();
+    const speed = this.ball.velocity.length();
+    this.ball.arc = null;
+    this.ball.velocity.copy(away).multiplyScalar(Math.max(8, speed * 0.55));
+    this.ball.claimLock = 0.28;
+    player.hitFlash = 0.7;
+    player.deflectTime = 0.12;
+    this.match.statusMessage = 'Fumble!';
+  }
+
   /**
-   * Loose-ball pickup after the ball has moved. The mitt is a forward capsule, and the
-   * segment from the previous position is tested so a pass cannot step through it.
-   * Human wins a tie. Catch stance uses the wider mitt.
+   * Catch-ready slap. The ball leaves along the aim and nobody claims it.
+   * A miss still plays the hand so the click reads.
    */
-  private resolveCatches(): void {
-    if (this.ball.possession !== 'free' || this.ball.arc || this.ball.claimLock > 0) return;
-    const human = this.getHuman();
-    if (this.canTake(human) && this.sweptReach(human)) {
-      this.giveBall(human);
-      this.match.statusMessage = 'You have the ball';
+  private tryDeflect(player: PlayerState): void {
+    player.deflectTime = 0.18;
+    const dist = player.position.distanceTo(this.ball.position);
+    const reach = Math.max(1.2, this.tunables.catchReadyRadius);
+    if (dist > reach) return;
+    if (this.ball.possession === 'held' && this.ball.ownerId !== null && this.ball.ownerId !== player.id) {
+      const owner = this.players[this.ball.ownerId];
+      if (owner) {
+        owner.hasBall = false;
+        if (owner.actionPose === 'hold') owner.actionPose = 'none';
+      }
+    }
+    const aim = this.lookForward(player);
+    if (aim.lengthSq() < 1e-8) aim.copy(player.facing);
+    else aim.normalize();
+    this.ball.possession = 'free';
+    this.ball.ownerId = null;
+    this.ball.arc = null;
+    this.ball.velocity.copy(aim).multiplyScalar(Math.max(4, this.tunables.deflectStrength));
+    this.ball.claimLock = 0.35;
+    this.ball.position.copy(player.position).addScaledVector(aim, Math.min(Math.max(dist, 0.4), 1.15));
+    this.match.statusMessage = 'Deflect!';
+  }
+
+  /** An AI receiver squares up when a pass is closing on them. */
+  private trackIncomingPass(player: PlayerState, dt: number): void {
+    if (!player.active || player.role === 'stub' || player.hasBall) {
+      player.catchReady = false;
       return;
     }
-    for (const player of this.players) {
-      if (player.id === human.id || !this.canTake(player) || !this.sweptReach(player)) continue;
-      this.giveBall(player);
-      this.match.statusMessage = player.team === human.team ? 'Teammate has the ball' : 'AI claimed the ball';
+    if (this.ball.possession !== 'free' || this.ball.lastOwnerId === player.id) {
+      player.catchReady = false;
       return;
     }
+    const to = this.tmp.side.copy(player.position).sub(this.ball.position);
+    const dist = to.length();
+    const window = Math.max(14, this.tunables.catchReadyRadius * 2.4);
+    const speed = this.ball.velocity.length();
+    const closing = dist > 1e-4 ? this.ball.velocity.dot(to) / dist : 0;
+    if (dist > window || speed < 3 || closing < 3) {
+      player.catchReady = false;
+      return;
+    }
+    player.catchReady = true;
+    player.catchStance = true;
+    to.multiplyScalar(1 / dist);
+    rotateToward(player.facing, to, Math.max(2, this.tunables.bodyTurnRate), dt);
   }
 
   /** Don't launch the ball off a chest that was about to catch it. */
@@ -1000,26 +1097,26 @@ export class Simulation {
 
   /** Drift a near miss into the outstretched hands. Only while the catch stance is held. */
   private pullCatch(human: PlayerState, dt: number): void {
-    if (!this.catchStance || this.ball.possession !== 'free' || this.ball.arc) return;
+    if (!human.catchReady || this.ball.possession !== 'free' || this.ball.arc) return;
     if (this.ball.claimLock > 0) return;
     if (human.reclaimGrace > 0 && this.ball.lastOwnerId === human.id) return;
     if (human.selfCatchLock && this.ball.lastOwnerId === human.id) return;
     if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
     const pull = Math.max(0, this.tunables.catchPull);
     if (pull <= 0) return;
-    const reach = Math.max(0.2, this.tunables.catchReach) * Math.max(1, this.tunables.catchStanceReach) * 1.22;
-    const radius = Math.max(0.2, this.tunables.claimRadius) * Math.max(1, this.tunables.catchStanceWidth) * 1.3;
+    const reach = Math.max(0.4, this.tunables.catchReadyRadius) * 1.15;
+    const cone = Math.max(0.05, this.tunables.catchReadyCone);
     const forward = this.lookForward(human);
-    if (!inCatchVolume(human.position, forward, this.ball.position, reach, radius)) return;
+    if (!inCatchCone(human.position, forward, this.ball.position, reach, cone)) return;
     const hands = this.tmp.holdTarget
       .copy(human.position)
-      .addScaledVector(forward, Math.max(0.2, this.tunables.catchReach) * Math.max(1, this.tunables.catchStanceReach) * 0.62)
+      .addScaledVector(forward, Math.min(1.1, Math.max(0.4, this.tunables.catchReadyRadius) * 0.35))
       .addScaledVector(human.up, 0.18);
     const toHands = this.tmp.side.copy(hands).sub(this.ball.position);
     const dist = toHands.length();
     if (dist < 0.08) return;
     toHands.multiplyScalar(1 / dist);
-    const falloff = 1 - THREE.MathUtils.smoothstep(dist, radius * 0.35, reach);
+    const falloff = 1 - THREE.MathUtils.smoothstep(dist, reach * 0.35, reach);
     this.ball.velocity.addScaledVector(toHands, pull * Math.max(0.25, falloff) * dt);
     const closing = this.ball.velocity.dot(toHands);
     if (closing < 0) this.ball.velocity.addScaledVector(toHands, -closing * 0.45);
@@ -1032,9 +1129,11 @@ export class Simulation {
       if (p.actionPose === 'hold') p.actionPose = 'none';
     }
     player.hasBall = true;
+    player.catchReady = false;
     this.ball.possession = 'held';
     this.ball.ownerId = player.id;
     this.ball.lastOwnerId = player.id;
+    this.ball.arc = null;
     this.ball.velocity.set(0, 0, 0);
     this.carryFrom.copy(this.ball.position);
     this.carryBlend = 0;
@@ -2062,6 +2161,7 @@ export class Simulation {
     target.hitFlash = 1;
     target.hitBurst = 16;
     target.catchStance = false;
+    target.catchReady = false;
     checker.hitFlash = 1;
     checker.hitBurst = 12;
     checker.velocity.addScaledVector(dir, -3.2);

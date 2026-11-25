@@ -87,20 +87,20 @@ export interface AimPostureInput {
   human: boolean;
   strafing: boolean;
   hasBall: boolean;
-  catchStance: boolean;
+  catchReady: boolean;
   throwing: boolean;
   burst: boolean;
   pose: PlayerState['actionPose'];
 }
 
 /**
- * Right-click aim, and the throw that follows it, stand the body up.
- * Off-ball catch stays in the swim. An AI carrier treads while they hold or throw.
+ * Right-click squares the body up, with or without the ball. A throw, and an
+ * AI receiver who is catch-ready, stand up the same way.
  */
 export function wantsAimPosture(input: AimPostureInput): boolean {
   if (input.burst) return false;
-  if (input.throwing) return true;
-  if (input.human) return input.strafing && input.hasBall && !input.catchStance;
+  if (input.throwing || input.catchReady) return true;
+  if (input.human) return input.strafing;
   return input.hasBall && (input.pose === 'hold' || input.pose === 'pass' || input.pose === 'shoot');
 }
 
@@ -123,6 +123,7 @@ export function aimPosturePitch(facingDotUp: number, aimBlend: number): number {
 
 const _goalL = new THREE.Vector3();
 const _goalR = new THREE.Vector3();
+const _toBall = new THREE.Vector3();
 const _leanAxis = new THREE.Vector3(1, 0, 0);
 const _yawAxis = new THREE.Vector3(0, 1, 0);
 const _leanQ = new THREE.Quaternion();
@@ -553,15 +554,7 @@ export function updateSwimmerRig(
 
   const pose = player.actionPose;
   const aimingShot = sim.shotAim.active && player.id === sim.humanId;
-  const ready =
-    pose === 'claim' ||
-    (player.id === sim.humanId &&
-      sim.catchStance &&
-      !player.hasBall &&
-      pose !== 'pass' &&
-      pose !== 'shoot' &&
-      pose !== 'burst');
-  const catchTarget = ready ? 1 : 0;
+  const catchTarget = pose === 'claim' || player.catchReady ? 1 : 0;
   const holdTarget = pose === 'hold' || aimingShot ? 1 : 0;
   const ease = (current: number, target: number, rate: number) =>
     current + (target - current) * (1 - Math.exp(-rate * dt));
@@ -608,7 +601,7 @@ export function updateSwimmerRig(
     human: humanThrow,
     strafing: sim.strafing,
     hasBall: player.hasBall,
-    catchStance: sim.catchStance,
+    catchReady: player.catchReady,
     throwing,
     burst: pose === 'burst',
     pose,
@@ -627,6 +620,27 @@ export function updateSwimmerRig(
   rig.model.rotation.set(aimPosturePitch(player.facing.dot(up), rig.aimPosture), 0, 0);
 
   fillGoal(player, sim, rig.swimWeight, rig.catchBlend, rig.holdBlend);
+  if (player.catchReady && !throwLive.active) {
+    group.updateMatrixWorld(true);
+    _toBall.copy(sim.ball.position);
+    group.worldToLocal(_toBall);
+    const dist = _toBall.length();
+    if (dist > 1e-4) {
+      const reach = Math.min(0.95, Math.max(0.5, dist * 0.28));
+      _toBall.multiplyScalar(reach / dist);
+    } else {
+      _toBall.set(0, 0.2, 0.7);
+    }
+    _goalL.set(0.2, 0.24, 0.12).add(_toBall);
+    _goalR.set(-0.2, 0.24, 0.12).add(_toBall);
+    goal.weight = Math.max(goal.weight, rig.catchBlend, 0.85);
+  }
+  if (player.deflectTime > 0.02 && !throwLive.active) {
+    const slap = THREE.MathUtils.clamp(player.deflectTime / 0.18, 0, 1);
+    _goalL.set(0.16, 0.22, 0.35 + 0.7 * slap);
+    _goalR.set(-0.16, 0.22, 0.35 + 0.7 * slap);
+    goal.weight = 1;
+  }
   if (goal.lean > 0.001) {
     _leanQ.setFromAxisAngle(_leanAxis, goal.lean);
     rig.spine.quaternion.multiply(_leanQ);

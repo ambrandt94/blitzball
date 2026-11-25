@@ -252,7 +252,7 @@ export class Game {
         this.sim.landingMarker.visible
           ? `landing ${this.sim.landingMarker.lockId !== null ? 'mate' : 'free'}`
           : 'landing off',
-        this.sim.catchStance ? 'catch reach' : 'catch off',
+        this.sim.getHuman().catchReady ? 'catch ready' : this.sim.catchStance ? 'squared up' : 'catch off',
         this.tunables.soloOpponent
           ? 'test opponent'
           : `mate + ${this.tunables.defenseActive ? 'defense chases' : 'defense holds'}`,

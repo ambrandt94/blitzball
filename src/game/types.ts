@@ -35,6 +35,14 @@ export interface Tunables {
   catchStanceWidth: number;
   /** Pull toward the hands for a ball just outside the stance mitt. */
   catchPull: number;
+  /** How far catch-ready reaches, in world units. */
+  catchReadyRadius: number;
+  /** Half-angle of the catch-ready cone, in radians off the aim. */
+  catchReadyCone: number;
+  /** Ball speed where a catch-ready reception starts to fumble. */
+  fumbleSpeed: number;
+  /** Speed a deflect slap gives the ball along the aim. */
+  deflectStrength: number;
   holdLag: number;
   playerAccel: number;
   /** Cruise top speed. Sprint and the carrier tax scale this. */
@@ -189,8 +197,12 @@ export interface PlayerState {
   hitFlash: number;
   /** Bubbles the view still owes this swimmer for a hit. */
   hitBurst: number;
-  /** Right-click held with empty hands: arms reach to catch. */
+  /** Right-click held with empty hands: squared up, not yet reaching. */
   catchStance: boolean;
+  /** Squared up and reaching. Passes in the cone stick; a click deflects. */
+  catchReady: boolean;
+  /** Seconds left on the deflect slap. The view pushes the hands out. */
+  deflectTime: number;
   /** Stub slots reserved for future 3v3 AI. */
   active: boolean;
   actionPose: ActionPose;
