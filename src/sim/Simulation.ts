@@ -2116,9 +2116,22 @@ export class Simulation {
     this.shotAim.lockId = null;
   }
 
+  /**
+   * 0 leaves the cursor, preview, and pass pick where he pointed.
+   * 1 is the full teammate snap. The checkbox wins over the strength slider.
+   */
+  private teammateSnapScale(): number {
+    if (!this.tunables.snapAimToTeammates) return 0;
+    return THREE.MathUtils.clamp(this.tunables.snapAimStrength, 0, 1);
+  }
+
   /** Snap the marker onto a teammate standing on the look ray at the moment the throw starts. */
   private acquireTeammate(): void {
     if (!this.shotAim.active || this.shotAimManual) return;
+    if (this.teammateSnapScale() <= 1e-4) {
+      this.shotAim.lockId = null;
+      return;
+    }
     const hit = this.teammateOnLook();
     if (hit) this.shotAim.lockId = hit.id;
     const id = this.shotAim.lockId;
@@ -2134,11 +2147,13 @@ export class Simulation {
   }
 
   private teammateOnLook(): PlayerState | null {
+    const scale = this.teammateSnapScale();
+    if (scale <= 1e-4) return null;
     const human = this.getHuman();
     const origin = human.position;
     const dir = this.cameraBasis().forward;
     if (dir.lengthSq() < 1e-8) return null;
-    const pad = PLAYER.radius + Math.max(0, this.tunables.teammateLockRadius);
+    const pad = (PLAYER.radius + Math.max(0, this.tunables.teammateLockRadius)) * scale;
     let best: PlayerState | null = null;
     let bestT = Infinity;
     for (const p of this.players) {
@@ -2768,18 +2783,21 @@ export class Simulation {
   private releasePass(player: PlayerState, charge: number): void {
     const isHuman = player.role === 'human';
     let aim = this.getAimDirection(player, isHuman).clone();
-    // Prefer teammate in cone
+    const snap = isHuman ? this.teammateSnapScale() : 1;
+    // Prefer a teammate in the cone. A human with snap off, or strength at 0, keeps the pointed aim.
     let best: PlayerState | null = null;
-    let bestDot = 0.55;
-    for (const t of this.players) {
-      if (t.team !== player.team || t.id === player.id || !t.active) continue;
-      const to = t.position.clone().sub(player.position);
-      if (to.lengthSq() < 1) continue;
-      to.normalize();
-      const d = aim.dot(to);
-      if (d > bestDot) {
-        bestDot = d;
-        best = t;
+    let bestDot = 1 - 0.45 * snap;
+    if (snap > 1e-4) {
+      for (const t of this.players) {
+        if (t.team !== player.team || t.id === player.id || !t.active) continue;
+        const to = t.position.clone().sub(player.position);
+        if (to.lengthSq() < 1) continue;
+        to.normalize();
+        const d = aim.dot(to);
+        if (d > bestDot) {
+          bestDot = d;
+          best = t;
+        }
       }
     }
     if (best) aim = best.position.clone().sub(player.position).normalize();

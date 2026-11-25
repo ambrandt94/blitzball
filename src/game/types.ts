@@ -107,7 +107,12 @@ export interface Tunables {
   /** Knockback of a full power tackle, along the check. */
   checkKnock: number;
   ballDrag: number;
+  /** Pulls a loose aim toward the opponent goal. Not the teammate snap. */
   aimAssist: number;
+  /** When true, the look cursor, throw preview, and pass pick stick to a teammate. */
+  snapAimToTeammates: boolean;
+  /** How wide that stick is. 1 is a full snap. 0 leaves the aim where it was pointed. */
+  snapAimStrength: number;
   showChargeGhost: boolean;
   showDebugStats: boolean;
   /** On-screen control list. Shown on the first visit. */

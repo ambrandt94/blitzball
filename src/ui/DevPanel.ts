@@ -44,6 +44,8 @@ const CURVE_AIM_OFFSET_KEY = 'blitzball.curveAimOffset';
 const TIME_SCALE_KEY = 'blitzball.timeScale';
 const TIME_SCALE_VERSION_KEY = 'blitzball.timeScaleVersion';
 const TIME_SCALE_FLIGHT_KEY = 'blitzball.timeScaleFlight';
+const SNAP_AIM_KEY = 'blitzball.snapAimToTeammates';
+const SNAP_AIM_STRENGTH_KEY = 'blitzball.snapAimStrength';
 const SHOW_HELP_KEY = 'blitzball.showHelp';
 const ZOOM_HOLD_KEY = 'blitzball.zoomHoldMode';
 const ZOOM_HOLD_VERSION_KEY = 'blitzball.zoomHoldVersion';
@@ -153,6 +155,46 @@ function saveZoomHoldMode(hold: boolean): void {
   try {
     localStorage.setItem(ZOOM_HOLD_KEY, hold ? '1' : '0');
     localStorage.setItem(ZOOM_HOLD_VERSION_KEY, '1');
+  } catch {
+    // Ignore quota and private-mode failures.
+  }
+}
+
+function loadSnapAim(): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return true;
+    const stored = localStorage.getItem(SNAP_AIM_KEY);
+    if (stored === null) return true;
+    return stored !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function saveSnapAim(on: boolean): void {
+  try {
+    localStorage.setItem(SNAP_AIM_KEY, on ? '1' : '0');
+  } catch {
+    // Ignore quota and private-mode failures.
+  }
+}
+
+function loadSnapAimStrength(): number {
+  try {
+    if (typeof localStorage === 'undefined') return 1;
+    const raw = localStorage.getItem(SNAP_AIM_STRENGTH_KEY);
+    if (raw === null || raw.trim() === '') return 1;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return 1;
+    return Math.min(1, Math.max(0, n));
+  } catch {
+    return 1;
+  }
+}
+
+function saveSnapAimStrength(value: number): void {
+  try {
+    localStorage.setItem(SNAP_AIM_STRENGTH_KEY, String(Math.min(1, Math.max(0, value))));
   } catch {
     // Ignore quota and private-mode failures.
   }
@@ -269,6 +311,8 @@ export function defaultTunables(): Tunables {
     checkKnock: PLAYER.checkKnock,
     ballDrag: BALL.drag,
     aimAssist: 0.35,
+    snapAimToTeammates: true,
+    snapAimStrength: 1,
     showChargeGhost: true,
     showDebugStats: true,
     showHelp: true,
@@ -391,6 +435,8 @@ export class DevPanel {
     const savedScale = loadTimeScale();
     if (savedScale !== null) this.tunables.timeScale = savedScale;
     this.tunables.timeScaleFlightOnly = loadFlightOnly();
+    this.tunables.snapAimToTeammates = loadSnapAim();
+    this.tunables.snapAimStrength = loadSnapAimStrength();
     this.tunables.showHelp = loadShowHelp();
     this.tunables.zoomHoldMode = loadZoomHoldMode();
     const savedRoster = loadRoster();
@@ -586,6 +632,8 @@ export class DevPanel {
       this.range('Arc height', 'arcHeight', 0, 0.8, 0.01);
       this.range('Arc hand curve', 'arcHandCurve', 0, 0.6, 0.01);
       this.range('Shot carry', 'shotCarry', 0, 60, 0.5);
+      this.bool('Snap aim to teammates', 'snapAimToTeammates');
+      this.range('Aim assist strength', 'snapAimStrength', 0, 1, 0.05);
       this.range('Teammate lock radius', 'teammateLockRadius', 0.3, 3, 0.05);
       this.range('Aim assist', 'aimAssist', 0, 1, 0.05);
       this.range('Aim posture blend time', 'aimPostureBlend', 0.05, 0.8, 0.01);
@@ -1154,6 +1202,7 @@ export class DevPanel {
         this.onChange(key);
       }
       if (key === 'zoomHoldMode') saveZoomHoldMode(input.checked);
+      if (key === 'snapAimToTeammates') saveSnapAim(input.checked);
     });
     row.append(lab, input);
     this.mount.append(row);
@@ -1233,6 +1282,13 @@ export class DevPanel {
       value.textContent = n.toFixed(2);
       if (key === 'arenaRadius' || key === 'waterPixelScale' || key === 'causticFps' || key === 'causticScroll') this.onChange(key);
       if (key === 'curveAimOffset') saveCurveAimOffset(n);
+      if (key === 'snapAimStrength') {
+        const clamped = Math.min(1, Math.max(0, n));
+        this.tunables.snapAimStrength = clamped;
+        input.value = String(clamped);
+        value.textContent = clamped.toFixed(2);
+        saveSnapAimStrength(clamped);
+      }
       if (key === 'timeScale') {
         const clamped = clampTimeScale(n);
         this.tunables.timeScale = clamped;

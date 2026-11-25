@@ -2376,6 +2376,103 @@ function checkPowerMeter(): void {
   if (!(late > early)) fail(`power did not speed the shot (${early.toFixed(2)} vs ${late.toFixed(2)})`);
 }
 
+/** Off, or strength 0, leaves the cursor, the throw preview, and the pass on the pointed aim. */
+function checkSnapAimOff(): void {
+  const defaults = defaultTunables();
+  if (!defaults.snapAimToTeammates) fail('snap aim defaults off');
+  if (Math.abs(defaults.snapAimStrength - 1) > 1e-6) fail('snap strength default is not full');
+
+  const sim = new Simulation(defaultTunables());
+  sim.setSoloOpponent(false);
+  sim.kickoffLock = 0;
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  parkOthers(sim);
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  if (!mate) fail('missing teammate for snap toggle');
+  mate.position.set(1.2, 0, 12);
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.position.set(0, 0, 1.2);
+  const strafe = blankIntent();
+  strafe.strafe = true;
+
+  sim.tunables.snapAimToTeammates = false;
+  sim.updateAimPresentation(strafe, 1 / 60);
+  if (sim.landingMarker.lockId !== null) fail('cursor snapped with snap aim off');
+  const basis = lookBasis(0, 0, false);
+  const hand = human.position.clone().addScaledVector(basis.forward, BALL.holdOffset).addScaledVector(basis.up, 0.15);
+  const along = sim.landingMarker.position.clone().sub(hand);
+  if (along.normalize().dot(basis.forward) < 0.98) fail('cursor left the look ray with snap aim off');
+
+  sim.tunables.snapAimToTeammates = true;
+  sim.tunables.snapAimStrength = 1;
+  sim.updateAimPresentation(strafe, 1 / 60);
+  if (sim.landingMarker.lockId !== mate.id) fail('cursor did not snap with snap aim on');
+
+  sim.tunables.snapAimStrength = 0;
+  sim.updateAimPresentation(strafe, 1 / 60);
+  if (sim.landingMarker.lockId !== null) fail('zero strength still snapped the cursor');
+
+  const aimed = aimingSim();
+  const pal = aimed.sim.players.find((p) => p.team === 0 && p.role === 'ai');
+  if (!pal) fail('no teammate for throw snap');
+  pal.active = true;
+  pal.velocity.set(0, 0, 0);
+  pal.position.set(aimed.human.position.x + 1.2, aimed.human.position.y, aimed.human.position.z + 14);
+  aimed.sim.tunables.snapAimToTeammates = false;
+  aimed.sim.step(1 / 60, aimed.hold);
+  if (aimed.sim.shotAim.lockId !== null) fail('throw locked a teammate with snap aim off');
+  if (Math.abs(aimed.sim.shotAim.target.x - aimed.human.position.x) > 0.35) {
+    fail('throw preview left the look axis with snap aim off');
+  }
+  const end = aimed.sim.chargeGhost[aimed.sim.chargeGhost.length - 1];
+  if (end && Math.abs(end.x - aimed.human.position.x) > 0.75) {
+    fail('throw arc bent toward the teammate with snap aim off');
+  }
+
+  const steered = passSideways(true);
+  if (Math.abs(steered) < 1) fail(`snap on did not steer the pass (${steered.toFixed(2)})`);
+  const straight = passSideways(false);
+  if (Math.abs(straight) > 0.35) fail(`pass still steered sideways (${straight.toFixed(2)})`);
+}
+
+function passSideways(snap: boolean): number {
+  const pass = new Simulation(defaultTunables());
+  pass.setSoloOpponent(false);
+  pass.kickoffLock = 0;
+  pass.tunables.defenseActive = false;
+  pass.tunables.snapAimToTeammates = snap;
+  const passer = pass.getHuman();
+  const receiver = pass.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  if (!receiver) fail('missing pass target');
+  for (const p of pass.players) {
+    if (p.id !== passer.id && p.id !== receiver.id) p.active = false;
+  }
+  passer.position.set(0, 0, 0);
+  passer.velocity.set(0, 0, 0);
+  passer.facing.set(0, 0, 1);
+  passer.up.set(0, 1, 0);
+  passer.hasBall = true;
+  pass.yaw = 0;
+  pass.pitch = 0;
+  receiver.position.set(1.2, 0, 12);
+  receiver.velocity.set(0, 0, 0);
+  pass.ball.possession = 'held';
+  pass.ball.ownerId = passer.id;
+  pass.ball.velocity.set(0, 0, 0);
+  pass.ball.position.copy(passer.position).add(new THREE.Vector3(0, 0.15, 0.85));
+  const tap = blankIntent();
+  tap.pass = true;
+  pass.step(1 / 60, tap);
+  return pass.ball.velocity.x;
+}
+
 function checkTeammateLock(): void {
   const { sim, human, hold } = aimingSim();
   const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai');
@@ -4724,6 +4821,7 @@ export function runRotationChecks(): void {
   checkCurveCircle();
   checkPowerMeter();
   checkTeammateLock();
+  checkSnapAimOff();
   checkPractice();
   checkShoulder();
   checkStraightAimMarker();
