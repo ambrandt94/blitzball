@@ -16,7 +16,7 @@ import { parseRoster } from '../ui/rosterStorage';
 import { matchRoster } from '../ui/matchPresets';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalMouthZ, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
-import { lookBasis, rotateToward, stabilizeUp } from './math';
+import { lookBasis, rotateToward, stabilizeUp, transportUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
@@ -118,6 +118,110 @@ function checkUpPole(): void {
     maxStep = Math.max(maxStep, step);
   }
   if (maxStep > (8 * Math.PI) / 180) fail(`body up snapped ${deg(maxStep).toFixed(1)}° crossing the pole`);
+}
+
+/**
+ * Pitch through straight up, straight down, and inverted, in open water and
+ * against the shell. A frame whose look or body up jumps more than a few
+ * degrees is the disorienting snap.
+ */
+function checkVerticalLook(): void {
+  const spots = [
+    new THREE.Vector3(0, 0, 12),
+    new THREE.Vector3(0, 0, ARENA_RADIUS - PLAYER.radius - 0.4),
+    new THREE.Vector3(0, ARENA_RADIUS - PLAYER.radius - 0.4, 2),
+  ];
+  for (const spot of spots) {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.tunables.camPitch = -0.18;
+    sim.tunables.camRecenter = false;
+    const human = sim.getHuman();
+    human.position.copy(spot);
+    let prevLook: THREE.Vector3 | null = null;
+    let prevRight: THREE.Vector3 | null = null;
+    let maxLook = 0;
+    let maxRight = 0;
+    for (let i = -130; i <= 130; i++) {
+      sim.pitch = (i * Math.PI) / 180;
+      sim.yaw = 0.4;
+      const pose = sim.getCameraPose(blankIntent());
+      const look = pose.target.clone().sub(pose.position);
+      if (look.lengthSq() < 1e-8) fail(`camera sat on its target at pitch ${i}`);
+      look.normalize();
+      const back = pose.position.clone().sub(pose.target).normalize();
+      const right = new THREE.Vector3().crossVectors(pose.up, back);
+      if (right.lengthSq() < 1e-8) fail(`camera up parallel to the view at pitch ${i}`);
+      right.normalize();
+      if (pose.position.length() > ARENA_RADIUS - CAMERA.wallClearance + 0.08) {
+        fail(`camera left the shell at pitch ${i} (${pose.position.length().toFixed(2)})`);
+      }
+      if (prevLook && prevRight) {
+        maxLook = Math.max(maxLook, angle(prevLook, look));
+        maxRight = Math.max(maxRight, angle(prevRight, right));
+      }
+      prevLook = look;
+      prevRight = right;
+    }
+    const where = `r=${spot.length().toFixed(1)}`;
+    if (maxLook > (4 * Math.PI) / 180) {
+      fail(`look jumped ${deg(maxLook).toFixed(2)}° per 1° of pitch (${where})`);
+    }
+    if (maxRight > (8 * Math.PI) / 180) {
+      fail(`horizon rolled ${deg(maxRight).toFixed(2)}° per 1° of pitch (${where})`);
+    }
+  }
+
+  const up = new THREE.Vector3(0, 1, 0);
+  const facing = new THREE.Vector3(0, 0, 1);
+  let maxTransport = 0;
+  for (let i = 0; i <= 220; i++) {
+    const a = (i / 180) * Math.PI;
+    const next = new THREE.Vector3(0, Math.sin(a), Math.cos(a));
+    const before = up.clone();
+    transportUp(up, facing, next);
+    facing.copy(next);
+    maxTransport = Math.max(maxTransport, angle(before, up));
+  }
+  if (maxTransport > (4 * Math.PI) / 180) {
+    fail(`transported up snapped ${deg(maxTransport).toFixed(2)}° through inverted flight`);
+  }
+
+  for (const start of [new THREE.Vector3(0, 2, 8), new THREE.Vector3(0, 4, ARENA_RADIUS - PLAYER.radius - 1.2)]) {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.tunables.camRecenter = false;
+    const human = sim.getHuman();
+    human.position.copy(start);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    sim.yaw = 0;
+    sim.pitch = 0;
+    const intent = blankIntent();
+    intent.move.set(0, 0, 1);
+    let prevF = human.facing.clone();
+    let prevU = human.up.clone();
+    let prevLook: THREE.Vector3 | null = null;
+    let maxF = 0;
+    let maxU = 0;
+    let maxL = 0;
+    for (let i = 0; i < 220; i++) {
+      sim.pitch = Math.min(2.4, sim.pitch + 0.02);
+      sim.step(1 / 60, intent);
+      maxF = Math.max(maxF, angle(prevF, human.facing));
+      maxU = Math.max(maxU, angle(prevU, human.up));
+      prevF.copy(human.facing);
+      prevU.copy(human.up);
+      const pose = sim.getCameraPose(intent);
+      const look = pose.target.clone().sub(pose.position).normalize();
+      if (prevLook) maxL = Math.max(maxL, angle(prevLook, look));
+      prevLook = look;
+    }
+    if (maxF > (20 * Math.PI) / 180) fail(`facing snapped ${deg(maxF).toFixed(1)}° swimming through vertical`);
+    if (maxU > (20 * Math.PI) / 180) fail(`body up snapped ${deg(maxU).toFixed(1)}° swimming through vertical`);
+    if (maxL > (20 * Math.PI) / 180) fail(`camera look snapped ${deg(maxL).toFixed(1)}° swimming through vertical`);
+  }
 }
 
 function checkCamera(goalAxisUp: boolean, zoom: boolean): void {
@@ -3491,6 +3595,7 @@ export function runRotationChecks(): void {
   checkPointerLockGuard();
   checkCatchBeacon();
   checkGoalBoundArc();
+  checkVerticalLook();
   checkCamera(false, false);
   checkCamera(false, true);
   checkCamera(true, false);

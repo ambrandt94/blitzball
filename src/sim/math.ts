@@ -46,6 +46,8 @@ const _axis = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _qFrom = new THREE.Quaternion();
 const _chase = new THREE.Vector3();
+const _fromF = new THREE.Vector3();
+const _toF = new THREE.Vector3();
 
 /**
  * Shortest-arc step of a direction.
@@ -117,12 +119,11 @@ export function stabilizeUp(
   // ~8° of the pole: the rejected up is too small to define a twist.
   if (_hint.lengthSq() < 0.02) return;
   _hint.normalize();
-  // Projecting world up flips as forward crosses the pole (the hint jumps
-  // to the opposite hemisphere in one frame). Following that at full rate
-  // whips the body and the camera. Roll upright slowly instead.
-  const align = previous.dot(_hint);
-  const rate = align < 0 ? Math.min(lambda, 1.2) : lambda;
-  rotateToward(previous, _hint, rate, dt);
+  // Projecting world up flips 180° as forward crosses the pole. Following
+  // that hint, even slowly, rolls the body and the camera the wrong way.
+  // Keep the twist we already have and only ease upright on the same side.
+  if (previous.dot(_hint) < 0.15) return;
+  rotateToward(previous, _hint, lambda, dt);
   previous.addScaledVector(fwd, -previous.dot(fwd));
   if (previous.lengthSq() < 1e-8) previous.copy(_hint);
   else previous.normalize();
@@ -170,7 +171,63 @@ export function chaseCameraPosition(
   return out.copy(place(lo));
 }
 
-/** Yaw around `worldUp`, then pitch. Continuous in both angles, including a full turn. */
+/**
+ * Pull `end` toward `origin` until it lies inside a sphere at the origin.
+ * The slide stays on the segment, so the chase camera does not jump sideways
+ * the way a radial setLength does when the boom meets the shell.
+ */
+export function pullInsideSphere(
+  out: THREE.Vector3,
+  origin: THREE.Vector3,
+  end: THREE.Vector3,
+  limit: number,
+): THREE.Vector3 {
+  if (end.lengthSq() <= limit * limit) return out.copy(end);
+  if (origin.lengthSq() > limit * limit) return out.copy(end).setLength(Math.max(0.05, limit));
+  _chase.copy(end).sub(origin);
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 16; i++) {
+    const mid = (lo + hi) * 0.5;
+    _aimed.copy(origin).addScaledVector(_chase, mid);
+    if (_aimed.lengthSq() <= limit * limit) lo = mid;
+    else hi = mid;
+  }
+  return out.copy(origin).addScaledVector(_chase, lo);
+}
+
+/**
+ * Carry `up` along the same rotation that takes `fromForward` to `toForward`.
+ * This is how the body stays continuous through straight up, straight down,
+ * and inverted flight. Rebuilding up from a fixed pole flips at that pole.
+ */
+export function transportUp(up: THREE.Vector3, fromForward: THREE.Vector3, toForward: THREE.Vector3): void {
+  _fromF.copy(fromForward);
+  _toF.copy(toForward);
+  if (_fromF.lengthSq() < 1e-8 || _toF.lengthSq() < 1e-8) return;
+  _fromF.normalize();
+  _toF.normalize();
+  const dot = THREE.MathUtils.clamp(_fromF.dot(_toF), -1, 1);
+  if (dot < 0.9995) {
+    if (dot < -0.9995) {
+      _axis.set(0, 1, 0);
+      if (Math.abs(_fromF.dot(_axis)) > 0.9) _axis.set(1, 0, 0);
+      _axis.cross(_fromF).normalize();
+      _q.setFromAxisAngle(_axis, Math.PI);
+    } else {
+      _q.setFromUnitVectors(_fromF, _toF);
+    }
+    up.applyQuaternion(_q);
+  }
+  up.addScaledVector(_toF, -up.dot(_toF));
+  if (up.lengthSq() < 1e-8) {
+    up.set(0, 1, 0).addScaledVector(_toF, -_toF.y);
+    if (up.lengthSq() < 1e-8) up.set(1, 0, 0);
+  }
+  up.normalize();
+}
+
+/** Yaw around `worldUp`, then pitch. Continuous past vertical, including inverted flight. */
 export function lookBasis(
   yaw: number,
   pitch: number,

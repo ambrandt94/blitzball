@@ -35,7 +35,9 @@ import {
   goalCenter,
   lookBasis,
   rotateToward,
+  pullInsideSphere,
   stabilizeUp,
+  transportUp,
 } from './math';
 import { fumbleChance, inCatchCone, inCatchVolume, segmentHitsCatch, segmentHitsCone } from './catch';
 import {
@@ -262,6 +264,7 @@ export class Simulation {
     aim: new THREE.Vector3(),
     faceTarget: new THREE.Vector3(),
     upHint: new THREE.Vector3(),
+    prevFacing: new THREE.Vector3(),
     side: new THREE.Vector3(),
     predictPos: new THREE.Vector3(),
     predictVel: new THREE.Vector3(),
@@ -883,8 +886,8 @@ export class Simulation {
     }
     this.yaw += intent.lookDelta.x * sx;
     this.pitch -= intent.lookDelta.y * sy;
-    const maxPitch = Math.PI / 2 - 0.08;
-    this.pitch = THREE.MathUtils.clamp(this.pitch, -maxPitch, maxPitch);
+    // Pitch is not clamped at the horizon. Stopping 8° short of vertical
+    // made "swim straight up" stick, and the next look rolled the wrong way.
   }
 
   /** Mouse-wheel aim range. Call once per rendered frame, not per physics step. */
@@ -1149,7 +1152,9 @@ export class Simulation {
 
     let rate = this.tunables.bodyTurnRate;
     if (player.hasBall) rate *= PLAYER.carrierTurnMult;
+    this.tmp.prevFacing.copy(player.facing);
     rotateToward(player.facing, target, rate, dt);
+    transportUp(player.up, this.tmp.prevFacing, player.facing);
     this.alignBodyUp(player, dt);
   }
 
@@ -2896,8 +2901,9 @@ export class Simulation {
     if (Math.abs(pitch) > 1e-4) {
       const offset = position.clone().sub(human.position);
       offset.applyAxisAngle(basis.right, pitch);
-      position.copy(human.position).add(offset);
-      if (this.tunables.camShell && position.length() > shellLimit) position.setLength(shellLimit);
+      const end = human.position.clone().add(offset);
+      if (this.tunables.camShell) pullInsideSphere(position, human.position, end, shellLimit);
+      else position.copy(end);
     }
     // On-ball aim looks down the throw. Off-ball, look just past the hands so
     // the reach and the ball in front of it share the frame.

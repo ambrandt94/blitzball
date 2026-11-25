@@ -119,6 +119,8 @@ export class SceneView {
   private camUp = new THREE.Vector3(0, 1, 0);
   private worldUp = new THREE.Vector3(0, 1, 0);
   private camInitialized = false;
+  private camQuat = new THREE.Quaternion();
+  private camQuatReady = false;
   private camScratch = {
     offset: new THREE.Vector3(),
     pos: new THREE.Vector3(),
@@ -651,6 +653,38 @@ export class SceneView {
     line.visible = n >= 2;
   }
 
+  /**
+   * Point the chase camera from its position at the look target.
+   * `lookAt` picks an arbitrary axis when up is parallel to the view, which
+   * is the snap at straight up and straight down. A bad frame is also capped
+   * so it cannot roll the picture all the way around in one tick.
+   */
+  private aimChaseCamera(lambda: number, dt: number): void {
+    const back = this.camScratch.offset.copy(this.camera.position).sub(this.camTarget);
+    if (back.lengthSq() < 1e-10) return;
+    back.normalize();
+    const x = this.bodyX.crossVectors(this.camUp, back);
+    if (x.lengthSq() < 1e-6) return;
+    x.normalize();
+    const y = this.bodyY.crossVectors(back, x).normalize();
+    this.bodyBasis.makeBasis(x, y, back);
+    this.camQuat.setFromRotationMatrix(this.bodyBasis);
+    if (!this.camQuatReady) {
+      this.camera.quaternion.copy(this.camQuat);
+      this.camQuatReady = true;
+    } else {
+      const theta = this.camera.quaternion.angleTo(this.camQuat);
+      if (theta <= 0.45) {
+        this.camera.quaternion.copy(this.camQuat);
+      } else {
+        const step = Math.min(theta, Math.max(0.2, lambda * Math.max(0, dt)));
+        this.camera.quaternion.slerp(this.camQuat, theta > 1e-5 ? step / theta : 1);
+      }
+    }
+    this.camUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    this.camera.up.copy(this.camUp);
+  }
+
   /** Shot curve. Screen-space width, dark halo, drawn over the water. */
   private writeArc(points: THREE.Vector3[]): void {
     const n = Math.min(points.length, GHOST_MAX);
@@ -719,8 +753,7 @@ export class SceneView {
     if (view.lengthSq() < 1e-8) view.copy(this.camOffsetDir).negate();
     else view.normalize();
     stabilizeUp(this.camUp, view, pose.up, Math.max(0.5, sim.tunables.camLag), dt);
-    this.camera.up.copy(this.camUp);
-    this.camera.lookAt(this.camTarget);
+    this.aimChaseCamera(Math.max(0.5, sim.tunables.camLag), dt);
     if (Math.abs(this.camera.fov - pose.fov) > 0.01) {
       this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, pose.fov, 0.2);
       this.camera.updateProjectionMatrix();
