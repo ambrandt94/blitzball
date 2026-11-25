@@ -7,7 +7,7 @@ function loadPowerMode(): PowerMode | null {
   try {
     if (typeof localStorage === 'undefined') return null;
     const value = localStorage.getItem(POWER_MODE_KEY);
-    if (value === 'meter' || value === 'tap' || value === 'hold') return value;
+    if (value === 'meter' || value === 'tap' || value === 'hold' || value === 'target' || value === 'pull') return value;
   } catch {
     // Headless or blocked storage. Keep the built-in default.
   }
@@ -161,6 +161,8 @@ export class DevPanel {
       { value: 'meter', label: 'Meter' },
       { value: 'tap', label: 'Tap' },
       { value: 'hold', label: 'Hold' },
+      { value: 'target', label: 'Target' },
+      { value: 'pull', label: 'Pull' },
     ]);
     this.range('Tap window', 'tapWindow', 0.15, 0.9, 0.05);
     this.range('Max taps', 'tapMax', 1, 9, 1);
@@ -205,7 +207,7 @@ export class DevPanel {
     input.value = this.tunables[key];
     input.addEventListener('change', () => {
       const value = input.value;
-      if (value !== 'meter' && value !== 'tap' && value !== 'hold') return;
+      if (value !== 'meter' && value !== 'tap' && value !== 'hold' && value !== 'target' && value !== 'pull') return;
       this.tunables[key] = value;
       savePowerMode(value);
     });

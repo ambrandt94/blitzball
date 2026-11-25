@@ -110,6 +110,7 @@ function emptyIntent(): InputIntent {
     pass: false,
     shoot: false,
     shootHeld: false,
+    aimCancel: false,
     burst: false,
     passHeld: false,
     zoomOut: false,

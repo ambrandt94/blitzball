@@ -3,7 +3,7 @@ import type * as THREE from 'three';
 export type TeamId = 0 | 1;
 
 /** How a held throw turns into shot power. `meter` is the default. */
-export type PowerMode = 'meter' | 'tap' | 'hold';
+export type PowerMode = 'meter' | 'tap' | 'hold' | 'target' | 'pull';
 
 export type PlayerRole = 'human' | 'ai' | 'stub';
 
@@ -79,7 +79,10 @@ export interface Tunables {
   arcHandCurve: number;
   /** How fast the shot power meter sweeps, in full-scales per second. Hold mode fills at this rate. */
   shotPowerRate: number;
-  /** `meter` oscillates, `tap` counts clicks after release, `hold` fills until you let go. */
+  /**
+   * `meter` oscillates, `tap` counts clicks after release, `hold` fills until you let go.
+   * `target` sets power from the landing distance. `pull` sets it from a backward drag.
+   */
   powerMode: PowerMode;
   /** Seconds after release that tap mode still accepts power clicks. */
   tapWindow: number;
@@ -129,6 +132,8 @@ export interface LandingMarkerState {
   maxPosition: THREE.Vector3;
   /** 1 after a power tap, decays. The view pulses the marker from this. */
   pulse: number;
+  /** Target mode asked for a spot past full power. The marker draws dim and red. */
+  outOfReach: boolean;
 }
 
 export interface PlayerState {
@@ -241,6 +246,8 @@ export interface InputIntent {
   pass: boolean;
   shoot: boolean;
   shootHeld: boolean;
+  /** Right-click press. Cancels a held throw, including the tap window. */
+  aimCancel: boolean;
   /**
    * Off-ball primary click. Same edge as shoot; the sim shoulder-checks only
    * when this player is not holding the ball.

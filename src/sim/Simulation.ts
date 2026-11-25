@@ -43,6 +43,7 @@ import {
 } from './goal';
 import { clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
 import { throwPoseSeconds } from '../render/throwPose';
+import { PULL_FULL_TRAVEL, TARGET_DISTANCE_SPEED } from './shotPower';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
 /** Fresh catches ease into the palm instead of popping onto the hand bone. */
@@ -157,6 +158,24 @@ export class Simulation {
     minPosition: new THREE.Vector3(),
     maxPosition: new THREE.Vector3(),
     pulse: 0,
+    outOfReach: false,
+  };
+  /** Where the landing dot is drawn. Target mode can place this past full power. */
+  private markerShown = new THREE.Vector3();
+  /** Chosen landing distance in target mode. May sit past full reach. */
+  private targetReach = 0;
+  /** Accumulated backward drag in pull mode, in look-delta units. */
+  private pullTravel = 0;
+  /**
+   * Set when a throw is cancelled while the button is still down, so letting
+   * go does not fire and the held button does not start a new aim.
+   */
+  private shotBlocked = false;
+  /** Slingshot band from the hand back along the aim. Only pull mode draws it. */
+  readonly pullBand = {
+    visible: false,
+    from: new THREE.Vector3(),
+    to: new THREE.Vector3(),
   };
   private strafing = false;
   /** Seconds of extra reach left after a claim press. */
@@ -313,6 +332,11 @@ export class Simulation {
     this.shotAim.lockId = null;
     this.shotAimManual = false;
     this.power.reset();
+    this.shotBlocked = false;
+    this.pullTravel = 0;
+    this.targetReach = 0;
+    this.pullBand.visible = false;
+    this.landingMarker.outOfReach = false;
     this.syncThrowReadout();
     this.match.resetTimer = 0;
     this.kickoffLock = 2.2;
@@ -560,6 +584,8 @@ export class Simulation {
    */
   armShotAim(intent: InputIntent): void {
     if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
+    if (this.shotBlocked) return;
+    if (intent.aimCancel) return;
     const human = this.getHuman();
     if (!human.hasBall || !intent.shootHeld) return;
     if (!this.shotAim.active) this.beginShotAim();
@@ -571,8 +597,19 @@ export class Simulation {
     // While a shot is held the view stays put so the marker doesn't swim,
     // and the same mouse deltas bend the Bezier control point instead.
     if (this.shotAim.active) {
-      this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
-      this.shotAim.bendUp += -intent.lookDelta.y * sy * this.tunables.arcBendSpeed;
+      const mode = this.tunables.powerMode;
+      if (mode === 'target') {
+        // Horizontal bends the arc. Vertical, and the wheel, slide the landing spot.
+        this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
+        this.nudgeTargetReach(-intent.lookDelta.y * sy * TARGET_DISTANCE_SPEED);
+      } else if (mode === 'pull') {
+        // Sideways drift is the curve. Dragging down, toward the player, is the pull.
+        this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
+        this.nudgePull(intent.lookDelta.y * sy);
+      } else {
+        this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
+        this.shotAim.bendUp += -intent.lookDelta.y * sy * this.tunables.arcBendSpeed;
+      }
       this.clampStoredBend();
       if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
       return;
@@ -586,6 +623,10 @@ export class Simulation {
   /** Mouse-wheel aim range. Call once per rendered frame, not per physics step. */
   nudgeAimDistance(delta: number): void {
     if (delta === 0) return;
+    if (this.tunables.powerMode === 'target' && this.shotAim.active) {
+      this.nudgeTargetReach(delta);
+      return;
+    }
     const before = this.aimDistanceBias;
     this.aimDistanceBias = THREE.MathUtils.clamp(this.aimDistanceBias + delta, -40, 48);
     const applied = this.aimDistanceBias - before;
@@ -797,7 +838,11 @@ export class Simulation {
   private updatePossession(human: PlayerState, intent: InputIntent, dt: number): void {
     // Charge shoot / pass for human
     if (human.hasBall) {
-      if (intent.drop) {
+      if (intent.aimCancel && this.throwInProgress()) {
+        this.cancelAimedThrow(human, intent.shootHeld);
+      } else if (this.shotBlocked) {
+        if (!intent.shootHeld) this.shotBlocked = false;
+      } else if (intent.drop) {
         this.clearShotAim();
         const toss = this.lookForward(human);
         this.releaseAtHand(human, toss);
@@ -1061,7 +1106,26 @@ export class Simulation {
     this.power.reset();
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
+    this.pullBand.visible = false;
+    this.landingMarker.outOfReach = false;
     this.syncThrowReadout();
+  }
+
+  /** A held throw or an open tap window. Right-click drops it without releasing. */
+  private throwInProgress(): boolean {
+    return this.shotAim.active || this.power.capturing() || (this.charge.active && this.charge.kind === 'shoot');
+  }
+
+  private cancelAimedThrow(human: PlayerState, buttonStillDown: boolean): void {
+    this.clearShotAim();
+    this.pullTravel = 0;
+    this.targetReach = 0;
+    this.shotBlocked = buttonStillDown;
+    if (human.hasBall) {
+      human.actionPose = 'hold';
+      human.actionPoseTime = 0;
+    }
+    this.match.statusMessage = 'Throw cancelled';
   }
 
   private powerTuning(): PowerTuning {
@@ -1090,6 +1154,8 @@ export class Simulation {
     }
     if (this.power.mode === 'tap') return 'Aim locked — release, then tap for power';
     if (this.power.mode === 'hold') return 'Hold to charge — release throws';
+    if (this.power.mode === 'target') return 'Mouse up/down sets distance, left/right bends — release throws';
+    if (this.power.mode === 'pull') return 'Drag down to pull, sideways bends — release throws';
     return 'Throwing — power slides the marker, mouse bends the arc';
   }
 
@@ -1191,10 +1257,66 @@ export class Simulation {
     this.power.begin();
     this.charge.active = true;
     this.charge.kind = 'shoot';
+    this.seedAimPower();
     this.charge.amount = this.power.amount();
     this.syncThrowReadout();
     this.acquireTeammate();
     this.refreshShotTarget();
+  }
+
+  /**
+   * Target mode starts on the current aim point. Pull mode starts as a soft toss.
+   * Other modes keep whatever their strategy begins at.
+   */
+  private seedAimPower(): void {
+    const mode = this.tunables.powerMode;
+    if (mode === 'pull') {
+      this.pullTravel = 0;
+      this.power.setAmount(0);
+      return;
+    }
+    if (mode !== 'target') return;
+    const minD = SHOT_ARC.minRange;
+    const maxD = Math.max(minD, this.aimDistance());
+    this.targetReach = THREE.MathUtils.clamp(this.straightAimDistance(), minD, maxD);
+    const span = Math.max(0.001, maxD - minD);
+    this.power.setAmount((this.targetReach - minD) / span);
+  }
+
+  /** Distance from the hand to the straight-throw aim point, after the shell clamp. */
+  private straightAimDistance(): number {
+    const human = this.getHuman();
+    const hand = this.lookCarryPoint(human, this.tmp.holdTarget);
+    const raw = this.tmp.predictPos.copy(hand).addScaledVector(this.cameraBasis().forward, this.aimDistance());
+    const out = this.tmp.predictVel;
+    clampAimMarker(out, raw, hand, SHOT_ARC.minRange, this.markerLimit());
+    return Math.max(SHOT_ARC.minRange, out.distanceTo(hand));
+  }
+
+  /** Slide the chosen landing distance. Past full power the marker goes red and the throw clamps. */
+  private nudgeTargetReach(delta: number): void {
+    if (!this.shotAim.active || delta === 0) return;
+    this.breakShotLock();
+    const minD = SHOT_ARC.minRange;
+    const maxD = Math.max(minD, this.aimDistance());
+    const past = maxD + 24;
+    this.targetReach = THREE.MathUtils.clamp(this.targetReach + delta, minD, past);
+    const span = Math.max(0.001, maxD - minD);
+    this.power.setAmount((this.targetReach - minD) / span);
+    this.charge.amount = this.power.amount();
+    this.refreshShotTarget();
+    if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
+  }
+
+  /** Mouse-down lengthens the pull. Mouse-up gives some of it back. */
+  private nudgePull(delta: number): void {
+    if (!this.shotAim.active || delta === 0) return;
+    const full = Math.max(0.2, PULL_FULL_TRAVEL);
+    this.pullTravel = THREE.MathUtils.clamp(this.pullTravel + delta, 0, full);
+    this.power.setAmount(this.pullTravel / full);
+    this.charge.amount = this.power.amount();
+    this.refreshShotTarget();
+    if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
   }
 
   /** Landing distance for a power in 0..1, from a short lob out to the aim range. */
@@ -1218,12 +1340,31 @@ export class Simulation {
    */
   private refreshShotTarget(): void {
     const power = THREE.MathUtils.clamp(this.charge.amount, 0, 1);
-    this.pointAlongAim(this.landingMarker.minPosition, this.shotReach(0));
-    this.pointAlongAim(this.landingMarker.maxPosition, this.shotReach(1));
+    const minD = SHOT_ARC.minRange;
+    const maxD = Math.max(minD, this.aimDistance());
+    this.pointAlongAim(this.landingMarker.minPosition, minD);
+    this.pointAlongAim(this.landingMarker.maxPosition, maxD);
+    const aimingTarget = this.tunables.powerMode === 'target' && this.shotAim.active;
     if (this.shotAim.lockId === null) {
       this.pointAlongAim(this.shotAim.target, this.shotReach(power));
+      if (aimingTarget) this.pointAlongAim(this.markerShown, this.targetReach);
+      else this.markerShown.copy(this.shotAim.target);
+    } else {
+      this.markerShown.copy(this.shotAim.target);
     }
-    this.landingMarker.distance = this.ball.position.distanceTo(this.shotAim.target);
+    this.landingMarker.outOfReach = aimingTarget && this.shotAim.lockId === null && this.targetReach > maxD + 0.35;
+    this.landingMarker.distance = this.ball.position.distanceTo(this.markerShown);
+    this.syncPullBand();
+  }
+
+  /** A short band from the hand back along the aim. Length follows the pull. */
+  private syncPullBand(): void {
+    const show = this.shotAim.active && this.tunables.powerMode === 'pull' && this.charge.kind === 'shoot';
+    this.pullBand.visible = show;
+    if (!show) return;
+    const len = 0.4 + THREE.MathUtils.clamp(this.charge.amount, 0, 1) * 2.2;
+    this.pullBand.from.copy(this.ball.position);
+    this.pullBand.to.copy(this.ball.position).addScaledVector(this.lockedAim, -len);
   }
 
   private breakShotLock(): void {
@@ -2181,7 +2322,7 @@ export class Simulation {
       this.refreshShotTarget();
       if (this.charge.kind === 'shoot') this.updateChargeGhost(human);
       this.landingMarker.visible = true;
-      this.landingMarker.position.copy(this.shotAim.target);
+      this.landingMarker.position.copy(this.markerShown);
       this.landingMarker.lockId = this.shotAim.lockId;
       this.landingMarker.showReach = this.shotAim.lockId === null;
       return;
@@ -2189,6 +2330,8 @@ export class Simulation {
     this.landingMarker.showReach = false;
     // Off-ball reach has no aim mark. Right-click with the ball shows the
     // straight landing point and does not build a curve.
+    this.landingMarker.outOfReach = false;
+    this.pullBand.visible = false;
     if (!(this.strafing && holding)) {
       this.landingMarker.visible = false;
       this.landingMarker.lockId = null;

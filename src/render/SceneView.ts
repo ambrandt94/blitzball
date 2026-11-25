@@ -81,6 +81,8 @@ export class SceneView {
   private ballTrail!: THREE.Line;
   private trailPositions: Float32Array;
   private chargeGhost!: THREE.Line;
+  private pullLine!: THREE.Line;
+  private pullPositions = new Float32Array(6);
   private ghostPositions: Float32Array;
   private shotMarker!: THREE.Group;
   private shotMarkerMat!: THREE.MeshBasicMaterial;
@@ -342,6 +344,21 @@ export class SceneView {
     );
     this.scene.add(this.chargeGhost);
 
+    const pullGeo = new THREE.BufferGeometry();
+    pullGeo.setAttribute('position', new THREE.BufferAttribute(this.pullPositions, 3));
+    this.pullLine = new THREE.Line(
+      pullGeo,
+      new THREE.LineBasicMaterial({
+        color: 0xffd2a8,
+        transparent: true,
+        opacity: 0.45,
+        depthTest: false,
+      }),
+    );
+    this.pullLine.visible = false;
+    this.pullLine.frustumCulled = false;
+    this.scene.add(this.pullLine);
+
     const markerMat = new THREE.MeshBasicMaterial({
       color: 0xffe066,
       transparent: true,
@@ -504,6 +521,7 @@ export class SceneView {
       pass: false,
       shoot: false,
       shootHeld: false,
+      aimCancel: false,
       burst: false,
       passHeld: false,
       zoomOut: intentZoom,
@@ -663,6 +681,7 @@ export class SceneView {
 
     this.writeLine(this.chargeGhost, this.ghostPositions, sim.chargeGhost, GHOST_MAX);
     this.syncLandingMarker(sim);
+    this.syncPullBand(sim);
     this.syncCatchBeacon(sim);
     this.syncBubbles(sim, dt);
     this.syncGoalFlash(sim);
@@ -861,6 +880,23 @@ export class SceneView {
    * the ring stays a similar size on screen, and depth is off so a swimmer
    * between the camera and the point cannot cover it.
    */
+  /** Faint stretch from the hand back along the aim while a pull is held. */
+  private syncPullBand(sim: Simulation): void {
+    const band = sim.pullBand;
+    this.pullLine.visible = band.visible;
+    if (!band.visible) return;
+    this.pullPositions[0] = band.from.x;
+    this.pullPositions[1] = band.from.y;
+    this.pullPositions[2] = band.from.z;
+    this.pullPositions[3] = band.to.x;
+    this.pullPositions[4] = band.to.y;
+    this.pullPositions[5] = band.to.z;
+    const attr = this.pullLine.geometry.getAttribute('position') as THREE.BufferAttribute;
+    attr.needsUpdate = true;
+    const mat = this.pullLine.material as THREE.LineBasicMaterial;
+    mat.opacity = 0.16 + sim.charge.amount * 0.5;
+  }
+
   private syncLandingMarker(sim: Simulation): void {
     const mark = sim.landingMarker;
     this.shotMarker.visible = mark.visible;
@@ -881,11 +917,15 @@ export class SceneView {
     this.shotMarker.scale.setScalar(THREE.MathUtils.clamp(dist * 0.034, 0.45, 3.4) * pulse);
     this.shotMarkerRing.lookAt(this.camera.position);
 
-    const markerHex = mark.pulse > 0.35 ? 0xffffff : locked ? 0xc6ff6a : 0xffe066;
-    const ringHex = mark.pulse > 0.35 ? 0xfff6d0 : locked ? 0xf4ffe4 : 0xfff4cc;
+    const far = mark.outOfReach;
+    const markerHex = far ? 0xd25a4a : mark.pulse > 0.35 ? 0xffffff : locked ? 0xc6ff6a : 0xffe066;
+    const ringHex = far ? 0xe7b2a8 : mark.pulse > 0.35 ? 0xfff6d0 : locked ? 0xf4ffe4 : 0xfff4cc;
     this.shotMarkerMat.color.setHex(markerHex);
     this.shotMarkerRingMat.color.setHex(ringHex);
     this.shotMarkerGlowMat.color.setHex(markerHex);
+    this.shotMarkerMat.opacity = far ? 0.42 : 1;
+    this.shotMarkerRingMat.opacity = far ? 0.4 : 1;
+    this.shotMarkerGlowMat.opacity = far ? 0.35 : 0.85;
 
     const label = `${Math.max(0, Math.round(mark.distance))}u`;
     if (label !== this.distanceShown) {

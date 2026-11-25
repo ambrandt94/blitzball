@@ -34,6 +34,8 @@ export class InputManager {
   private lmbDown = false;
   private lmbPressed = false;
   private rmbDown = false;
+  /** Right mouse went down this frame. Cancels a held throw. */
+  private rmbPressed = false;
   /** Middle mouse went down this frame. Consumed by sample. */
   private mmbPressed = false;
   private clickGate = new PrimaryClickGate();
@@ -190,6 +192,7 @@ export class InputManager {
     if (e.button === 1 && this.pointerLocked) this.mmbPressed = true;
     if (e.button === 2 && this.pointerLocked) {
       this.rmbDown = true;
+      this.rmbPressed = true;
     }
   };
 
@@ -295,6 +298,7 @@ export class InputManager {
       pass: this.anyJust(KEYS.pass),
       shoot: this.lmbPressed,
       shootHeld: this.lmbDown,
+      aimCancel: this.rmbPressed,
       burst: this.lmbPressed,
       passHeld: this.anyDown(KEYS.pass),
       zoomOut: this.anyDown(KEYS.zoom),
@@ -331,6 +335,7 @@ export class InputManager {
 
     this.justPressed.clear();
     this.lmbPressed = false;
+    this.rmbPressed = false;
     this.mmbPressed = false;
     this.sawPointerDelta = false;
     if (this.pointerLocked) this.blurGameFocus();

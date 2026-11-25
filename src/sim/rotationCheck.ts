@@ -40,6 +40,7 @@ function blankIntent(zoom = false): InputIntent {
     pass: false,
     shoot: false,
     shootHeld: false,
+    aimCancel: false,
     burst: false,
     passHeld: false,
     zoomOut: zoom,
@@ -2379,6 +2380,103 @@ function checkThrowPoses(): void {
   if (human.hasBall) fail('full release did not leave the hand');
 }
 
+/** Target picks a spot, pull scales with the drag, and right-click drops the throw. */
+function checkAimPowerModes(): void {
+  const aimed = aimingSim();
+  aimed.sim.tunables.powerMode = 'target';
+  aimed.hold.shootHeld = true;
+  aimed.sim.step(1 / 60, aimed.hold);
+  const started = aimed.sim.landingMarker.distance;
+  if (Math.abs(started - aimed.sim.tunables.arcAimDistance) > 2) {
+    fail(`target mode did not start on the aim point (${started.toFixed(1)})`);
+  }
+  const pullIn = blankIntent();
+  pullIn.shootHeld = true;
+  pullIn.lookDelta.y = 0.45;
+  aimed.sim.applyFrameLook(pullIn);
+  if (aimed.sim.landingMarker.distance > started - 4) fail('mouse down did not bring the target in');
+  const bendBefore = aimed.sim.shotAim.bendRight;
+  const slide = blankIntent();
+  slide.shootHeld = true;
+  slide.lookDelta.x = 0.25;
+  aimed.sim.applyFrameLook(slide);
+  if (aimed.sim.shotAim.bendRight <= bendBefore + 0.5) fail('target mode ignored sideways curve');
+  const spot = aimed.sim.shotAim.target.clone();
+  aimed.sim.step(1 / 60, blankIntent());
+  if (aimed.human.hasBall) fail('target release did not throw');
+  let best = aimed.sim.ball.position.distanceTo(spot);
+  for (let i = 0; i < 150; i++) {
+    aimed.sim.step(1 / 60, blankIntent());
+    best = Math.min(best, aimed.sim.ball.position.distanceTo(spot));
+  }
+  if (best > 2.5) fail(`target shot missed the chosen spot (${best.toFixed(2)})`);
+
+  const pushed = aimingSim();
+  pushed.sim.tunables.powerMode = 'target';
+  pushed.hold.shootHeld = true;
+  pushed.sim.step(1 / 60, pushed.hold);
+  const past = blankIntent();
+  past.shootHeld = true;
+  past.lookDelta.y = -0.8;
+  pushed.sim.applyFrameLook(past);
+  if (!pushed.sim.landingMarker.outOfReach) fail('a spot past full power did not dim the marker');
+  if (pushed.sim.charge.amount < 0.98) fail('an out-of-reach target did not clamp power');
+
+  const sling = aimingSim();
+  sling.sim.tunables.powerMode = 'pull';
+  sling.hold.shootHeld = true;
+  sling.sim.step(1 / 60, sling.hold);
+  if (sling.sim.charge.amount > 0.08) fail('pull mode did not start as a soft toss');
+  const back = blankIntent();
+  back.shootHeld = true;
+  back.lookDelta.y = 0.4;
+  sling.sim.applyFrameLook(back);
+  const mid = sling.sim.charge.amount;
+  sling.sim.applyFrameLook(back);
+  if (sling.sim.charge.amount < mid + 0.15) fail('a longer pull did not add power');
+  if (!sling.sim.pullBand.visible) fail('pull mode hid the stretch');
+  const side = blankIntent();
+  side.shootHeld = true;
+  side.lookDelta.x = 0.35;
+  sling.sim.applyFrameLook(side);
+  if (Math.abs(sling.sim.shotAim.bendRight) < 1) fail('sideways drift did not curve the pull');
+  if (sling.sim.landingMarker.distance < 6) fail('pull power did not slide the marker out');
+
+  const held = aimingSim();
+  held.sim.tunables.powerMode = 'hold';
+  held.hold.shootHeld = true;
+  for (let i = 0; i < 20; i++) held.sim.step(1 / 60, held.hold);
+  if (!held.sim.shotAim.active || held.sim.charge.amount < 0.2) fail('cancel setup never started a throw');
+  const drop = blankIntent();
+  drop.shootHeld = true;
+  drop.aimCancel = true;
+  drop.strafe = true;
+  held.sim.step(1 / 60, drop);
+  if (!held.human.hasBall || held.sim.ball.possession !== 'held') fail('right-click released the held throw');
+  if (held.sim.shotAim.active || held.sim.charge.active) fail('right-click left the throw armed');
+  const still = blankIntent();
+  still.shootHeld = true;
+  held.sim.armShotAim(still);
+  held.sim.step(1 / 60, still);
+  if (held.sim.shotAim.active) fail('the held button started a new throw after cancel');
+  held.sim.step(1 / 60, blankIntent());
+  if (!held.human.hasBall) fail('letting go after cancel threw the ball');
+
+  const taps = aimingSim();
+  taps.sim.tunables.powerMode = 'tap';
+  taps.hold.shootHeld = true;
+  taps.sim.step(1 / 60, taps.hold);
+  taps.sim.step(1 / 60, blankIntent());
+  if (!taps.human.hasBall || !taps.sim.shotAim.active) fail('tap window did not stay armed');
+  const abort = blankIntent();
+  abort.aimCancel = true;
+  taps.sim.step(1 / 60, abort);
+  if (!taps.human.hasBall) fail('right-click during the tap window released the ball');
+  if (taps.sim.shotAim.active || taps.sim.charge.active) fail('the tap window stayed open after cancel');
+  for (let i = 0; i < 40; i++) taps.sim.step(1 / 60, blankIntent());
+  if (!taps.human.hasBall) fail('a cancelled tap window threw when it would have closed');
+}
+
 function checkWideCamera(): void {
   const sim = new Simulation(defaultTunables());
   if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
@@ -2444,6 +2542,7 @@ export function runRotationChecks(): void {
   checkThrowPower();
   checkCarryPalm();
   checkThrowPoses();
+  checkAimPowerModes();
   checkWideCamera();
   checkBallFit();
   checkSpeeds();
