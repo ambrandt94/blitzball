@@ -1,5 +1,5 @@
 import { FIXED_DT } from './constants';
-import { takeFixedSteps } from '../sim/timeScale';
+import { ballInFlight, createScaleEase, playbackScale, stepScaleEase, takeFixedSteps } from '../sim/timeScale';
 import { InputManager } from '../input/InputManager';
 import { SceneView } from '../render/SceneView';
 import { Simulation } from '../sim/Simulation';
@@ -57,6 +57,7 @@ export class Game {
   private accum = 0;
   private paused = false;
   private stepOnce = false;
+  private scaleEase = createScaleEase();
   private last = 0;
   private running = false;
   private lastZoom = false;
@@ -141,6 +142,7 @@ export class Game {
         },
       },
     );
+    this.scaleEase = createScaleEase(this.tunables.timeScale);
     this.view.setCharacters(loadCharacterSettings());
     this.view.setIndicators(loadIndicatorSettings());
     const shot = new URLSearchParams(location.search).get('shot');
@@ -265,10 +267,16 @@ export class Game {
 
     const intent = this.pendingEdge ? orEdges(this.pendingEdge, fresh) : fresh;
 
+    const targetScale = playbackScale(
+      this.tunables.timeScale,
+      this.tunables.timeScaleFlightOnly,
+      ballInFlight(this.sim.ball),
+    );
+    stepScaleEase(this.scaleEase, targetScale, dt);
     const clock = takeFixedSteps(
       this.accum,
       dt,
-      this.tunables.timeScale,
+      this.scaleEase.value,
       FIXED_DT,
       8,
       this.paused,

@@ -21,7 +21,15 @@ import { kickFootPoint } from './kick';
 import { authoritativeUp, lookBasis, rotateToward, stabilizeUp, transportUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
-import { TIME_SCALE_DEFAULT, clampTimeScale, takeFixedSteps } from './timeScale';
+import {
+  TIME_SCALE_DEFAULT,
+  ballInFlight,
+  clampTimeScale,
+  createScaleEase,
+  playbackScale,
+  stepScaleEase,
+  takeFixedSteps,
+} from './timeScale';
 
 function fail(message: string): never {
   throw new Error(message);
@@ -4328,6 +4336,42 @@ function checkTimeScale(): void {
   if (full.vel.distanceTo(slow.vel) > 1e-6) {
     fail(`0.1x shot velocity differed by ${full.vel.distanceTo(slow.vel).toFixed(6)}`);
   }
+
+  if (defaultTunables().timeScale !== 1 || defaultTunables().timeScaleFlightOnly) {
+    fail('time scale did not default to 1x with flight-only off');
+  }
+  const held = new Simulation(defaultTunables());
+  held.kickoffLock = 0;
+  const carrier = held.getHuman();
+  carrier.hasBall = true;
+  held.ball.possession = 'held';
+  held.ball.ownerId = carrier.id;
+  held.ball.velocity.set(0, 0, 0);
+  held.ball.arc = null;
+  if (ballInFlight(held.ball)) fail('a held ball counted as in flight');
+  if (playbackScale(0.25, true, ballInFlight(held.ball)) !== 1) fail('flight-only scale was not 1x while the ball was held');
+
+  held.ball.possession = 'free';
+  held.ball.ownerId = null;
+  held.ball.velocity.set(0, 0, 14);
+  if (!ballInFlight(held.ball)) fail('a moving free ball was not in flight');
+  if (playbackScale(0.25, true, ballInFlight(held.ball)) !== 0.25) {
+    fail('flight-only scale did not drop to the set value during flight');
+  }
+  held.ball.velocity.set(0, 0, 0.2);
+  if (ballInFlight(held.ball) || playbackScale(0.25, true, false) !== 1) {
+    fail('a settled ball did not return to 1x');
+  }
+
+  const ease = createScaleEase(1);
+  let elapsed = 0;
+  while (elapsed < 0.1 - 1e-9) {
+    stepScaleEase(ease, playbackScale(0.25, true, true), 1 / 60);
+    elapsed += 1 / 60;
+  }
+  if (Math.abs(ease.value - 0.25) > 1e-3) fail(`flight scale eased to ${ease.value.toFixed(3)} instead of 0.25`);
+  stepScaleEase(ease, playbackScale(0.25, true, false), 0.1);
+  if (Math.abs(ease.value - 1) > 1e-3) fail(`catch did not ease back to 1x (${ease.value.toFixed(3)})`);
 }
 
 function checkCameraSettings(): void {

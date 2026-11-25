@@ -2,10 +2,64 @@
 export const TIME_SCALE_MIN = 0.05;
 export const TIME_SCALE_MAX = 2;
 export const TIME_SCALE_DEFAULT = 1;
+/** Real seconds to blend between 1x and the flight scale. */
+export const FLIGHT_EASE_SECONDS = 0.1;
+/** Below this, a free ball with no arc has settled. */
+export const BALL_SETTLE_SPEED = 1.5;
+
+export interface ScaleEase {
+  value: number;
+  from: number;
+  to: number;
+  left: number;
+}
+
+export function createScaleEase(value = TIME_SCALE_DEFAULT): ScaleEase {
+  return { value, from: value, to: value, left: 0 };
+}
 
 export function clampTimeScale(value: number): number {
   if (!Number.isFinite(value)) return TIME_SCALE_DEFAULT;
   return Math.min(TIME_SCALE_MAX, Math.max(TIME_SCALE_MIN, value));
+}
+
+/** A held or settled ball is not in flight. An arc or a moving free ball is. */
+export function ballInFlight(ball: {
+  possession: string;
+  arc: unknown;
+  velocity: { length(): number };
+}): boolean {
+  if (ball.possession === 'held') return false;
+  if (ball.arc) return true;
+  return ball.velocity.length() > BALL_SETTLE_SPEED;
+}
+
+/**
+ * Slider value, unless flight-only is on and the ball is held, resting, or still.
+ * That case stays at 1x.
+ */
+export function playbackScale(setScale: number, flightOnly: boolean, inFlight: boolean): number {
+  if (flightOnly && !inFlight) return TIME_SCALE_DEFAULT;
+  return clampTimeScale(setScale);
+}
+
+/** Blend `state.value` toward `target` across `FLIGHT_EASE_SECONDS` of real time. */
+export function stepScaleEase(state: ScaleEase, target: number, realDt: number): void {
+  const goal = clampTimeScale(target);
+  const dt = Math.max(0, realDt);
+  if (Math.abs(goal - state.to) > 1e-4) {
+    state.from = state.value;
+    state.to = goal;
+    state.left = FLIGHT_EASE_SECONDS;
+  }
+  if (state.left <= dt) {
+    state.value = state.to;
+    state.left = 0;
+    return;
+  }
+  state.left -= dt;
+  const done = 1 - state.left / FLIGHT_EASE_SECONDS;
+  state.value = state.from + (state.to - state.from) * done;
 }
 
 /**
