@@ -1,4 +1,13 @@
 import * as THREE from 'three';
+import {
+  CAUSTIC_FPS_DEFAULT,
+  LIGHT_BANDS_DEFAULT,
+  WATER_DEEP_DEFAULT,
+  WATER_HALO_SCALE,
+  WATER_TINT_DEFAULT,
+  causticPhase,
+  gradeMul,
+} from './waterSettings';
 
 /**
  * Trailbound water sphere, look v2.
@@ -77,6 +86,8 @@ uniform vec3  uInsideCaustic;
 uniform float uInsideCausticCover;
 uniform float uRays;
 uniform vec3  uRay;
+uniform vec3  uGradeTint;
+uniform vec3  uGradeDeep;
 
 const float B4[16] = float[16](0.,8.,2.,10., 12.,4.,14.,6., 3.,11.,1.,9., 15.,7.,13.,5.);
 float bayer(vec2 vp) {
@@ -87,6 +98,16 @@ vec4 lut(sampler2D t, float i, float n) { return texture(t, vec2((i + 0.5) / n, 
 vec3 toSrgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
 float luma(vec3 c) { if (uBgIsLinear > 0.5) c = toSrgb(c); return dot(c, vec3(0.30, 0.59, 0.11)); }
 
+float webAt(vec2 uv, float frame) {
+  return texture(uWeb, vec2((uv.x + frame) / uWebFrames, uv.y)).a;
+}
+vec3 gradeWater(vec3 c) {
+  float l = dot(c, vec3(0.30, 0.59, 0.11));
+  float dark = 1.0 - smoothstep(0.05, 0.40, l);
+  float hot = smoothstep(0.82, 0.96, l);
+  vec3 g = c * mix(uGradeTint, uGradeDeep, dark);
+  return mix(g, c, hot);
+}
 float webMask(vec3 p, vec3 n, vec2 vp, vec2 cvp, float tile) {
   vec2 uv;
   if (uWebScreen > 0.5) {
@@ -97,7 +118,11 @@ float webMask(vec3 p, vec3 n, vec2 vp, vec2 cvp, float tile) {
     uv = (a.x > a.y && a.x > a.z) ? q.zy : (a.y > a.z ? q.xz : q.xy);
   }
   uv = (floor(fract(uv) * 256.0) + 0.5) / 256.0;
-  return texture(uWeb, vec2((uv.x + uWebFrame) / uWebFrames, uv.y)).a;
+  float span = max(uWebFrames, 1.0);
+  float phase = mod(uWebFrame, span);
+  float f0 = floor(phase);
+  float f1 = mod(f0 + 1.0, span);
+  return mix(webAt(uv, f0), webAt(uv, f1), fract(phase));
 }
 
 void main() {
@@ -125,16 +150,18 @@ void main() {
     vec3 col = lut(uBodyLUT, clamp(k, 0.0, uBodySteps - 1.0), uBodySteps).rgb;
     if (uRefraction < 0.5) col = lut(uFogLUT, stp, 3.0).rgb;
     if (uRefraction < 0.5 && uRays > 0.5 && mod(vp.x - (uResolution.y / uPixel - vp.y) * uRay.z, uRay.x) < uRay.y) col = lut(uBodyLUT, 3.0 - stp, uBodySteps).rgb;
-    if (n.y > -0.2 && webMask(p, n, vp, cvp, uInsideWebTile) > 0.5 && bay < uInsideCausticCover) col = uInsideCaustic;
-    fragColor = vec4(col, 1.0);
+    if (n.y > -0.2 && bay < uInsideCausticCover) {
+      col = mix(col, uInsideCaustic, webMask(p, n, vp, cvp, uInsideWebTile));
+    }
+    fragColor = vec4(gradeWater(col), 1.0);
     return;
   }
 
   if (h < 0.0 || b > 0.0) {
     float dmin = sqrt(max(dot(oc, oc) - b * b, 0.0)) / uRadius;
     if (b > 0.0) discard;
-    if (dmin < uHaloR.y) { vec4 hc = lut(uHaloLUT, 0.0, 2.0); if (bay < hc.a) { fragColor = vec4(hc.rgb, 1.0); return; } }
-    else if (dmin < uHaloR.z) { vec4 hc = lut(uHaloLUT, 1.0, 2.0); if (bay < hc.a) { fragColor = vec4(hc.rgb, 1.0); return; } }
+    if (dmin < uHaloR.y) { vec4 hc = lut(uHaloLUT, 0.0, 2.0); if (bay < hc.a) { fragColor = vec4(gradeWater(hc.rgb), 1.0); return; } }
+    else if (dmin < uHaloR.z) { vec4 hc = lut(uHaloLUT, 1.0, 2.0); if (bay < hc.a) { fragColor = vec4(gradeWater(hc.rgb), 1.0); return; } }
     discard;
   }
 
@@ -159,7 +186,7 @@ void main() {
   col = lut(uBodyLUT, clamp(k, 0.0, uBodySteps - 1.0), uBodySteps).rgb;
 
   vec3 body = col;
-  if (f < uWebMaxF && webMask(p, n, vp, cvp, uWebTile) > 0.5) col = uWebColor;
+  if (f < uWebMaxF) col = mix(col, uWebColor, webMask(p, n, vp, cvp, uWebTile));
 
   for (int i = 0; i < 4; i++) {
     vec4 rc = lut(uRimLUT, float(i), 4.0);
@@ -170,7 +197,7 @@ void main() {
   if (s > uHlSteps.y) col = uHlColB;
   if (fr > uArcF.x && fr < uArcF.y && nv.x > uArcQuad && -nv.y > uArcQuad) col = uHlColB;
   if (any(notEqual(col, body))) alpha = 1.0;
-  fragColor = vec4(col, alpha);
+  fragColor = vec4(gradeWater(col), alpha);
 }`;
 
 export const WATER_PRESETS: Record<
@@ -185,12 +212,11 @@ export const WATER_PRESETS: Record<
     uWebMaxF: number;
     uHlStepsX: number;
     uHlStepsY: number;
-    uCausticFps: number;
   }
 > = {
-  Mockup: { uLensScale: -0.55, uBodyGain: 3.4, uBodyBias: 1, uLowerDarken: 0.35, uRimWidth: 1.0, uFallbackOpacity: 0.75, uWebMaxF: 0.55, uHlStepsX: 0.975, uHlStepsY: 0.993, uCausticFps: 6 },
-  Clearer: { uLensScale: 0.85, uBodyGain: 4.2, uBodyBias: 1, uLowerDarken: 0.55, uRimWidth: 0.85, uFallbackOpacity: 0.5, uWebMaxF: 0.45, uHlStepsX: 0.98, uHlStepsY: 0.995, uCausticFps: 6 },
-  Deeper: { uLensScale: -0.55, uBodyGain: 2.4, uBodyBias: 0, uLowerDarken: 0.15, uRimWidth: 1.15, uFallbackOpacity: 1.0, uWebMaxF: 0.6, uHlStepsX: 0.975, uHlStepsY: 0.993, uCausticFps: 4 },
+  Mockup: { uLensScale: -0.55, uBodyGain: 3.4, uBodyBias: 1, uLowerDarken: 0.35, uRimWidth: 1.0, uFallbackOpacity: 0.75, uWebMaxF: 0.55, uHlStepsX: 0.975, uHlStepsY: 0.993 },
+  Clearer: { uLensScale: 0.85, uBodyGain: 4.2, uBodyBias: 1, uLowerDarken: 0.55, uRimWidth: 0.85, uFallbackOpacity: 0.5, uWebMaxF: 0.45, uHlStepsX: 0.98, uHlStepsY: 0.995 },
+  Deeper: { uLensScale: -0.55, uBodyGain: 2.4, uBodyBias: 0, uLowerDarken: 0.15, uRimWidth: 1.15, uFallbackOpacity: 1.0, uWebMaxF: 0.6, uHlStepsX: 0.975, uHlStepsY: 0.993 },
 };
 
 const hex = (h: string): THREE.Vector3 => {
@@ -218,6 +244,9 @@ export interface WaterSphere {
   setPixel(pixel: number): void;
   setRefraction(on: boolean): void;
   setQuality(quality: 'high' | 'low'): void;
+  setCausticFps(fps: number): void;
+  setLightBands(on: boolean): void;
+  setColors(tint: string, deep: string): void;
   dispose(): void;
 }
 
@@ -231,7 +260,7 @@ export function createWaterSphere(opts: {
   layer?: number;
 } = {}): WaterSphere {
   const base = opts.base ?? './';
-  const haloScale = opts.haloScale ?? 1.07;
+  const haloScale = opts.haloScale ?? WATER_HALO_SCALE;
   let radius = opts.radius ?? 15;
   const loader = new THREE.TextureLoader();
   const u = {
@@ -281,8 +310,10 @@ export function createWaterSphere(opts: {
     uInsideBgGain: { value: 2 },
     uInsideCaustic: { value: hex(WATER[6]) },
     uInsideCausticCover: { value: 0.75 },
-    uRays: { value: 1 },
+    uRays: { value: LIGHT_BANDS_DEFAULT ? 1 : 0 },
     uRay: { value: new THREE.Vector3(70, 11, 0.6) },
+    uGradeTint: { value: new THREE.Vector3(1, 1, 1) },
+    uGradeDeep: { value: new THREE.Vector3(1, 1, 1) },
   };
   const material = new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
@@ -300,7 +331,13 @@ export function createWaterSphere(opts: {
   mesh.renderOrder = 10;
   mesh.frustumCulled = false;
   mesh.layers.set(opts.layer ?? 2);
-  const state = { caustFps: 6, rt: null as THREE.WebGLRenderTarget | null, rtW: 0, rtH: 0, quality: 'high' as 'high' | 'low' };
+  const state = {
+    caustFps: CAUSTIC_FPS_DEFAULT,
+    rt: null as THREE.WebGLRenderTarget | null,
+    rtW: 0,
+    rtH: 0,
+    quality: 'high' as 'high' | 'low',
+  };
   const drawSize = new THREE.Vector2();
 
   function syncRadius(): void {
@@ -343,7 +380,7 @@ export function createWaterSphere(opts: {
     const inside = camera.position.distanceTo(u.uCenter.value) < radius;
     u.uInside.value = inside ? 1 : 0;
     material.side = inside ? THREE.BackSide : THREE.FrontSide;
-    u.uWebFrame.value = Math.floor(time * state.caustFps) % 4;
+    u.uWebFrame.value = causticPhase(time, state.caustFps);
     if (u.uRefraction.value > 0.5) {
       ensureRT(drawSize.x, drawSize.y);
       const mask = camera.layers.mask;
@@ -370,7 +407,6 @@ export function createWaterSphere(opts: {
     u.uFallbackOpacity.value = preset.uFallbackOpacity;
     u.uWebMaxF.value = preset.uWebMaxF;
     u.uHlSteps.value.set(preset.uHlStepsX, preset.uHlStepsY);
-    state.caustFps = preset.uCausticFps;
   }
 
   applyPreset(opts.preset ?? 'Mockup');
@@ -393,6 +429,18 @@ export function createWaterSphere(opts: {
     setQuality(quality: 'high' | 'low'): void {
       state.quality = quality;
     },
+    setCausticFps(fps: number): void {
+      state.caustFps = Math.max(0, fps);
+    },
+    setLightBands(on: boolean): void {
+      u.uRays.value = on ? 1 : 0;
+    },
+    setColors(tint: string, deep: string): void {
+      const tintMul = gradeMul(tint, WATER_TINT_DEFAULT);
+      const deepMul = gradeMul(deep, WATER_DEEP_DEFAULT);
+      u.uGradeTint.value.set(tintMul[0], tintMul[1], tintMul[2]);
+      u.uGradeDeep.value.set(deepMul[0], deepMul[1], deepMul[2]);
+    },
     dispose(): void {
       state.rt?.dispose();
       material.dispose();
@@ -411,11 +459,12 @@ export function createWaterFallback(radius: number, base: string): {
   group: THREE.Group;
   setRadius(radius: number): void;
   update(camera: THREE.Camera, time: number, fps: number): void;
+  setColors(tint: string): void;
   dispose(): void;
 } {
   const loader = new THREE.TextureLoader();
   const web = lutTexture(loader, `${base}water_web_anim_4f_1024x256.png`);
-  web.repeat.set(0.25, 1);
+  web.repeat.set(1, 1);
   const decalMap = lutTexture(loader, `${base}highlight_decal_128.png`);
   const bodyMat = new THREE.MeshBasicMaterial({
     color: 0x2e8a84,
@@ -426,14 +475,37 @@ export function createWaterFallback(radius: number, base: string): {
     side: THREE.FrontSide,
     toneMapped: false,
   });
-  const webMat = new THREE.MeshBasicMaterial({
-    map: web,
+  const webMat = new THREE.ShaderMaterial({
     transparent: true,
-    alphaTest: 0.5,
     depthWrite: false,
     depthTest: true,
     side: THREE.DoubleSide,
     toneMapped: false,
+    uniforms: {
+      uMap: { value: web },
+      uPhase: { value: 0 },
+    },
+    vertexShader: /* glsl */ `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec2 vUv;
+      uniform sampler2D uMap;
+      uniform float uPhase;
+      void main() {
+        float f0 = floor(uPhase);
+        float f1 = mod(f0 + 1.0, 4.0);
+        vec2 uv0 = vec2(vUv.x * 0.25 + f0 * 0.25, vUv.y);
+        vec2 uv1 = vec2(vUv.x * 0.25 + f1 * 0.25, vUv.y);
+        vec4 tex = mix(texture2D(uMap, uv0), texture2D(uMap, uv1), fract(uPhase));
+        if (tex.a < 0.02) discard;
+        gl_FragColor = tex;
+      }
+    `,
   });
   const rimMat = new THREE.MeshBasicMaterial({
     color: 0x8ce6e8,
@@ -477,9 +549,11 @@ export function createWaterFallback(radius: number, base: string): {
   return {
     group,
     setRadius: apply,
+    setColors(tint: string): void {
+      bodyMat.color.set(tint);
+    },
     update(camera, time, fps): void {
-      const frame = Math.floor(time * fps) % 4;
-      web.offset.x = frame * 0.25;
+      webMat.uniforms.uPhase!.value = causticPhase(time, fps);
       const inside = camera.position.length() < built;
       bodyMat.side = inside ? THREE.BackSide : THREE.FrontSide;
       decal.visible = !inside;

@@ -235,6 +235,16 @@ export interface Tunables {
   waterQuality: WaterQuality;
   /** 1 is native. 2 and 3 render smaller and upscale with hard pixels. */
   waterPixelScale: number;
+  /** Caustic web frames per second. */
+  causticFps: number;
+  /** Diagonal light bands across the water view. */
+  showLightBands: boolean;
+  /** Mid water colour. `#2E8A84` is the Clearer body. */
+  waterTint: string;
+  /** Darkest water step. */
+  waterDeep: string;
+  /** Inside distance haze. */
+  waterFog: string;
   /** Instanced colosseum. Off hides it. Low drops towers, banners, and halos. */
   stadiumDetail: StadiumDetail;
   /** Instanced spectator billboards. */

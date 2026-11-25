@@ -95,6 +95,11 @@ export class Game {
           key === 'waterRefraction' ||
           key === 'waterQuality' ||
           key === 'waterPixelScale' ||
+          key === 'causticFps' ||
+          key === 'showLightBands' ||
+          key === 'waterTint' ||
+          key === 'waterDeep' ||
+          key === 'waterFog' ||
           key === 'stadiumDetail' ||
           key === 'crowdDensity'
         ) {
@@ -136,6 +141,7 @@ export class Game {
     this.tackleFill = document.getElementById('tackle-fill')!;
     this.goalBanner = document.getElementById('goal-banner');
 
+    this.view.applyVisuals(this.visuals());
     this.onResize();
     window.addEventListener('resize', this.onResize);
   }
@@ -147,6 +153,11 @@ export class Game {
       waterRefraction: this.tunables.waterRefraction,
       waterQuality: this.tunables.waterQuality,
       waterPixelScale: this.tunables.waterPixelScale,
+      causticFps: this.tunables.causticFps,
+      showLightBands: this.tunables.showLightBands,
+      waterTint: this.tunables.waterTint,
+      waterDeep: this.tunables.waterDeep,
+      waterFog: this.tunables.waterFog,
       stadiumDetail: this.tunables.stadiumDetail,
       crowdDensity: this.tunables.crowdDensity,
     };

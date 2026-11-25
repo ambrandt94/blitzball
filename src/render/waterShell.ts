@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { applyPixelTexel } from './pixelTexel';
+import { CAUSTIC_FPS_DEFAULT, LIGHT_BANDS_DEFAULT } from './waterSettings';
 
 /**
  * Trailbound shell. Colours are sphere_palette.json, written as linear values
@@ -52,6 +53,10 @@ uniform float uInside;
 uniform float uLayer;
 uniform sampler2D uCaustics;
 uniform sampler2D uBands;
+uniform float uCausticFps;
+uniform float uBandsOn;
+uniform vec3 uGradeTint;
+uniform vec3 uGradeDeep;
 
 ${BAYER}
 
@@ -93,17 +98,22 @@ void main() {
   vec2 sph = vec2(atan(vWorld.z, vWorld.x) / tau + 0.5, vWorld.y / 8.0);
   sph += uTime * vec2(0.15, 0.05) / 8.0;
   vec3 bands = texture2D(uBands, sph).rgb;
-  col = mix(col, bands, uInside > 0.5 ? 0.22 : 0.4);
+  if (uBandsOn > 0.5) col = mix(col, bands, uInside > 0.5 ? 0.22 : 0.4);
 
-  float frame = mod(floor(uTime * 6.0), 4.0);
+  float speed = max(uCausticFps, 0.0) / 6.0;
+  float phase = uCausticFps > 0.0 ? mod(uTime * uCausticFps, 4.0) : 0.0;
+  float f0 = floor(phase);
+  float f1 = mod(f0 + 1.0, 4.0);
+  float blend = fract(phase);
   float rad = max(uRadius, 1.0);
   vec2 sphC = vec2(
     atan(vWorld.z, vWorld.x) / tau + 0.5,
     asin(clamp(vWorld.y / rad, -1.0, 1.0)) / 3.14159265 + 0.5
   );
-  sphC = sphC * (rad / 8.0) + uTime * vec2(0.03, 0.012);
-  vec2 cuv = vec2(fract(sphC.x) * 0.25 + frame * 0.25, fract(sphC.y));
-  vec3 cau = texture2D(uCaustics, cuv).rgb;
+  sphC = sphC * (rad / 8.0) + uTime * vec2(0.03, 0.012) * speed;
+  vec2 cuv0 = vec2(fract(sphC.x) * 0.25 + f0 * 0.25, fract(sphC.y));
+  vec2 cuv1 = vec2(fract(sphC.x) * 0.25 + f1 * 0.25, fract(sphC.y));
+  vec3 cau = mix(texture2D(uCaustics, cuv0).rgb, texture2D(uCaustics, cuv1).rgb, blend);
   float cauMix = uInside > 0.5 ? 0.38 : (uLayer < 0.5 ? 0.62 : 0.48);
   col = mix(col, cau, cauMix);
 
@@ -127,7 +137,7 @@ void main() {
   float alpha;
   if (uInside > 0.5 && uLayer > 0.5) {
     col = mix(base, cyan, 0.45);
-    col = mix(col, bands, 0.55);
+    if (uBandsOn > 0.5) col = mix(col, bands, 0.55);
     col += cau * 0.42;
     if (f > 0.28 && b < 0.4) col = aqua;
     if (f > 0.46) col = foam;
@@ -145,13 +155,17 @@ void main() {
   } else if (uLayer > 0.5) {
     col = mix(deep, mid, 0.35);
     col += cau * 0.5;
-    col = mix(col, bands, 0.18);
+    if (uBandsOn > 0.5) col = mix(col, bands, 0.18);
     alpha = 0.42;
   } else {
     alpha = mix(0.55, 0.95, smoothstep(0.35, 0.82, f));
   }
   alpha = quantAlpha(alpha, b);
   if (alpha < 0.02) discard;
+  float luma = dot(col, vec3(0.30, 0.59, 0.11));
+  float dark = 1.0 - smoothstep(0.02, 0.18, luma);
+  float hot = smoothstep(0.55, 0.85, luma);
+  col = mix(col * mix(uGradeTint, uGradeDeep, dark), col, hot);
   gl_FragColor = vec4(col, alpha);
   #include <colorspace_fragment>
 }
@@ -199,6 +213,8 @@ uniform vec3 uBallPos;
 uniform float uRadius;
 uniform float uNear;
 uniform float uImpact;
+uniform vec3 uGradeTint;
+uniform vec3 uGradeDeep;
 void main() {
   vec3 N = normalize(vNormal);
   vec3 V = normalize(uCameraPos - vWorld);
@@ -221,6 +237,7 @@ void main() {
     col += vec3(0.78, 0.96, 1.0) * glow;
     alpha += glow * 0.7;
   }
+  col *= mix(uGradeTint, uGradeDeep, 0.35);
   gl_FragColor = vec4(col, alpha);
 }
 `;
@@ -228,12 +245,17 @@ void main() {
 const CAUSTIC_FRAG = /* glsl */ `
 varying vec2 vPos;
 uniform float uTime;
+uniform float uCausticFps;
 uniform sampler2D uMap;
 void main() {
-  float frame = mod(floor(uTime * 6.0), 4.0);
-  vec2 crawl = vPos + uTime * vec2(0.2, 0.08);
-  vec2 uv = vec2(fract(crawl.x / 8.0) * 0.25 + frame * 0.25, fract(crawl.y / 8.0));
-  vec4 tex = texture2D(uMap, uv);
+  float speed = max(uCausticFps, 0.0) / 6.0;
+  float phase = uCausticFps > 0.0 ? mod(uTime * uCausticFps, 4.0) : 0.0;
+  float f0 = floor(phase);
+  float f1 = mod(f0 + 1.0, 4.0);
+  vec2 crawl = vPos + uTime * vec2(0.2, 0.08) * speed;
+  vec2 uv0 = vec2(fract(crawl.x / 8.0) * 0.25 + f0 * 0.25, fract(crawl.y / 8.0));
+  vec2 uv1 = vec2(fract(crawl.x / 8.0) * 0.25 + f1 * 0.25, fract(crawl.y / 8.0));
+  vec4 tex = mix(texture2D(uMap, uv0), texture2D(uMap, uv1), fract(phase));
   float fade = smoothstep(108.0, 70.0, length(vPos));
   float alpha = tex.a * 0.45 * fade;
   if (alpha < 0.02) discard;
@@ -272,6 +294,9 @@ export interface WaterMeshes {
     radius: number,
   ): void;
   resize(radius: number): void;
+  setCausticFps(fps: number): void;
+  setLightBands(on: boolean): void;
+  setGrade(tint: [number, number, number], deep: [number, number, number]): void;
 }
 
 export function createWaterMeshes(): WaterMeshes {
@@ -290,6 +315,10 @@ export function createWaterMeshes(): WaterMeshes {
     uLayer: { value: 0 },
     uCaustics: { value: caustics },
     uBands: { value: bands },
+    uCausticFps: { value: CAUSTIC_FPS_DEFAULT },
+    uBandsOn: { value: LIGHT_BANDS_DEFAULT ? 1 : 0 },
+    uGradeTint: { value: new THREE.Vector3(1, 1, 1) },
+    uGradeDeep: { value: new THREE.Vector3(1, 1, 1) },
   };
 
   const bind = (mat: THREE.ShaderMaterial, keys: string[]) => {
@@ -299,7 +328,21 @@ export function createWaterMeshes(): WaterMeshes {
       if (bag[key] && source[key]) bag[key] = source[key];
     }
   };
-  const shared = ['uTime', 'uCameraPos', 'uBallPos', 'uRadius', 'uNear', 'uImpact', 'uInside', 'uCaustics', 'uBands'];
+  const shared = [
+    'uTime',
+    'uCameraPos',
+    'uBallPos',
+    'uRadius',
+    'uNear',
+    'uImpact',
+    'uInside',
+    'uCaustics',
+    'uBands',
+    'uCausticFps',
+    'uBandsOn',
+    'uGradeTint',
+    'uGradeDeep',
+  ];
 
   const makeShell = (layer: number, side: THREE.Side) => {
     const mat = new THREE.ShaderMaterial({
@@ -359,11 +402,13 @@ export function createWaterMeshes(): WaterMeshes {
       uRadius: uniforms.uRadius,
       uNear: uniforms.uNear,
       uImpact: uniforms.uImpact,
+      uGradeTint: uniforms.uGradeTint,
+      uGradeDeep: uniforms.uGradeDeep,
     },
     vertexShader: CLASSIC_VERT,
     fragmentShader: CLASSIC_FRAG,
   });
-  bind(classicMat, ['uTime', 'uCameraPos', 'uBallPos', 'uRadius', 'uNear', 'uImpact']);
+  bind(classicMat, ['uTime', 'uCameraPos', 'uBallPos', 'uRadius', 'uNear', 'uImpact', 'uGradeTint', 'uGradeDeep']);
   const classicMesh = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 72), classicMat);
   classicMesh.name = 'classic-water';
   classicMesh.renderOrder = 2;
@@ -379,12 +424,13 @@ export function createWaterMeshes(): WaterMeshes {
     polygonOffsetUnits: -2,
     uniforms: {
       uTime: uniforms.uTime,
+      uCausticFps: uniforms.uCausticFps,
       uMap: { value: overlay },
     },
     vertexShader: CAUSTIC_VERT,
     fragmentShader: CAUSTIC_FRAG,
   });
-  bind(causticMat, ['uTime']);
+  bind(causticMat, ['uTime', 'uCausticFps']);
   const caustic = new THREE.Mesh(new THREE.CircleGeometry(108, 64), causticMat);
   caustic.name = 'caustic-overlay';
   caustic.rotation.x = -Math.PI / 2;
@@ -408,6 +454,16 @@ export function createWaterMeshes(): WaterMeshes {
     classicMesh,
     caustic,
     resize,
+    setCausticFps(fps: number): void {
+      uniforms.uCausticFps.value = Math.max(0, fps);
+    },
+    setLightBands(on: boolean): void {
+      uniforms.uBandsOn.value = on ? 1 : 0;
+    },
+    setGrade(tint, deep): void {
+      uniforms.uGradeTint.value.set(tint[0], tint[1], tint[2]);
+      uniforms.uGradeDeep.value.set(deep[0], deep[1], deep[2]);
+    },
     update(time, cameraPosition, ballPosition, nearShell, impact, style, radius) {
       uniforms.uTime.value = time;
       uniforms.uCameraPos.value.copy(cameraPosition);
