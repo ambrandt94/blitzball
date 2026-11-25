@@ -177,6 +177,7 @@ function checkPreviewMatchesFlight(): void {
     if (kick) hold.kickHeld = true;
     else hold.shootHeld = true;
     sim.armShotAim(hold);
+    sim.applyFrameLook(hold);
     sim.step(1 / 60, hold);
     return { sim, human };
   };
@@ -278,6 +279,7 @@ function checkCurveAimOffset(): void {
     if (kick) intent.kickHeld = true;
     else intent.shootHeld = true;
     sim.armShotAim(intent);
+    sim.applyFrameLook(intent);
     for (let i = 0; i < 20 && sim.charge.amount < 0.98; i++) sim.step(1 / 60, intent);
     return { sim, intent };
   };
@@ -386,6 +388,7 @@ function checkFlightReach(): void {
     if (kick) intent.kickHeld = true;
     else intent.shootHeld = true;
     sim.armShotAim(intent);
+    sim.applyFrameLook(intent);
     sim.step(1 / 60, intent);
     return { sim, intent };
   };
@@ -1930,6 +1933,112 @@ function checkArcDefault(): void {
   if (bias < 0.12 * chord * 0.35) fail(`hand curve slider did nothing (${bias.toFixed(2)})`);
 }
 
+/**
+ * A throw or kick opens straight. Mouse movement from before the hold, and the
+ * sample that starts it, do not bend. Later movement does, and a new hold
+ * starts at zero again. The preview, the aim-offset landing, and the flight match.
+ */
+function checkHoldStartsStraight(): void {
+  const straightness = (sim: Simulation): number => Math.abs(arcRightOffset(sim));
+  const run = (kick: boolean) => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.setSoloOpponent(false);
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = 0;
+    sim.tunables.shotCarry = 0;
+    sim.tunables.kickWindup = 0.05;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.lastOwnerId = human.id;
+    sim.ball.position.copy(holdPoint(sim));
+    sim.yaw = 0.2;
+    sim.pitch = 0.1;
+    const before = blankIntent();
+    before.lookDelta.x = 0.4;
+    sim.applyFrameLook(before);
+    const yaw = sim.yaw;
+    const hold = blankIntent();
+    hold.strafe = kick;
+    hold.lookDelta.x = 0.35;
+    if (kick) hold.kickHeld = true;
+    else hold.shootHeld = true;
+    sim.armShotAim(hold);
+    sim.applyFrameLook(hold);
+    const label = kick ? 'kick' : 'throw';
+    if (Math.abs(sim.shotAim.bendRight) > 0.01 || Math.abs(sim.shotAim.bendUp) > 0.01) {
+      fail(`${label} hold began bent (${sim.shotAim.bendRight.toFixed(2)})`);
+    }
+    if (Math.abs(sim.yaw - yaw) > 1e-6) fail(`${label} hold turned the camera with the press`);
+    if (sim.chargeGhost.length < 4) fail(`${label} hold hid the straight preview`);
+    if (straightness(sim) > 0.08) fail(`${label} preview was not straight (${straightness(sim).toFixed(3)})`);
+    const aim = lookBasis(sim.yaw, sim.pitch, false).forward;
+    const toMark = sim.shotAim.target.clone().sub(holdPoint(sim));
+    if (toMark.lengthSq() < 1e-6 || toMark.normalize().dot(aim) < 0.98) {
+      fail(`${label} landing left the aim ray before any curve`);
+    }
+    const drag = blankIntent();
+    drag.strafe = kick;
+    drag.lookDelta.x = -0.22;
+    if (kick) drag.kickHeld = true;
+    else drag.shootHeld = true;
+    sim.applyFrameLook(drag);
+    const expect = -0.22 * sim.tunables.arcBendSpeed;
+    if (Math.abs(sim.shotAim.bendRight - expect) > 0.05) {
+      fail(`${label} curve ${sim.shotAim.bendRight.toFixed(2)} != ${expect.toFixed(2)}`);
+    }
+    if (straightness(sim) < 0.35) fail(`${label} preview ignored the post-hold drag`);
+    const ghost = sim.chargeGhost.map((p) => p.clone());
+    const landing = sim.shotAim.target.clone();
+    const release = blankIntent();
+    release.strafe = kick;
+    sim.step(1 / 60, release);
+    let guard = 0;
+    while (!sim.ball.arc && guard < 12) {
+      sim.step(1 / 60, release);
+      guard++;
+    }
+    const arc = sim.ball.arc;
+    if (!arc) fail(`${label} release did not fly`);
+    const point = new THREE.Vector3();
+    let worst = 0;
+    const n = Math.min(ghost.length, SHOT_ARC.samples + 1);
+    for (let i = 0; i < n; i++) {
+      quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
+      worst = Math.max(worst, point.distanceTo(ghost[i]!));
+    }
+    if (worst > 0.35) fail(`${label} flight left the curved preview by ${worst.toFixed(2)}`);
+    if (arc.p2.distanceTo(landing) > 0.45) fail(`${label} landing left the aim-offset spot`);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.arc = null;
+    sim.ball.position.copy(holdPoint(sim));
+    const again = blankIntent();
+    again.strafe = kick;
+    again.lookDelta.x = 0.5;
+    if (kick) again.kickHeld = true;
+    else again.shootHeld = true;
+    sim.armShotAim(again);
+    sim.applyFrameLook(again);
+    if (Math.abs(sim.shotAim.bendRight) > 0.01 || Math.abs(sim.shotAim.bendUp) > 0.01) {
+      fail(`${label} restart kept the old curve`);
+    }
+    if (straightness(sim) > 0.08) fail(`${label} restart was not straight`);
+  };
+  run(false);
+  run(true);
+}
+
 function checkHoldLookOrder(): void {
   const { sim, hold } = aimingSim();
   const yaw = sim.yaw;
@@ -1939,9 +2048,13 @@ function checkHoldLookOrder(): void {
   sim.applyFrameLook(hold);
   if (!sim.shotAim.active) fail('shot aim was not armed before look');
   if (Math.abs(sim.yaw - yaw) > 1e-6) fail('the press-drag turned the camera');
+  if (Math.abs(sim.shotAim.bendRight) > 0.01 || Math.abs(sim.shotAim.bendUp) > 0.01) {
+    fail('the press sample bent the arc');
+  }
+  sim.applyFrameLook(hold);
   const expect = 0.25 * sim.tunables.arcBendSpeed;
   if (Math.abs(sim.shotAim.bendRight - expect) > 0.05) {
-    fail(`press-drag bend ${sim.shotAim.bendRight.toFixed(2)} != ${expect.toFixed(2)}`);
+    fail(`later drag bend ${sim.shotAim.bendRight.toFixed(2)} != ${expect.toFixed(2)}`);
   }
 }
 
@@ -2893,6 +3006,8 @@ function checkThrowAim(): void {
   sim.armShotAim(shot);
   sim.applyFrameLook(shot);
   if (Math.abs(sim.yaw - lockedYaw) > 1e-6) fail('throw hold did not freeze the camera');
+  if (Math.abs(sim.shotAim.bendRight) > 0.01) fail('throw hold began with a curve');
+  sim.applyFrameLook(shot);
   if (sim.shotAim.bendRight < 0.15 * sim.tunables.arcBendSpeed) fail('throw hold did not bend');
   sim.step(1 / 60, shot);
   sim.updateAimPresentation(shot, 1 / 60);
@@ -4121,6 +4236,7 @@ export function runRotationChecks(): void {
   checkShapeMath();
   checkArcDefault();
   checkHoldLookOrder();
+  checkHoldStartsStraight();
   checkPowerMeter();
   checkTeammateLock();
   checkPractice();

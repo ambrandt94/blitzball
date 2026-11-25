@@ -239,8 +239,8 @@ export class Game {
     const fresh = this.input.sample(dt);
     if (fresh.toggleDev) this.dev.toggle();
     // Mouse look is a per-frame distance, not a per-tick rate. Arm the shot
-    // first so this sample's drag bends the arc instead of yawing the camera.
-    // Apply it even when this frame does not run a physics step, and never more than once.
+    // first so this sample is the curve's origin: it does not bend the arc
+    // and it does not turn the camera. Later samples do. Apply it once.
     this.sim.armShotAim(fresh);
     this.sim.applyFrameLook(fresh);
     this.sim.nudgeAimDistance(fresh.aimRangeDelta);

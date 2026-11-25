@@ -152,6 +152,8 @@ export class Simulation {
   private kickCharge = 0;
   private kickSquared = false;
   private kickRecover = 0;
+  /** The look sample that opened the hold is the curve origin, not a bend. */
+  private holdLookPending = false;
   /** What the view uses to cock and swing the kicking leg. */
   readonly kickVisual = { playerId: -1, power: 0, swinging: false };
   /** Ghost trail samples while charging (beginner aid) or aiming an arc. */
@@ -865,9 +867,8 @@ export class Simulation {
    * mouse-down. Each invert toggle multiplies one axis, once.
    */
   /**
-   * Start the shot hold before mouse look is consumed. The press and the
-   * drag land in the same sample; applying look first turns the camera and
-   * the arc never sees that delta.
+   * Start the shot hold before mouse look is consumed. The sample that opens
+   * the hold is the curve's origin: it does not bend the arc or turn the camera.
    */
   armShotAim(intent: InputIntent): void {
     if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
@@ -879,7 +880,10 @@ export class Simulation {
     const kick = intent.strafe && intent.kickHeld;
     const shoot = intent.shootHeld && !kick;
     if (!kick && !shoot) return;
-    if (!this.shotAim.active) this.beginShotAim();
+    if (!this.shotAim.active) {
+      this.beginShotAim();
+      this.holdLookPending = true;
+    }
     this.charge.kind = kick ? 'kick' : 'shoot';
   }
 
@@ -889,6 +893,14 @@ export class Simulation {
     // While a shot is held the view stays put so the marker doesn't swim,
     // and the same mouse deltas bend the Bezier control point instead.
     if (this.shotAim.active) {
+      if (this.holdLookPending) {
+        this.holdLookPending = false;
+        if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') {
+          this.refreshShotTarget();
+          this.updateChargeGhost(this.getHuman());
+        }
+        return;
+      }
       const mode = this.tunables.powerMode;
       if (mode === 'target') {
         // Horizontal bends the arc. Vertical, and the wheel, slide the landing spot.
@@ -1665,6 +1677,7 @@ export class Simulation {
     this.shotAim.bendUp = 0;
     this.shotAim.lockId = null;
     this.shotAimManual = false;
+    this.holdLookPending = false;
     this.power.reset();
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
