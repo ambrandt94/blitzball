@@ -73,9 +73,9 @@
    "Tread": 1.6
   },
   "tris": {
-   "Body_rest": 2229,
-   "Body_pelvis": 304,
-   "Body_torso": 243,
+   "Body_rest": 2490,
+   "Body_pelvis": 402,
+   "Body_torso": 182,
    "Body_thigh_L": 104,
    "Body_thigh_R": 104,
    "Hair": 198
@@ -143,7 +143,7 @@
     "trunks:leg_R": "Garment_trunks_leg_R",
     "trunks:upper": "Garment_trunks_upper"
    },
-   "tris": 470,
+   "tris": 534,
    "textureSize": 256,
    "texelsPerMetre": 280.0
   },
@@ -201,7 +201,7 @@
     "Garment_boardshorts"
    ],
    "segments": {},
-   "tris": 448,
+   "tris": 512,
    "textureSize": 256,
    "texelsPerMetre": 280.0
   },
@@ -236,7 +236,7 @@
     "Garment_boardshorts_asym"
    ],
    "segments": {},
-   "tris": 404,
+   "tris": 468,
    "textureSize": 256,
    "texelsPerMetre": 280.0
   }
@@ -247,7 +247,7 @@
    "garments": [
     "onepiece"
    ],
-   "tris": 3634,
+   "tris": 3895,
    "materials": [
     "Skin",
     "Hair",
@@ -259,7 +259,7 @@
    "garments": [
     "trunks"
    ],
-   "tris": 3348,
+   "tris": 3612,
    "materials": [
     "Skin",
     "Hair",
@@ -271,7 +271,7 @@
    "garments": [
     "boardshorts"
    ],
-   "tris": 3118,
+   "tris": 3382,
    "materials": [
     "Skin",
     "Hair",
@@ -284,7 +284,7 @@
     "trunks",
     "boardshorts_asym"
    ],
-   "tris": 3286,
+   "tris": 3550,
    "materials": [
     "Skin",
     "Hair",
