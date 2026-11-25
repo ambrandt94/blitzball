@@ -179,6 +179,13 @@ export interface PlayerState {
   actionPose: ActionPose;
   /** Seconds left on a one-shot pose (claim / pass / shoot). */
   actionPoseTime: number;
+  /** Full length of the current timed pose. The view plays a throw across it. */
+  actionPoseDuration: number;
+  /** Power captured when a pass or shot started. 0..1. */
+  throwPosePower: number;
+  /** Curve captured at release, about -1..1, so the follow-through can keep the wrist twist. */
+  throwCurveRight: number;
+  throwCurveUp: number;
 }
 
 export interface BallState {

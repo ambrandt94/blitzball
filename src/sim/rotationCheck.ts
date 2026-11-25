@@ -8,6 +8,7 @@ import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
+import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
 import { defaultTunables } from '../ui/DevPanel';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
@@ -2304,6 +2305,80 @@ function checkCarryPalm(): void {
   if (checkSim.ball.velocity.z < 6) fail('checked palm ball was not thrown forward');
 }
 
+/** Soft and full throws are different poses, and the release starts on the windup. */
+function checkThrowPoses(): void {
+  const low = sampleThrowPose(0, -1, false, 0, 0, true);
+  const high = sampleThrowPose(1, -1, false, 0, 0, true);
+  const cradle = Math.hypot(low.handX + 0.16, low.handY - 0.2, low.handZ - 0.5);
+  if (cradle > 0.28) fail(`soft windup left the cradle (${cradle.toFixed(2)})`);
+  if (!(high.handZ < low.handZ - 0.2)) fail('full windup did not cock the hand back');
+  if (Math.abs(high.chestYaw) < Math.abs(low.chestYaw) + 0.2) fail('full windup did not twist the chest');
+  if (high.offWeight < 0.6) fail('full windup did not bring the off arm in');
+  if (low.offWeight > 0.35) fail('soft windup pulled the off arm off the stroke');
+
+  const letGo = sampleThrowPose(1, 0, false, 0, 0, true);
+  const popped = Math.hypot(letGo.handX - high.handX, letGo.handY - high.handY, letGo.handZ - high.handZ);
+  if (popped > 0.02) fail(`release popped off the windup (${popped.toFixed(3)})`);
+
+  const snap = sampleThrowPose(1, 0.25, false, 0, 0, true);
+  if (snap.handZ < high.handZ + 0.15) fail('full throw did not snap the hand forward');
+  const softSnap = sampleThrowPose(0, 0.25, false, 0, 0, true);
+  const fullArc = Math.hypot(snap.handX - high.handX, snap.handY - high.handY, snap.handZ - high.handZ);
+  const softArc = Math.hypot(softSnap.handX - low.handX, softSnap.handY - low.handY, softSnap.handZ - low.handZ);
+  if (fullArc < softArc + 0.15) fail('full throw arc was not larger than the soft flick');
+
+  const done = sampleThrowPose(1, 1, false, 0, 0, true);
+  if (done.armWeight > 0.02) fail('follow-through did not blend back into the stroke');
+
+  const pass = sampleThrowPose(1, -1, true, 0, 0, true);
+  if (pass.handZ < high.handZ + 0.2) fail('a pass windup was as cocked as a full shot');
+
+  const straight = sampleThrowPose(0.8, -1, false, 0, 0, true);
+  const curved = sampleThrowPose(0.8, -1, false, 1, 0, true);
+  if (!(curved.handX < straight.handX - 0.02)) fail('curve did not lead the throwing hand');
+  const left = sampleThrowPose(1, -1, false, 0, 0, false);
+  if (left.handX <= 0.02) fail('left throw arm did not mirror');
+  if (left.chestYaw < 0.2) fail('left throw did not mirror the chest');
+
+  if (Math.abs(throwPoseSeconds(0) - 0.25) > 0.001) fail('soft throw was not a short follow-through');
+  if (Math.abs(throwPoseSeconds(1) - 0.45) > 0.001) fail('full throw was not a long follow-through');
+  if (throwPoseSeconds(1, true) >= throwPoseSeconds(1)) fail('a pass follow-through was not lighter');
+
+  const soft = new Simulation(defaultTunables());
+  soft.kickoffLock = 0;
+  soft.tunables.powerMode = 'hold';
+  quietRoster(soft);
+  const swimmer = soft.getHuman();
+  swimmer.position.set(0, 0, 0);
+  swimmer.velocity.set(0, 0, 0);
+  swimmer.facing.set(0, 0, 1);
+  swimmer.up.set(0, 1, 0);
+  swimmer.hasBall = true;
+  soft.ball.possession = 'held';
+  soft.ball.ownerId = swimmer.id;
+  soft.ball.lastOwnerId = swimmer.id;
+  soft.ball.position.set(0, 0.15, 0.85);
+  const press = blankIntent();
+  press.shootHeld = true;
+  soft.step(1 / 60, press);
+  soft.step(1 / 60, blankIntent());
+  if (swimmer.actionPose !== 'shoot') fail('soft release did not play the throw');
+  if (swimmer.actionPoseDuration < 0.24 || swimmer.actionPoseDuration > 0.32) {
+    fail(`soft follow-through was ${swimmer.actionPoseDuration.toFixed(3)}s`);
+  }
+
+  const { sim, human, hold } = aimingSim();
+  sim.tunables.powerMode = 'hold';
+  sim.tunables.shotPowerRate = 4;
+  fillThrow(sim, hold);
+  if (human.actionPose !== 'hold') fail('a full charge left the carry pose');
+  sim.step(1 / 60, blankIntent());
+  const posed: string = human.actionPose;
+  if (posed !== 'shoot') fail('full release did not play the throw');
+  if (human.actionPoseDuration < 0.42) fail(`full follow-through was short (${human.actionPoseDuration.toFixed(3)}s)`);
+  if (human.hasBall) fail('full release did not leave the hand');
+}
+
 function checkWideCamera(): void {
   const sim = new Simulation(defaultTunables());
   if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
@@ -2368,6 +2443,7 @@ export function runRotationChecks(): void {
   checkThrowAim();
   checkThrowPower();
   checkCarryPalm();
+  checkThrowPoses();
   checkWideCamera();
   checkBallFit();
   checkSpeeds();

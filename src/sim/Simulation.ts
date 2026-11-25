@@ -42,6 +42,7 @@ import {
   segmentScores,
 } from './goal';
 import { clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
+import { throwPoseSeconds } from '../render/throwPose';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
 /** Fresh catches ease into the palm instead of popping onto the hand bone. */
@@ -83,6 +84,10 @@ function makePlayer(
     active,
     actionPose: 'none',
     actionPoseTime: 0,
+    actionPoseDuration: 0,
+    throwPosePower: 0,
+    throwCurveRight: 0,
+    throwCurveUp: 0,
   };
 }
 
@@ -285,6 +290,10 @@ export class Simulation {
         p.catchStance = false;
         p.actionPose = 'none';
         p.actionPoseTime = 0;
+        p.actionPoseDuration = 0;
+        p.throwPosePower = 0;
+        p.throwCurveRight = 0;
+        p.throwCurveUp = 0;
       }
     }
 
@@ -736,8 +745,20 @@ export class Simulation {
   }
 
   private playPose(player: PlayerState, pose: ActionPose, seconds: number): void {
+    const switching = player.actionPose !== pose;
     player.actionPose = pose;
     player.actionPoseTime = Math.max(player.actionPoseTime, seconds);
+    if (switching || player.actionPoseDuration < player.actionPoseTime) {
+      player.actionPoseDuration = player.actionPoseTime;
+    }
+  }
+
+  /** Remember the power and the curve so the follow-through matches the throw that just left the hand. */
+  private rememberThrow(player: PlayerState, power: number): void {
+    player.throwPosePower = THREE.MathUtils.clamp(power, 0, 1);
+    const aimed = player.id === this.humanId && this.shotAim.active;
+    player.throwCurveRight = aimed ? THREE.MathUtils.clamp(this.shotAim.bendRight / 22, -1, 1) : 0;
+    player.throwCurveUp = aimed ? THREE.MathUtils.clamp(this.shotAim.bendUp / 22, -1, 1) : 0;
   }
 
   private resolveTeammate(player: PlayerState, intent: InputIntent): void {
@@ -757,7 +778,8 @@ export class Simulation {
     const speed = Math.min(passSpeed, Math.max(passSpeed * 0.45, dist * this.tunables.ballDrag * 1.25));
     this.noteThrow(player);
     this.releaseBall(aim.multiplyScalar(speed).addScaledVector(player.velocity, 0.15));
-    this.playPose(player, 'pass', 0.28);
+    this.rememberThrow(player, 0.4);
+    this.playPose(player, 'pass', throwPoseSeconds(0.4, true));
     this.match.statusMessage = 'Pass back';
   }
 
@@ -1099,7 +1121,8 @@ export class Simulation {
       this.fireAimedShot(human);
       return;
     }
-    // Stay in the carry pose. A shoot windup pulls the arms off the ball.
+    // Stay in the hold pose so the ball remains in the palm. The view cocks
+    // that hand from the live power without leaving the carry.
     human.actionPose = 'hold';
     human.actionPoseTime = 0;
     this.refreshShotTarget();
@@ -1374,7 +1397,8 @@ export class Simulation {
     const impulse = aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.35));
     this.noteThrow(player);
     this.releaseBall(impulse);
-    this.playPose(player, 'shoot', 0.3);
+    this.rememberThrow(player, charge);
+    this.playPose(player, 'shoot', throwPoseSeconds(charge));
     this.match.statusMessage = charge > 0.7 ? 'Charged shot!' : 'Shot';
   }
 
@@ -1405,13 +1429,14 @@ export class Simulation {
     };
     quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 0, arc.duration);
     const thrownToMate = this.shotAim.lockId !== null;
+    this.rememberThrow(player, charge);
     this.shotAim.active = false;
     this.shotAim.bendRight = 0;
     this.shotAim.bendUp = 0;
     this.shotAim.lockId = null;
     this.shotAimManual = false;
     this.power.reset();
-    this.playPose(player, 'shoot', 0.3);
+    this.playPose(player, 'shoot', throwPoseSeconds(charge));
     this.match.statusMessage = thrownToMate ? 'Throw to teammate' : charge > 0.7 ? 'High power!' : 'Arc shot';
   }
 
@@ -1547,7 +1572,8 @@ export class Simulation {
     const speed = Math.max(4, this.tunables.passSpeed) * (0.65 + 0.35 * charge);
     this.noteThrow(player);
     this.releaseBall(aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.25)));
-    this.playPose(player, 'pass', 0.28);
+    this.rememberThrow(player, charge);
+    this.playPose(player, 'pass', throwPoseSeconds(charge, true));
     this.match.statusMessage = best ? 'Pass' : 'Pass (no target)';
   }
 
