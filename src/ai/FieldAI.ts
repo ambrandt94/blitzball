@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { BallState, InputIntent, PlayerState, Tunables } from '../game/types';
+import { goalieSkill01 } from './GoalieAI';
 import { goalCenter } from '../sim/math';
 
 /**
@@ -423,7 +424,7 @@ export class FieldAI {
     for (const mate of mates) {
       if (mate.id !== self.id && mate.position.distanceTo(own) + 0.5 < myOwn) deepest = false;
     }
-    const goalie = deepest ? (self.team === 0 ? tunables.goalieSkillA : tunables.goalieSkillB) / 100 : 0;
+    const goalie = deepest ? goalieSkill01(tunables, self.team) : 0;
     const press = self.position.distanceTo(carrier.position) < 14 - goalie * 6;
     if (press && goalie < 0.85) {
       const to = carrier.position.clone().sub(self.position);

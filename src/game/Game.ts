@@ -66,10 +66,12 @@ export class Game {
   private chargeFill: HTMLElement;
   private chargeLabel: HTMLElement;
   private chargePips: HTMLElement;
+  private tackleEl: HTMLElement;
+  private tackleFill: HTMLElement;
   private goalBanner: HTMLElement | null;
   private lastThrowFeedback = 0;
   private audioCtx: AudioContext | null = null;
-  private shotMode: 'wide' | 'inside' | 'ball' | 'windup' | 'bank' | null = null;
+  private shotMode: 'wide' | 'inside' | 'ball' | 'windup' | 'bank' | 'play' | null = null;
 
   constructor(app: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -78,26 +80,40 @@ export class Game {
     this.view = new SceneView(this.canvas);
     this.input = new InputManager(this.canvas);
     this.sim = new Simulation(this.tunables);
-    this.dev = new DevPanel(document.getElementById('dev-panel')!, this.tunables, (key) => {
-      if (key === 'goalAxisUp') this.sim.orientAfterUpToggle();
-      if (key === 'arenaRadius') {
-        this.sim.resizeArena(this.tunables.arenaRadius);
-        this.view.rebuildArena();
-      }
-      if (
-        key === 'waterStyle' ||
-        key === 'waterPreset' ||
-        key === 'waterRefraction' ||
-        key === 'waterQuality' ||
-        key === 'waterPixelScale' ||
-        key === 'stadiumDetail' ||
-        key === 'crowdDensity'
-      ) {
-        this.view.applyVisuals(this.visuals());
-      }
-    });
+    this.dev = new DevPanel(
+      document.getElementById('dev-panel')!,
+      this.tunables,
+      (key) => {
+        if (key === 'goalAxisUp') this.sim.orientAfterUpToggle();
+        if (key === 'arenaRadius') {
+          this.sim.resizeArena(this.tunables.arenaRadius);
+          this.view.rebuildArena();
+        }
+        if (
+          key === 'waterStyle' ||
+          key === 'waterPreset' ||
+          key === 'waterRefraction' ||
+          key === 'waterQuality' ||
+          key === 'waterPixelScale' ||
+          key === 'stadiumDetail' ||
+          key === 'crowdDensity'
+        ) {
+          this.view.applyVisuals(this.visuals());
+        }
+      },
+      {
+        listBots: () => this.sim.listBots(),
+        swimmerCount: (team) => this.sim.swimmerCount(team),
+        maxSwimmers: () => this.sim.maxSwimmers(),
+        addBot: (team, behavior) => this.sim.addBot(team, behavior),
+        removeBot: (id) => this.sim.removeBot(id),
+        setBotBehavior: (id, behavior) => this.sim.setBotBehavior(id, behavior),
+        applyRoster: (spec) => this.sim.applyRoster(spec),
+        exportRoster: () => this.sim.exportRoster(),
+      },
+    );
     const shot = new URLSearchParams(location.search).get('shot');
-    if (shot === 'wide' || shot === 'inside' || shot === 'ball' || shot === 'windup' || shot === 'bank') {
+    if (shot === 'wide' || shot === 'inside' || shot === 'ball' || shot === 'windup' || shot === 'bank' || shot === 'play') {
       this.shotMode = shot;
       this.tunables.showDebugStats = false;
       const hud = document.getElementById('hud');
@@ -116,6 +132,8 @@ export class Game {
     this.chargeFill = document.getElementById('charge-fill')!;
     this.chargeLabel = document.getElementById('charge-label')!;
     this.chargePips = document.getElementById('charge-pips')!;
+    this.tackleEl = document.getElementById('tackle-meter')!;
+    this.tackleFill = document.getElementById('tackle-fill')!;
     this.goalBanner = document.getElementById('goal-banner');
 
     this.onResize();
@@ -286,6 +304,11 @@ export class Game {
       this.syncPips(0, 0);
     }
 
+    const tackle = this.sim.tackleCharge;
+    this.tackleEl.classList.toggle('visible', tackle.active);
+    this.tackleEl.setAttribute('aria-hidden', tackle.active ? 'false' : 'true');
+    if (tackle.active) this.tackleFill.style.width = `${Math.round(tackle.amount * 100)}%`;
+
     this.debugStats.style.display = this.tunables.showDebugStats ? 'block' : 'none';
     if (this.tunables.showDebugStats) {
       const h = this.sim.getHuman();
@@ -307,14 +330,20 @@ export class Game {
           ? `landing ${this.sim.landingMarker.lockId !== null ? 'mate' : 'free'}`
           : 'landing off',
         this.sim.getHuman().catchReady ? 'catch ready' : this.sim.catchStance ? 'squared up' : 'catch off',
-        this.tunables.soloOpponent
-          ? 'test opponent'
-          : `mate + ${this.tunables.defenseActive ? 'defense chases' : 'defense holds'}`,
+        this.rosterLine(),
         this.tunables.showAiIntent
           ? this.sim.aiIntents.map((mark) => `ai${mark.id} ${mark.kind}`).join(' ') || 'ai idle'
           : 'ai intent hidden',
       ].join('\n');
     }
+  }
+
+  private rosterLine(): string {
+    const roster = this.sim.exportRoster();
+    const chasers = [...roster.home, ...roster.away].filter((behavior) => behavior === 'chaser').length;
+    const chase = chasers === 0 ? '' : chasers === 1 ? ' · 1 chaser' : ` · ${chasers} chasers`;
+    const defense = this.tunables.defenseActive ? ' · defense chases' : '';
+    return `roster home ${roster.home.length} · away ${roster.away.length}${chase}${defense}`;
   }
 
   private syncPips(count: number, filled: number): void {

@@ -11,8 +11,7 @@ const DRILL_WANDER = 0.3;
 
 export class DummyAI {
   private field = new FieldAI();
-  private wander = new THREE.Vector3(1, 0, 0);
-  private wanderTime = 0;
+  private wander = new Map<number, { dir: THREE.Vector3; time: number }>();
 
   think(
     self: PlayerState,
@@ -39,15 +38,16 @@ export class DummyAI {
   thinkDrill(self: PlayerState, ball: BallState, tunables: Tunables, dt: number): InputIntent {
     const intent = emptyIntent();
     if (self.hasBall) {
-      this.wanderTime -= dt;
-      if (this.wanderTime <= 0) {
-        this.wanderTime = 1.3 + Math.random() * 0.8;
+      const wander = this.drillWander(self.id);
+      wander.time -= dt;
+      if (wander.time <= 0) {
+        wander.time = 1.3 + Math.random() * 0.8;
         const a = Math.random() * Math.PI * 2;
-        this.wander.set(Math.cos(a), (Math.random() - 0.5) * 0.4, Math.sin(a));
-        if (this.wander.lengthSq() > 1e-6) this.wander.normalize();
+        wander.dir.set(Math.cos(a), (Math.random() - 0.5) * 0.4, Math.sin(a));
+        if (wander.dir.lengthSq() > 1e-6) wander.dir.normalize();
       }
-      intent.move.copy(this.wander).multiplyScalar(DRILL_WANDER);
-      intent.up = this.wander.y * DRILL_WANDER;
+      intent.move.copy(wander.dir).multiplyScalar(DRILL_WANDER);
+      intent.up = wander.dir.y * DRILL_WANDER;
       return intent;
     }
 
@@ -58,6 +58,15 @@ export class DummyAI {
     intent.up = toBall.y * DRILL_CHASE;
     if (dist < tunables.catchReach + tunables.claimRadius) intent.claim = true;
     return intent;
+  }
+
+  private drillWander(id: number): { dir: THREE.Vector3; time: number } {
+    let state = this.wander.get(id);
+    if (!state) {
+      state = { dir: new THREE.Vector3(1, 0, 0), time: 0 };
+      this.wander.set(id, state);
+    }
+    return state;
   }
 }
 

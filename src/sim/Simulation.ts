@@ -6,22 +6,26 @@ import {
   CAMERA,
   MATCH,
   PLAYER,
+  ROSTER,
   SHOT_ARC,
   setArenaRadius,
 } from '../game/constants';
 import type {
   ActionPose,
   BallState,
+  BotBehavior,
   ChargeState,
   InputIntent,
   LandingMarkerState,
   MatchState,
   PlayerState,
+  RosterSpec,
   Tunables,
 } from '../game/types';
 import { createPowerStrategy, type PowerStrategy, type PowerTuning } from './shotPower';
 import { DummyAI } from '../ai/DummyAI';
 import type { AiDelivery, AiMark } from '../ai/FieldAI';
+import { GoalieAI, goalieCatchSpeed, goalieSkill01 } from '../ai/GoalieAI';
 import { TeammateAI } from '../ai/TeammateAI';
 import {
   authoritativeUp,
@@ -37,6 +41,7 @@ import { fumbleChance, inCatchCone, inCatchVolume, segmentHitsCatch, segmentHits
 import {
   containInNet,
   inGoalPocket,
+  goalPlaneZ,
   pointInsidePocket,
   rayHitsMouth,
   resolveGoalRim,
@@ -62,6 +67,7 @@ function makePlayer(
     id,
     team,
     role,
+    aiBehavior: 'normal',
     position: pos,
     velocity: new THREE.Vector3(),
     facing,
@@ -78,6 +84,10 @@ function makePlayer(
     burstCooldown: 0,
     burstPuff: 0,
     burstDir: new THREE.Vector3(0, 0, 1),
+    burstSpeedCap: 0,
+    burstKnock: 0,
+    burstPop: 0,
+    burstPopChance: 1,
     checkMask: 0,
     knockTime: 0,
     staggerTime: 0,
@@ -217,6 +227,10 @@ export class Simulation {
   kickoffLock = 0;
   /** 0..1 impact shake. The view reads it; the sim decays it. */
   cameraShake = 0;
+  /** Off-ball tackle charge. Hidden unless the button is held. */
+  readonly tackleCharge = { active: false, amount: 0 };
+  private tackleArmed = false;
+  private tackleHold = 0;
   /** Seconds the ball is outside the shell before the throw-in. */
   breachTime = 0;
   readonly breachPoint = new THREE.Vector3();
@@ -234,8 +248,11 @@ export class Simulation {
   goalTeam: 0 | 1 | null = null;
   /** Tracks the test-opponent toggle so the roster is parked once per change. */
   private soloApplied = false;
+  /** Set once the roster UI edits bots. The solo toggle no longer overwrites them. */
+  private manualRoster = false;
   private ai: DummyAI;
   private teammate: TeammateAI;
+  private goalie: GoalieAI;
   private tmp = {
     moveWorld: new THREE.Vector3(),
     camFwd: new THREE.Vector3(),
@@ -276,6 +293,7 @@ export class Simulation {
     };
     this.ai = new DummyAI();
     this.teammate = new TeammateAI();
+    this.goalie = new GoalieAI();
     this.resetKickoff(true);
   }
 
@@ -310,14 +328,7 @@ export class Simulation {
     } else {
       for (const p of this.players) {
         if (!p.active) continue;
-        const zSign = p.team === 0 ? -1 : 1;
-        const z = zSign * MATCH.kickoffSeparation;
-        const side = p.id === this.humanId ? 0 : p.team === 0 ? -MATCH.kickoffSeparation * 0.85 : 0;
-        const lift = p.team === 0 && p.id !== this.humanId ? 1.5 : 0;
-        p.position.set(side, lift, z + (p.id === this.humanId ? 0 : zSign * MATCH.kickoffSeparation * 0.4));
-        p.velocity.set(0, 0, 0);
-        p.facing.set(0, 0, p.team === 0 ? 1 : -1);
-        p.up.copy(authoritativeUp(this.tunables.goalAxisUp));
+        this.placeOnSide(p);
         p.hasBall = false;
         p.tackleCooldown = 0;
         p.reclaimGrace = 0;
@@ -327,6 +338,10 @@ export class Simulation {
         p.burstStrong = false;
         p.burstCooldown = 0;
         p.burstPuff = 0;
+        p.burstSpeedCap = 0;
+        p.burstKnock = 0;
+        p.burstPop = 0;
+        p.burstPopChance = 1;
         p.checkMask = 0;
         p.knockTime = 0;
         p.staggerTime = 0;
@@ -372,6 +387,10 @@ export class Simulation {
     this.kickoffLock = 2.2;
     this.match.statusMessage = 'Face-off…';
     this.cameraShake = 0;
+    this.tackleArmed = false;
+    this.tackleHold = 0;
+    this.tackleCharge.active = false;
+    this.tackleCharge.amount = 0;
     this.breachTime = 0;
     this.nearShell = 0;
     this.impactPulse = 0;
@@ -385,12 +404,207 @@ export class Simulation {
 
   /** Dev toggle. Parks every AI but one slow enemy, or restores the practice pair. */
   setSoloOpponent(on: boolean): void {
+    this.manualRoster = false;
     this.tunables.soloOpponent = on;
     this.soloApplied = !on;
     this.syncSoloRoster();
   }
 
+  maxSwimmers(): number {
+    return ROSTER.maxSwimmers;
+  }
+
+  /** Active swimmers on a side, including the human. */
+  swimmerCount(team: 0 | 1): number {
+    return this.players.filter((p) => p.team === team && p.active && p.role !== 'stub').length;
+  }
+
+  /** Bots currently on the field. The default drill reports the away bot as a test chaser. */
+  exportRoster(): RosterSpec {
+    const side = (team: 0 | 1): BotBehavior[] =>
+      this.players
+        .filter((p) => p.active && p.role === 'ai' && p.team === team)
+        .sort((a, b) => a.id - b.id)
+        .map((p) => this.behaviorOf(p));
+    return { home: side(0), away: side(1) };
+  }
+
+  listBots(): { id: number; team: 0 | 1; behavior: BotBehavior; name: string }[] {
+    const out: { id: number; team: 0 | 1; behavior: BotBehavior; name: string }[] = [];
+    for (const team of [0, 1] as const) {
+      const bots = this.players
+        .filter((p) => p.active && p.role === 'ai' && p.team === team)
+        .sort((a, b) => a.id - b.id);
+      bots.forEach((p, index) => {
+        out.push({ id: p.id, team, behavior: this.behaviorOf(p), name: `Bot ${index + 1}` });
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Spawn one bot on `team`. Reuses an inactive slot before growing the list.
+   * Returns false at the six-swimmer cap.
+   */
+  addBot(team: 0 | 1, behavior: BotBehavior = 'normal'): boolean {
+    if (behavior !== 'normal' && behavior !== 'chaser' && behavior !== 'goalie') return false;
+    if (this.swimmerCount(team) >= ROSTER.maxSwimmers) return false;
+    this.adoptManualRoster();
+    const slot = this.players.find((p) => p.team === team && p.role !== 'human' && !p.active);
+    if (slot) {
+      this.wakeBot(slot, behavior);
+      return true;
+    }
+    const id = this.players.length;
+    const created = makePlayer(id, team, 'ai', new THREE.Vector3(), false);
+    this.players.push(created);
+    this.wakeBot(created, behavior);
+    return true;
+  }
+
+  /**
+   * Despawn one bot. A ball they are holding is left loose where it is.
+   * The human cannot be removed.
+   */
+  removeBot(id: number): boolean {
+    const player = this.players.find((p) => p.id === id);
+    if (!player || player.role !== 'ai' || !player.active) return false;
+    this.adoptManualRoster();
+    this.benchBot(player);
+    return true;
+  }
+
+  setBotBehavior(id: number, behavior: BotBehavior): void {
+    if (behavior !== 'normal' && behavior !== 'chaser' && behavior !== 'goalie') return;
+    const player = this.players.find((p) => p.id === id && p.role === 'ai' && p.active);
+    if (!player) return;
+    this.adoptManualRoster();
+    player.aiBehavior = behavior;
+  }
+
+  /** Replace the on-field bots. Used when a saved roster loads. */
+  applyRoster(spec: RosterSpec): void {
+    this.manualRoster = true;
+    for (const p of this.players) {
+      if (p.role === 'human') continue;
+      if (p.active || p.hasBall || this.ball.ownerId === p.id) this.benchBot(p);
+    }
+    for (const behavior of spec.home) {
+      if (!this.addBot(0, behavior)) break;
+    }
+    for (const behavior of spec.away) {
+      if (!this.addBot(1, behavior)) break;
+    }
+  }
+
+  private behaviorOf(player: PlayerState): BotBehavior {
+    if (player.aiBehavior === 'goalie') return 'goalie';
+    if (
+      !this.manualRoster &&
+      this.tunables.soloOpponent &&
+      player.team !== this.getHuman().team &&
+      player.role === 'ai'
+    ) {
+      return 'chaser';
+    }
+    return player.aiBehavior === 'chaser' ? 'chaser' : 'normal';
+  }
+
+  /** Keep the current field, then stop the solo toggle from parking or waking bots. */
+  private adoptManualRoster(): void {
+    if (this.manualRoster) return;
+    for (const p of this.players) {
+      if (p.role !== 'ai' || !p.active) continue;
+      p.aiBehavior = this.behaviorOf(p);
+    }
+    this.manualRoster = true;
+  }
+
+  private wakeBot(player: PlayerState, behavior: BotBehavior): void {
+    player.role = 'ai';
+    player.aiBehavior = behavior;
+    player.active = true;
+    player.hasBall = false;
+    player.sprinting = false;
+    player.tackleCooldown = 0;
+    player.reclaimGrace = 0;
+    player.selfCatchLock = false;
+    player.selfCatchTime = 0;
+    player.burstTime = 0;
+    player.burstCooldown = 0;
+    player.burstPuff = 0;
+    player.checkMask = 0;
+    player.knockTime = 0;
+    player.staggerTime = 0;
+    player.hitFlash = 0;
+    player.hitBurst = 0;
+    player.catchStance = false;
+    player.actionPose = 'none';
+    player.actionPoseTime = 0;
+    player.actionPoseDuration = 0;
+    player.throwPosePower = 0;
+    player.throwCurveRight = 0;
+    player.throwCurveUp = 0;
+    this.placeOnSide(player);
+  }
+
+  private benchBot(player: PlayerState): void {
+    if (this.ball.possession === 'held' && this.ball.ownerId === player.id) this.releaseBall();
+    if (this.ball.arc?.receiverId === player.id) this.ball.arc.receiverId = null;
+    if (this.shotAim.lockId === player.id) this.shotAim.lockId = null;
+    this.carryPalm.delete(player.id);
+    player.active = false;
+    player.hasBall = false;
+    player.sprinting = false;
+    player.velocity.set(0, 0, 0);
+    player.burstTime = 0;
+    player.burstCooldown = 0;
+    player.burstPuff = 0;
+    player.checkMask = 0;
+    player.knockTime = 0;
+    player.staggerTime = 0;
+    player.hitFlash = 0;
+    player.hitBurst = 0;
+    player.catchStance = false;
+    player.actionPose = 'none';
+    player.actionPoseTime = 0;
+    player.actionPoseDuration = 0;
+    player.throwPosePower = 0;
+    player.throwCurveRight = 0;
+    player.throwCurveUp = 0;
+  }
+
+  /** Line the side up on its half so a new bot does not pop out of another swimmer. */
+  private placeOnSide(player: PlayerState): void {
+    const sep = MATCH.kickoffSeparation * (ARENA_RADIUS / ARENA_REFERENCE);
+    const zSign = player.team === 0 ? -1 : 1;
+    if (player.role === 'human') {
+      player.position.set(0, 0, zSign * sep);
+    } else if (player.aiBehavior === 'goalie') {
+      const ownZ = goalPlaneZ(player.team === 0 ? 1 : 0);
+      const inward = ownZ > 0 ? -1 : 1;
+      player.position.set(0, 0.25, ownZ + inward * 6);
+    } else {
+      const mates = this.players
+        .filter((p) => p.team === player.team && p.active && p.role === 'ai')
+        .sort((a, b) => a.id - b.id);
+      const index = Math.max(0, mates.findIndex((p) => p.id === player.id));
+      const col = index % 3;
+      const row = Math.floor(index / 3);
+      player.position.set(
+        (col - 1) * sep * 0.42,
+        (row === 0 ? 1 : -1) * (1.2 + row),
+        zSign * (sep * 0.95 + row * sep * 0.22),
+      );
+    }
+    player.velocity.set(0, 0, 0);
+    player.facing.set(0, 0, player.team === 0 ? 1 : -1);
+    player.up.copy(authoritativeUp(this.tunables.goalAxisUp));
+    constrainPlayerToSphere(player.position, player.velocity, PLAYER.radius);
+  }
+
   private syncSoloRoster(): void {
+    if (this.manualRoster) return;
     const on = this.tunables.soloOpponent;
     if (on === this.soloApplied) return;
     this.soloApplied = on;
@@ -514,7 +728,18 @@ export class Simulation {
     for (const p of this.players) {
       if (!p.active || p.role !== 'ai') continue;
       const onDefense = p.team !== human.team;
-      if (onDefense && this.tunables.soloOpponent) {
+      if (p.aiBehavior === 'goalie') {
+        if (!live) {
+          p.velocity.multiplyScalar(0.9);
+          continue;
+        }
+        const keeper = this.goalie.think(p, this.ball, this.tunables, motion);
+        this.movePlayer(p, keeper, motion, false);
+        this.resolveGoalie(p, keeper);
+        continue;
+      }
+      const chaser = this.manualRoster ? p.aiBehavior === 'chaser' : onDefense && this.tunables.soloOpponent;
+      if (chaser) {
         if (!live) {
           p.velocity.multiplyScalar(0.9);
           continue;
@@ -560,6 +785,7 @@ export class Simulation {
     this.updateBall(motion);
     if (live) {
       this.resolveCatches();
+      this.resolveGoalieContacts();
       this.separateBallFromPlayers();
       this.checkGoals();
     }
@@ -735,33 +961,21 @@ export class Simulation {
     // shotAim stays active through the release frame.
     const aimingShot =
       isHuman && player.hasBall && (intent.shootHeld || (this.shotAim.active && this.charge.kind !== 'kick'));
-
     const tackle = intent.burst || intent.burstPower;
-    const aiTackle = !isHuman && player.role === 'ai';
-    const canBurst =
+    if (isHuman && player.catchReady && tackle && !player.hasBall && !aimingShot) {
+      this.tryDeflect(player);
+    } else if (isHuman) {
+      this.updateTackle(player, intent, wish, dt, aimingShot);
+    } else if (
+      player.role === 'ai' &&
       tackle &&
       !player.hasBall &&
       !player.catchReady &&
       player.burstCooldown <= 0 &&
       this.kickoffLock <= 0 &&
-      this.match.resetTimer <= 0 &&
-      (aiTackle || (isHuman && !aimingShot && !this.shotAim.active && !this.power.capturing()));
-    if (isHuman && player.catchReady && tackle && !player.hasBall && !aimingShot) {
-      this.tryDeflect(player);
-    } else if (canBurst) {
-      const dir = player.burstDir;
-      if (wish.lengthSq() > 1e-6) dir.copy(wish).normalize();
-      else if (player.facing.lengthSq() > 1e-8) dir.copy(player.facing).normalize();
-      else dir.set(0, 0, 1);
-      player.checkMask = 0;
-      player.burstStrong = intent.burstPower;
-      const power = intent.burstPower ? 1.4 : 1;
-      this.tmp.burstLaunch.copy(dir).multiplyScalar(Math.max(4, this.tunables.burstSpeed) * power);
-      player.velocity.lerp(this.tmp.burstLaunch, 0.88);
-      player.burstTime = Math.max(0.05, this.tunables.burstDuration);
-      player.burstCooldown = Math.max(0.05, this.tunables.burstCooldown);
-      player.burstPuff = 1;
-      this.playPose(player, 'burst', player.burstTime + 0.06);
+      this.match.resetTimer <= 0
+    ) {
+      this.fireTackle(player, wish, intent.burstPower ? 'power' : 'light', intent.burstPower ? 1 : 0);
     }
 
     const bursting = player.burstTime > 0 && player.burstDir.lengthSq() > 1e-6;
@@ -785,7 +999,7 @@ export class Simulation {
     if (player.sprinting) maxSpeed *= Math.max(1, this.tunables.sprintMult);
     if (aimingShot) maxSpeed *= PLAYER.throwSwimMult;
     else if (aimLocked && !bursting) maxSpeed *= this.tunables.strafeSpeedMult;
-    if (bursting) maxSpeed = Math.max(4, this.tunables.burstSpeed);
+    if (bursting) maxSpeed = Math.max(4, player.burstSpeedCap > 0 ? player.burstSpeedCap : this.tunables.burstSpeed);
     if (player.staggerTime > 0 && !bursting) {
       maxSpeed *= 0.16;
       accel *= 0.22;
@@ -805,6 +1019,110 @@ export class Simulation {
     clampMagnitude(player.velocity, maxSpeed * (bursting ? 1.02 : 1.15));
     player.position.addScaledVector(player.velocity, dt);
     constrainPlayerToSphere(player.position, player.velocity, PLAYER.radius);
+  }
+
+  /**
+   * Off-ball left click. A release inside the tap window is a light check.
+   * Holding fills a power tackle and the mouse-up fires it. A one-frame
+   * `burst` without the button held is the light check, so headless clicks
+   * still lunge.
+   */
+  private updateTackle(
+    player: PlayerState,
+    intent: InputIntent,
+    wish: THREE.Vector3,
+    dt: number,
+    aimingShot: boolean,
+  ): void {
+    const ready =
+      !player.hasBall &&
+      !aimingShot &&
+      !this.shotAim.active &&
+      !this.power.capturing() &&
+      player.burstCooldown <= 0 &&
+      this.kickoffLock <= 0 &&
+      this.match.resetTimer <= 0;
+
+    if (this.tackleArmed && (player.hasBall || aimingShot || this.shotAim.active)) {
+      this.clearTackleCharge();
+      return;
+    }
+
+    if (this.tackleArmed && !intent.shootHeld) {
+      const held = this.tackleHold;
+      this.clearTackleCharge();
+      const tap = Math.max(0.04, this.tunables.tackleTapTime);
+      if (held <= tap) this.fireTackle(player, wish, 'light', 0);
+      else {
+        const span = Math.max(0.05, this.tunables.tackleChargeTime - tap);
+        const intensity = THREE.MathUtils.clamp((held - tap) / span, 0, 1);
+        this.fireTackle(player, wish, 'power', intensity);
+      }
+      return;
+    }
+
+    if (!this.tackleArmed && intent.burst && intent.shootHeld && ready) {
+      this.tackleArmed = true;
+      this.tackleHold = 0;
+    }
+
+    if (this.tackleArmed && intent.shootHeld) {
+      this.tackleHold += dt;
+      const full = Math.max(0.05, this.tunables.tackleChargeTime);
+      this.tackleCharge.active = true;
+      this.tackleCharge.amount = THREE.MathUtils.clamp(this.tackleHold / full, 0, 1);
+      return;
+    }
+
+    if (!this.tackleArmed && intent.burst && !intent.shootHeld && ready) {
+      this.fireTackle(player, wish, 'light', 0);
+    }
+  }
+
+  private clearTackleCharge(): void {
+    this.tackleArmed = false;
+    this.tackleHold = 0;
+    this.tackleCharge.active = false;
+    this.tackleCharge.amount = 0;
+  }
+
+  private fireTackle(player: PlayerState, wish: THREE.Vector3, kind: 'light' | 'power', intensity: number): void {
+    const dir = player.burstDir;
+    if (wish.lengthSq() > 1e-6) dir.copy(wish).normalize();
+    else if (player.facing.lengthSq() > 1e-8) dir.copy(player.facing).normalize();
+    else dir.set(0, 0, 1);
+
+    const lightSpeed = Math.max(4, this.tunables.lightBurstSpeed);
+    const powerSpeed = Math.max(lightSpeed, this.tunables.burstSpeed);
+    const lightWindow = Math.max(0.05, this.tunables.lightBurstDuration);
+    const powerWindow = Math.max(lightWindow, this.tunables.burstDuration);
+    const lightCooldown = Math.max(0.05, this.tunables.lightBurstCooldown);
+    const powerCooldown = Math.max(lightCooldown, this.tunables.burstCooldown);
+    const lightKnock = Math.max(1, this.tunables.lightKnock);
+    const powerKnock = Math.max(lightKnock, this.tunables.checkKnock);
+    const lightPop = PLAYER.checkPop * 0.72;
+    const t = THREE.MathUtils.clamp(intensity, 0, 1);
+    const speed = kind === 'light' ? lightSpeed : THREE.MathUtils.lerp(lightSpeed, powerSpeed, Math.max(0.2, t));
+    const window = kind === 'light' ? lightWindow : THREE.MathUtils.lerp(lightWindow, powerWindow, t);
+    const cooldown = kind === 'light' ? lightCooldown : THREE.MathUtils.lerp(lightCooldown + 0.2, powerCooldown, t);
+
+    player.checkMask = 0;
+    player.burstSpeedCap = speed;
+    player.burstKnock = kind === 'light' ? lightKnock : THREE.MathUtils.lerp(lightKnock, powerKnock, t);
+    player.burstPop = kind === 'light' ? lightPop : THREE.MathUtils.lerp(lightPop, PLAYER.checkPop, t);
+    const popMin = THREE.MathUtils.clamp(this.tunables.tacklePopMin, 0, 1);
+    const popMax = THREE.MathUtils.clamp(Math.max(popMin, this.tunables.tacklePopMax), 0, 1);
+    player.burstPopChance = kind === 'light' ? 1 : THREE.MathUtils.lerp(popMin, popMax, t);
+    this.tmp.burstLaunch.copy(dir).multiplyScalar(speed);
+    player.velocity.lerp(this.tmp.burstLaunch, 0.88);
+    player.burstTime = window;
+    player.burstCooldown = cooldown;
+    player.burstPuff = kind === 'light' ? 0.55 : 0.7 + 0.3 * t;
+    if (kind === 'power') {
+      const recover = Math.max(0, this.tunables.tackleSelfStagger) * (0.35 + 0.65 * t);
+      player.staggerTime = Math.max(player.staggerTime, recover);
+    }
+    this.playPose(player, 'burst', player.burstTime + 0.06);
   }
 
   /**
@@ -861,6 +1179,73 @@ export class Simulation {
     if (intent.claim) this.tryClaim(player);
     const spec = this.teammate.takeDelivery(player.id);
     if (spec && player.hasBall) this.releaseAiDelivery(player, spec);
+  }
+
+  private resolveGoalie(player: PlayerState, intent: InputIntent): void {
+    if (intent.claim) this.tryClaim(player);
+    if (intent.pass && player.hasBall) this.goalieDistribute(player);
+  }
+
+  /** Pass to a field teammate, or clear up the pool when nobody is there. */
+  private goalieDistribute(player: PlayerState): void {
+    let best: PlayerState | null = null;
+    let bestDist = 46;
+    for (const mate of this.players) {
+      if (!mate.active || mate.team !== player.team || mate.id === player.id || mate.aiBehavior === 'goalie') continue;
+      const dist = mate.position.distanceTo(player.position);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = mate;
+      }
+    }
+    const inward = this.goalieInward(player.team);
+    const aim = best ? best.position.clone().sub(player.position) : inward.clone();
+    if (aim.lengthSq() < 0.16) aim.copy(inward);
+    else aim.normalize();
+    this.releaseAtHand(player, aim);
+    const speed = Math.max(12, this.tunables.passSpeed * (best ? 0.7 : 0.88));
+    this.noteThrow(player);
+    this.releaseBall(aim.multiplyScalar(speed));
+    this.playPose(player, 'pass', 0.4);
+    this.match.statusMessage = best ? 'Goalie pass' : 'Cleared';
+  }
+
+  /** Direction from this team's goal back toward center court. */
+  private goalieInward(team: 0 | 1): THREE.Vector3 {
+    const ownZ = goalPlaneZ(team === 0 ? 1 : 0);
+    return new THREE.Vector3(0, 0, ownZ > 0 ? -1 : 1);
+  }
+
+  /**
+   * A goalie who has stepped onto the ball either catches a shot they can handle
+   * or punches it back into the pool. Curved shots are still live arcs until then.
+   */
+  private resolveGoalieContacts(): void {
+    if (this.ball.possession === 'held' || this.ball.claimLock > 0) return;
+    for (const player of this.players) {
+      if (!player.active || player.aiBehavior !== 'goalie') continue;
+      const skill = goalieSkill01(this.tunables, player.team);
+      const dist = player.position.distanceTo(this.ball.position);
+      const block = PLAYER.radius + BALL.radius + 0.85 + skill * 0.7;
+      if (dist > block) continue;
+      const intoGoal = this.goalieInward(player.team).multiplyScalar(-1);
+      const closing = this.ball.velocity.dot(intoGoal);
+      const shot = this.ball.arc !== null || closing > 2;
+      if (!shot) continue;
+      const speed = Math.max(this.ball.velocity.length(), this.ball.arc ? 16 : 0);
+      if (speed <= goalieCatchSpeed(skill)) {
+        this.ball.arc = null;
+        this.giveBall(player);
+        this.match.statusMessage = 'Goalie save';
+        return;
+      }
+      this.ball.arc = null;
+      if (closing > 0) this.ball.velocity.addScaledVector(intoGoal, -closing * 1.7);
+      this.ball.velocity.addScaledVector(this.goalieInward(player.team), Math.max(8, speed * 0.35));
+      this.ball.claimLock = 0.18;
+      this.match.statusMessage = 'Parry';
+      return;
+    }
   }
 
   private resolveAiActions(player: PlayerState, intent: InputIntent): void {
@@ -2422,7 +2807,9 @@ export class Simulation {
 
   private applyCheck(checker: PlayerState, target: PlayerState, dir: THREE.Vector3): void {
     checker.checkMask |= 1 << target.id;
-    target.velocity.copy(dir).multiplyScalar(PLAYER.checkKnock * (checker.burstStrong ? 1.45 : 1));
+    const knock = checker.burstKnock > 0 ? checker.burstKnock : Math.max(4, this.tunables.checkKnock);
+    const popSpeed = checker.burstPop > 0 ? checker.burstPop : PLAYER.checkPop;
+    target.velocity.copy(dir).multiplyScalar(knock * (checker.burstStrong ? 1.15 : 1));
     target.knockTime = PLAYER.checkKnockTime;
     target.staggerTime = PLAYER.checkStagger;
     target.hitFlash = 1;
@@ -2434,10 +2821,10 @@ export class Simulation {
     checker.velocity.addScaledVector(dir, -3.2);
     if (checker.id === this.humanId || target.id === this.humanId) this.cameraShake = 1;
     if (target.id === this.humanId && this.shotAim.active) this.clearShotAim();
-    if (target.hasBall && this.ball.ownerId === target.id) {
+    if (target.hasBall && this.ball.ownerId === target.id && Math.random() < checker.burstPopChance) {
       const fromPalm = this.carryPalm.has(target.id);
       if (fromPalm) this.stickBallToHand(target);
-      this.releaseBall(dir.clone().multiplyScalar(PLAYER.checkPop));
+      this.releaseBall(dir.clone().multiplyScalar(popSpeed));
       if (!fromPalm) {
         this.ball.position.copy(target.position).addScaledVector(dir, PLAYER.radius + BALL.radius + 0.4);
       }
@@ -2445,7 +2832,7 @@ export class Simulation {
       target.actionPose = 'none';
       target.actionPoseTime = 0;
     }
-    this.match.statusMessage = 'Shoulder check!';
+    this.match.statusMessage = checker.burstSpeedCap > this.tunables.lightBurstSpeed + 1 ? 'Power tackle!' : 'Shoulder check!';
   }
 
   private checkGoals(): void {
@@ -2487,12 +2874,13 @@ export class Simulation {
     const span = Math.max(0.25, this.tunables.shoulderOffset);
     // Catch framing is centered. The throwing shoulder only eases in once the ball is in hand.
     const shoulder01 = THREE.MathUtils.clamp(Math.abs(this.shoulderLateral) / span, 0, 1) * (1 - catch01);
-    const dist = zoom
-      ? CAMERA.zoomOutDistance
-      : THREE.MathUtils.lerp(CAMERA.chaseDistance, CAMERA.catchDistance, catch01);
+    const follow = Math.max(1.5, this.tunables.camDistance);
+    const catchExtra = Math.max(0, CAMERA.catchDistance - CAMERA.chaseDistance);
+    const dist = zoom ? Math.max(follow, this.tunables.wideDistance) : follow + catch01 * catchExtra;
     const height =
-      (zoom ? CAMERA.zoomOutHeight : THREE.MathUtils.lerp(CAMERA.chaseHeight, CAMERA.catchHeight, catch01)) +
+      (zoom ? CAMERA.zoomOutHeight : this.tunables.camHeight + catch01 * (CAMERA.catchHeight - CAMERA.chaseHeight)) +
       0.3 * shoulder01;
+    const shellLimit = this.tunables.camShell ? ARENA_RADIUS - CAMERA.wallClearance : ARENA_RADIUS * 8;
     const position = chaseCameraPosition(
       new THREE.Vector3(),
       human.position,
@@ -2500,10 +2888,17 @@ export class Simulation {
       basis.worldUp,
       dist,
       height,
-      ARENA_RADIUS - CAMERA.wallClearance,
+      shellLimit,
       basis.right,
       this.shoulderLateral * (1 - catch01),
     );
+    const pitch = this.tunables.camPitch;
+    if (Math.abs(pitch) > 1e-4) {
+      const offset = position.clone().sub(human.position);
+      offset.applyAxisAngle(basis.right, pitch);
+      position.copy(human.position).add(offset);
+      if (this.tunables.camShell && position.length() > shellLimit) position.setLength(shellLimit);
+    }
     // On-ball aim looks down the throw. Off-ball, look just past the hands so
     // the reach and the ball in front of it share the frame.
     const shoulderAhead = THREE.MathUtils.lerp(CAMERA.lookAhead * 0.35, CAMERA.lookAhead * 2.4, shoulder01);
@@ -2512,13 +2907,23 @@ export class Simulation {
       .clone()
       .addScaledVector(basis.forward, ahead)
       .addScaledVector(basis.worldUp, 0.4 * (1 - shoulder01 * 0.65) * (1 - catch01 * 0.75));
+    if (!zoom && this.tunables.ballCam) {
+      target.lerp(this.ball.position, 0.82);
+    } else if (!zoom && this.tunables.lookAhead === 'move' && human.velocity.lengthSq() > 4) {
+      target.addScaledVector(human.velocity.clone().normalize(), follow * 0.35);
+    } else if (!zoom && this.tunables.lookAhead === 'ball') {
+      const toBall = this.ball.position.clone().sub(human.position);
+      const len = toBall.length();
+      if (len > 0.5) target.addScaledVector(toBall, Math.min(1, (follow * 0.45) / len));
+    }
+    const chaseFov = THREE.MathUtils.clamp(this.tunables.camFov, 30, 110);
     return {
       position,
       target,
       // Pitched basis up, not world up. World up is parallel to the look
       // direction at the pole, and lookAt's cross product flips there.
       up: basis.up,
-      fov: zoom ? CAMERA.zoomOutFov : CAMERA.fov,
+      fov: zoom ? chaseFov + (CAMERA.zoomOutFov - CAMERA.fov) : chaseFov,
     };
   }
 
@@ -2530,6 +2935,7 @@ export class Simulation {
     this.noteCatchStance(intent);
     this.strafing = intent.strafe;
     this.updateShoulder(Math.max(0, dt));
+    this.updateRecenter(intent, Math.max(0, dt));
     if (this.landingMarker.pulse > 0) {
       this.landingMarker.pulse = Math.max(0, this.landingMarker.pulse - Math.max(0, dt) * 4.2);
     }
@@ -2620,6 +3026,32 @@ export class Simulation {
     const lateral = this.tmp.side.copy(this.ball.position).sub(player.position).dot(right);
     if (Math.abs(lateral) < 0.45) return 1;
     return Math.sign(lateral);
+  }
+
+  /** Tracks how long the mouse has been still, for auto-recenter. */
+  private lookIdle = 0;
+
+  private updateRecenter(intent: InputIntent, dt: number): void {
+    if (!this.tunables.camRecenter || this.shotAim.active || this.power.capturing()) {
+      this.lookIdle = 0;
+      return;
+    }
+    const looking = Math.abs(intent.lookDelta.x) + Math.abs(intent.lookDelta.y) > 1e-5;
+    if (looking) {
+      this.lookIdle = 0;
+      return;
+    }
+    this.lookIdle += dt;
+    if (this.lookIdle < Math.max(0, this.tunables.camRecenterDelay)) return;
+    const human = this.getHuman();
+    const basis = this.cameraBasis();
+    const flat = human.facing.clone().addScaledVector(basis.worldUp, -human.facing.dot(basis.worldUp));
+    if (flat.lengthSq() < 1e-6) return;
+    flat.normalize();
+    const yawErr = Math.atan2(basis.right.dot(flat), basis.forward.dot(flat));
+    const alpha = 1 - Math.exp(-4 * dt);
+    this.yaw += yawErr * alpha;
+    this.pitch += (0 - this.pitch) * alpha * 0.35;
   }
 
   private updateShoulder(dt: number): void {

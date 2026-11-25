@@ -11,7 +11,33 @@ export type WaterQuality = 'high' | 'low' | 'basic';
 export type StadiumDetail = 'off' | 'low' | 'high';
 export type CrowdDensity = 'off' | 'low' | 'high';
 
+/** Chase look-ahead when ball cam is off. `aim` looks down the camera. */
+export type LookAheadMode = 'aim' | 'move' | 'ball';
+
+/** Saved camera framing. `custom` is any hand edit after a preset. */
+export type CameraPresetId = 'close' | 'default' | 'broadcast' | 'ball' | 'cinematic' | 'custom';
+
 export type PlayerRole = 'human' | 'ai' | 'stub';
+
+/** `chaser` is the slow test opponent. `goalie` guards the crease. `normal` is a field bot. */
+export type BotBehavior = 'normal' | 'chaser' | 'goalie';
+
+/** Field-player counts. Goalies are extra. `custom` is a hand-edited roster. */
+export type MatchPresetId = '1v1' | '1v1-goalies' | '3v3' | '4v4' | '5v5' | 'custom';
+
+/** Active bots on each side, in slot order. Home does not include the human. */
+export interface RosterSpec {
+  home: BotBehavior[];
+  away: BotBehavior[];
+  preset?: MatchPresetId;
+  /** Used by 3v3, 4v4, and 5v5. Ignored by the 1v1 presets. */
+  withGoalies?: boolean;
+  goalieSkill?: number;
+  goalieSkillHome?: number;
+  goalieSkillAway?: number;
+  goalieHomeOverride?: boolean;
+  goalieAwayOverride?: boolean;
+}
 
 export type PossessionState = 'free' | 'held';
 
@@ -55,12 +81,31 @@ export interface Tunables {
   passSpeed: number;
   shootSpeedMin: number;
   shootSpeedMax: number;
-  /** Peak speed of the off-ball shoulder check. */
+  /** Peak speed of a full power tackle. */
   burstSpeed: number;
-  /** Seconds the check can still hit someone. */
+  /** Seconds a full power tackle can still hit someone. */
   burstDuration: number;
-  /** Seconds before another check. */
+  /** Seconds before another check after a full power tackle. */
   burstCooldown: number;
+  /** Peak speed of a quick-click shoulder check. */
+  lightBurstSpeed: number;
+  /** Seconds a tap can still hit someone. */
+  lightBurstDuration: number;
+  /** Seconds before another check after a tap. */
+  lightBurstCooldown: number;
+  /** Knockback of a tap, along the check. */
+  lightKnock: number;
+  /** Holds at or under this stay a tap. Longer holds become a power tackle. */
+  tackleTapTime: number;
+  /** Seconds of hold that fill the power tackle. */
+  tackleChargeTime: number;
+  /** Chance a power tackle knocks the ball loose, from a short charge to full. */
+  tacklePopMin: number;
+  tacklePopMax: number;
+  /** Seconds of self-stagger after a full power tackle. */
+  tackleSelfStagger: number;
+  /** Knockback of a full power tackle, along the check. */
+  checkKnock: number;
   ballDrag: number;
   aimAssist: number;
   showChargeGhost: boolean;
@@ -122,10 +167,6 @@ export interface Tunables {
   fieldSkillA: number;
   /** 0–100. Team 1 (orange) field players. */
   fieldSkillB: number;
-  /** 0–100. How tightly the deepest blue defender guards the mouth. */
-  goalieSkillA: number;
-  /** 0–100. How tightly the deepest orange defender guards the mouth. */
-  goalieSkillB: number;
   /** Draw each field player's intent and the line to its target. */
   showAiIntent: boolean;
   /** Shell radius. Changing it rebuilds the sphere, goals, and dressing. */
@@ -156,6 +197,30 @@ export interface Tunables {
   volleySpread: number;
   /** Scales throw speed. Kicks are measured against this. */
   throwSpeedScale: number;
+  /** Chase camera distance behind the swimmer. */
+  camDistance: number;
+  /** Camera height above the chase line, in world units. */
+  camHeight: number;
+  /** Extra pitch of the camera boom, in radians. Positive lifts the camera. */
+  camPitch: number;
+  /** Chase field of view. Wide view adds the built-in zoom-out gap on top. */
+  camFov: number;
+  /** How quickly the chase camera catches its pose (1/seconds). Higher is stiffer. */
+  camLag: number;
+  /** Where the chase look-ahead points when ball cam is off. */
+  lookAhead: LookAheadMode;
+  /** After the mouse rests, ease the view back behind the body. */
+  camRecenter: boolean;
+  /** Seconds of still look before auto-recenter starts. */
+  camRecenterDelay: number;
+  /** Look at the ball instead of down the aim. */
+  ballCam: boolean;
+  /** Camera distance while V or middle-click wide view is on. */
+  wideDistance: number;
+  /** Keep the chase camera inside the shell. Off lets a long follow sit outside. */
+  camShell: boolean;
+  /** Named camera setup. `custom` means the sliders no longer match a preset. */
+  cameraPreset: CameraPresetId;
   /** Stadium sunbeams. Off hides them; strength scales what is left at the shell. */
   showSunbeams: boolean;
   /** 0 hides the shafts. 1 is the tuned rim brightness. */
@@ -174,6 +239,14 @@ export interface Tunables {
   stadiumDetail: StadiumDetail;
   /** Instanced spectator billboards. */
   crowdDensity: CrowdDensity;
+  /** 0–100. Reaction, prediction, speed, and catch chance for both goalies. */
+  goalieSkill: number;
+  /** Used when the home override is on. */
+  goalieSkillHome: number;
+  /** Used when the away override is on. */
+  goalieSkillAway: number;
+  goalieHomeOverride: boolean;
+  goalieAwayOverride: boolean;
 }
 
 /** Yellow landing dot. RMB places it on the straight throw; a shot hold slides it with power. */
@@ -198,6 +271,8 @@ export interface PlayerState {
   id: number;
   team: TeamId;
   role: PlayerRole;
+  /** `chaser` drifts after the ball and never passes or shoots. */
+  aiBehavior: BotBehavior;
   position: THREE.Vector3;
   velocity: THREE.Vector3;
   /** Forward facing (normalized). */
@@ -227,6 +302,14 @@ export interface PlayerState {
   burstPuff: number;
   /** World direction locked at the moment of the check. */
   burstDir: THREE.Vector3;
+  /** Speed cap of the lunge that is playing. 0 uses the power-tackle speed. */
+  burstSpeedCap: number;
+  /** Knockback of the lunge that is playing. 0 uses the power-tackle knock. */
+  burstKnock: number;
+  /** Ball pop speed of the lunge that is playing. 0 uses the default pop. */
+  burstPop: number;
+  /** Chance this lunge knocks a held ball loose. */
+  burstPopChance: number;
   /** Bitmask of player ids this check has already hit. */
   checkMask: number;
   /** Seconds of ragdoll left from a shoulder check. Steering is ignored. */

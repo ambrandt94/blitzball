@@ -70,7 +70,7 @@ export class StadiumCrowd {
     const count = slots.length;
     if (count === 0) return;
 
-    const geo = new THREE.PlaneGeometry(0.5, 1);
+    const geo = new THREE.PlaneGeometry(1.15, 2.3);
     geo.translate(0, 0.5, 0);
     const uv = new Float32Array(count * 4);
     const phase = new Float32Array(count);
