@@ -96,6 +96,7 @@ export class Game {
           key === 'waterQuality' ||
           key === 'waterPixelScale' ||
           key === 'causticFps' ||
+          key === 'causticScroll' ||
           key === 'showLightBands' ||
           key === 'waterTint' ||
           key === 'waterDeep' ||
@@ -154,6 +155,7 @@ export class Game {
       waterQuality: this.tunables.waterQuality,
       waterPixelScale: this.tunables.waterPixelScale,
       causticFps: this.tunables.causticFps,
+      causticScroll: this.tunables.causticScroll,
       showLightBands: this.tunables.showLightBands,
       waterTint: this.tunables.waterTint,
       waterDeep: this.tunables.waterDeep,

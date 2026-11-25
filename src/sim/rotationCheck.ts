@@ -10,13 +10,13 @@ import { fitBallModel } from '../render/blitzball';
 import { aimPosturePitch, spring1, stepAimPosture, updateSwimmerRig, wantsAimPosture, type SwimmerRig } from '../render/swimmerModel';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
-import { defaultTunables } from '../ui/DevPanel';
+import { defaultTunables, parseCurveAimOffset } from '../ui/DevPanel';
 import { applyCameraPreset, cameraSettingsBlob, noteCameraEdit, parseCameraSettings } from '../ui/cameraSettings';
 import { parseRoster } from '../ui/rosterStorage';
 import { matchRoster } from '../ui/matchPresets';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalMouthZ, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
-import { lookBasis, rotateToward, stabilizeUp } from './math';
+import { lookBasis, rotateToward, stabilizeUp, transportUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
@@ -118,6 +118,436 @@ function checkUpPole(): void {
     maxStep = Math.max(maxStep, step);
   }
   if (maxStep > (8 * Math.PI) / 180) fail(`body up snapped ${deg(maxStep).toFixed(1)}° crossing the pole`);
+}
+
+/**
+ * Pitch through straight up, straight down, and inverted, in open water and
+ * against the shell. A frame whose look or body up jumps more than a few
+ * degrees is the disorienting snap.
+ */
+/** Lateral miss of a point from the chord between the ends of a preview. */
+function chordOffset(points: THREE.Vector3[]): number {
+  if (points.length < 3) return 0;
+  const a = points[0]!;
+  const b = points[points.length - 1]!;
+  const mid = points[Math.floor(points.length / 2)]!;
+  const chord = b.clone().sub(a);
+  const len = chord.length();
+  if (len < 1e-6) return 0;
+  chord.multiplyScalar(1 / len);
+  const off = mid.clone().sub(a);
+  off.addScaledVector(chord, -off.dot(chord));
+  return off.length();
+}
+
+/**
+ * The held preview is the flight that will be released. Throws use the full
+ * bend. Kicks use half of it, and the line moves when that bend changes.
+ */
+function checkPreviewMatchesFlight(): void {
+  const arm = (kick: boolean) => {
+    const sim = new Simulation(defaultTunables());
+    sim.setSoloOpponent(false);
+    sim.kickoffLock = 0;
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = 0;
+    sim.tunables.kickWindup = 0.05;
+    sim.tunables.kickRange = 1;
+    sim.tunables.kickSpeed = 1;
+    sim.tunables.kickCurve = 0.5;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.lastOwnerId = human.id;
+    sim.ball.position.copy(holdPoint(sim));
+    sim.yaw = 0;
+    sim.pitch = 0;
+    const hold = blankIntent();
+    hold.strafe = kick;
+    if (kick) hold.kickHeld = true;
+    else hold.shootHeld = true;
+    sim.armShotAim(hold);
+    sim.step(1 / 60, hold);
+    return { sim, human };
+  };
+
+  const bend = (sim: Simulation, kick: boolean, x: number) => {
+    const look = blankIntent();
+    look.strafe = kick;
+    if (kick) look.kickHeld = true;
+    else look.shootHeld = true;
+    look.lookDelta.x = x;
+    sim.applyFrameLook(look);
+    sim.step(1 / 60, look);
+  };
+
+  const straight = arm(true);
+  const before = chordOffset(straight.sim.chargeGhost);
+  bend(straight.sim, true, 0.45);
+  const curved = chordOffset(straight.sim.chargeGhost);
+  if (straight.sim.chargeGhost.length < 4) fail('kick hold hid the preview');
+  if (!(curved > before + 0.35)) {
+    fail(`kick preview ignored the bend (${before.toFixed(2)} -> ${curved.toFixed(2)})`);
+  }
+
+  const thrown = arm(false);
+  bend(thrown.sim, false, 0.08);
+  const kick = arm(true);
+  bend(kick.sim, true, 0.08);
+  const throwOff = chordOffset(thrown.sim.chargeGhost);
+  const kickOff = chordOffset(kick.sim.chargeGhost);
+  const ratio = throwOff > 1e-3 ? kickOff / throwOff : 0;
+  if (ratio < 0.35 || ratio > 0.7) {
+    fail(`kick preview curve ${kickOff.toFixed(2)} is not half the throw ${throwOff.toFixed(2)}`);
+  }
+
+  const match = (label: string, kickHold: boolean) => {
+    const { sim } = arm(kickHold);
+    bend(sim, kickHold, 0.4);
+    const ghost = sim.chargeGhost.map((p) => p.clone());
+    const release = blankIntent();
+    release.strafe = kickHold;
+    sim.step(1 / 60, release);
+    let guard = 0;
+    while (!sim.ball.arc && guard < 12) {
+      sim.step(1 / 60, release);
+      guard++;
+    }
+    const arc = sim.ball.arc;
+    if (!arc) fail(`${label} release did not fly an arc`);
+    const point = new THREE.Vector3();
+    let worst = 0;
+    const n = Math.min(ghost.length, SHOT_ARC.samples + 1);
+    for (let i = 0; i < n; i++) {
+      quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
+      worst = Math.max(worst, point.distanceTo(ghost[i]!));
+    }
+    if (worst > 0.35) fail(`${label} preview left the real path by ${worst.toFixed(2)}`);
+  };
+  match('throw', false);
+  match('kick', true);
+  checkFlightReach();
+  checkCurveAimOffset();
+}
+
+/** Bending left slides the landing right, and the other way around. Zero offset does not. */
+function checkCurveAimOffset(): void {
+  if (parseCurveAimOffset(null) !== null) fail('empty curve offset parsed');
+  if (parseCurveAimOffset('nope') !== null) fail('broken curve offset parsed');
+  if (parseCurveAimOffset('0') !== 0) fail('zero curve offset did not load');
+  const stored = parseCurveAimOffset('4');
+  if (stored !== 1.25) fail(`curve offset was not clamped (${stored})`);
+
+  const arm = (kick: boolean) => {
+    const sim = new Simulation(defaultTunables());
+    sim.setSoloOpponent(false);
+    sim.kickoffLock = 0;
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = 8;
+    sim.tunables.shotCarry = 0;
+    sim.tunables.arcHandCurve = 0;
+    sim.tunables.arcHeight = 0;
+    sim.tunables.shotPowerAngle = 0;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.lastOwnerId = human.id;
+    sim.yaw = 0;
+    sim.pitch = 0;
+    sim.ball.position.copy(holdPoint(sim));
+    const intent = blankIntent();
+    intent.strafe = kick;
+    if (kick) intent.kickHeld = true;
+    else intent.shootHeld = true;
+    sim.armShotAim(intent);
+    for (let i = 0; i < 20 && sim.charge.amount < 0.98; i++) sim.step(1 / 60, intent);
+    return { sim, intent };
+  };
+
+  const bend = (sim: Simulation, kick: boolean, x: number) => {
+    const look = blankIntent();
+    look.strafe = kick;
+    if (kick) look.kickHeld = true;
+    else look.shootHeld = true;
+    look.lookDelta.x = x;
+    sim.applyFrameLook(look);
+    sim.updateAimPresentation(look, 1 / 60);
+  };
+
+  const lateral = (sim: Simulation): number => {
+    const ghost = sim.chargeGhost;
+    if (ghost.length < 4) fail('curve offset hid the preview');
+    const right = lookBasis(sim.yaw, sim.pitch, false).right;
+    return ghost[ghost.length - 1]!.clone().sub(ghost[0]!).dot(right);
+  };
+
+  const held = arm(false);
+  held.sim.tunables.curveAimOffset = 0;
+  bend(held.sim, false, 0.22);
+  if (Math.abs(lateral(held.sim)) > 0.2) fail('zero curve offset still moved the landing');
+
+  const expectSide = (label: string, kick: boolean, x: number, sign: number) => {
+    const { sim } = arm(kick);
+    bend(sim, kick, x);
+    const side = lateral(sim);
+    if (side * sign <= 0.8) fail(`${label} landing did not cross the aim (${side.toFixed(2)})`);
+    const ghost = sim.chargeGhost;
+    const origin = ghost[0]!;
+    const end = ghost[ghost.length - 1]!;
+    const mid = ghost[Math.floor(ghost.length / 2)]!;
+    const right = lookBasis(sim.yaw, sim.pitch, false).right;
+    const bow = mid.clone().sub(origin).dot(right);
+    if (bow * sign >= -0.4) fail(`${label} did not arc out before coming back (${bow.toFixed(2)})`);
+    if (end.distanceTo(sim.shotAim.target) > 0.2) fail(`${label} preview left the cursor`);
+    if (Math.abs(sim.landingMarker.distance - origin.distanceTo(end)) > 0.35) {
+      fail(`${label} distance did not match the flight`);
+    }
+    if (sim.landingMarker.position.distanceTo(end) > 0.25) fail(`${label} cursor left the end of the line`);
+    const release = blankIntent();
+    release.strafe = kick;
+    const ghostEnd = end.clone();
+    sim.step(1 / 60, release);
+    let waited = 0;
+    while (!sim.ball.arc && waited < 12) {
+      sim.step(1 / 60, release);
+      waited++;
+    }
+    const arc = sim.ball.arc;
+    if (!arc) fail(`${label} release did not fly`);
+    if (arc.p2.distanceTo(ghostEnd) > 0.45) {
+      fail(`${label} ball finished ${arc.p2.distanceTo(ghostEnd).toFixed(2)} off the preview`);
+    }
+    return side;
+  };
+
+  const thrown = expectSide('right throw', false, 0.22, -1);
+  const kicked = expectSide('right kick', true, 0.22, -1);
+  const ratio = thrown < -1e-3 ? kicked / thrown : 0;
+  if (ratio < 0.35 || ratio > 0.7) {
+    fail(`kick aim offset ${kicked.toFixed(2)} is not half the throw ${thrown.toFixed(2)}`);
+  }
+  expectSide('left throw', false, -0.22, 1);
+}
+
+/** Full, soft, and heavy-drag landings end where the preview says they will. */
+function checkFlightReach(): void {
+  const expectReach = (sim: Simulation, kick: boolean, power: number): number => {
+    const dragScale = BALL.drag / Math.max(0.05, sim.tunables.ballDrag);
+    const delivery = kick ? Math.max(1, sim.tunables.kickRange) : Math.max(0.2, sim.tunables.throwSpeedScale);
+    const maxD = Math.max(SHOT_ARC.minRange, sim.tunables.arcAimDistance * dragScale * delivery);
+    return THREE.MathUtils.lerp(SHOT_ARC.minRange, maxD, THREE.MathUtils.clamp(power, 0, 1));
+  };
+
+  const arm = (kick: boolean, drag: number, rate: number) => {
+    const sim = new Simulation(defaultTunables());
+    sim.setSoloOpponent(false);
+    sim.kickoffLock = 0;
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = rate;
+    sim.tunables.shotCarry = 0;
+    sim.tunables.arcHandCurve = 0;
+    sim.tunables.shotPowerAngle = 0;
+    sim.tunables.ballDrag = drag;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(1, 0, 0);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.lastOwnerId = human.id;
+    sim.yaw = Math.PI / 2;
+    sim.pitch = 0;
+    sim.ball.position.copy(holdPoint(sim));
+    const intent = blankIntent();
+    intent.strafe = kick;
+    if (kick) intent.kickHeld = true;
+    else intent.shootHeld = true;
+    sim.armShotAim(intent);
+    sim.step(1 / 60, intent);
+    return { sim, intent };
+  };
+
+  const chord = (sim: Simulation): number => {
+    const ghost = sim.chargeGhost;
+    if (ghost.length < 2) fail('flight preview was empty');
+    return ghost[0]!.distanceTo(ghost[ghost.length - 1]!);
+  };
+
+  const check = (label: string, kick: boolean, drag: number, rate: number, stopAt: number) => {
+    const { sim, intent } = arm(kick, drag, rate);
+    let guard = 0;
+    while (sim.charge.amount < stopAt && guard < 40) {
+      sim.step(1 / 60, intent);
+      guard++;
+    }
+    if (stopAt > 0.9 && sim.charge.amount < 0.95) fail(`${label} did not fill (${sim.charge.amount.toFixed(2)})`);
+    sim.updateAimPresentation(intent, 1 / 60);
+    const flown = chord(sim);
+    const want = expectReach(sim, kick, sim.charge.amount);
+    if (Math.abs(flown - want) > 0.75) {
+      fail(`${label} preview ended at ${flown.toFixed(2)}, flight is ${want.toFixed(2)}`);
+    }
+    if (Math.abs(sim.landingMarker.distance - flown) > 0.35) {
+      fail(`${label} distance read ${sim.landingMarker.distance.toFixed(2)} off a ${flown.toFixed(2)} flight`);
+    }
+    const end = sim.chargeGhost[sim.chargeGhost.length - 1]!;
+    if (sim.landingMarker.position.distanceTo(end) > 0.2) {
+      fail(`${label} reticle left the end of the preview`);
+    }
+    if (stopAt < 0.9) return;
+    const ghostEnd = end.clone();
+    const release = blankIntent();
+    release.strafe = kick;
+    sim.step(1 / 60, release);
+    let waited = 0;
+    while (!sim.ball.arc && waited < 12) {
+      sim.step(1 / 60, release);
+      waited++;
+    }
+    const arc = sim.ball.arc;
+    if (!arc) fail(`${label} release did not fly`);
+    const landed = arc.p2.clone();
+    if (arc.carryLeft > 0.2 && arc.carryDir) landed.addScaledVector(arc.carryDir, arc.carryLeft);
+    if (landed.distanceTo(ghostEnd) > 0.45) {
+      fail(`${label} ball finished ${landed.distanceTo(ghostEnd).toFixed(2)} off the preview`);
+    }
+  };
+
+  check('full throw', false, BALL.drag, 8, 0.98);
+  check('full kick', true, BALL.drag, 8, 0.98);
+  check('soft throw', false, BALL.drag, 0, 0);
+  check('heavy throw', false, BALL.drag * 2, 8, 0.98);
+  const heavy = arm(false, BALL.drag * 2, 8);
+  const light = arm(false, BALL.drag, 8);
+  for (let i = 0; i < 20; i++) {
+    heavy.sim.step(1 / 60, heavy.intent);
+    light.sim.step(1 / 60, light.intent);
+  }
+  const heavyEnd = chord(heavy.sim);
+  const lightEnd = chord(light.sim);
+  if (heavyEnd > lightEnd * 0.6) {
+    fail(`double drag still flew ${heavyEnd.toFixed(1)} against ${lightEnd.toFixed(1)}`);
+  }
+}
+
+function checkVerticalLook(): void {
+  const spots = [
+    new THREE.Vector3(0, 0, 12),
+    new THREE.Vector3(0, 0, ARENA_RADIUS - PLAYER.radius - 0.4),
+    new THREE.Vector3(0, ARENA_RADIUS - PLAYER.radius - 0.4, 2),
+  ];
+  for (const spot of spots) {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.tunables.camPitch = -0.18;
+    sim.tunables.camRecenter = false;
+    const human = sim.getHuman();
+    human.position.copy(spot);
+    let prevLook: THREE.Vector3 | null = null;
+    let prevRight: THREE.Vector3 | null = null;
+    let maxLook = 0;
+    let maxRight = 0;
+    for (let i = -130; i <= 130; i++) {
+      sim.pitch = (i * Math.PI) / 180;
+      sim.yaw = 0.4;
+      const pose = sim.getCameraPose(blankIntent());
+      const look = pose.target.clone().sub(pose.position);
+      if (look.lengthSq() < 1e-8) fail(`camera sat on its target at pitch ${i}`);
+      look.normalize();
+      const back = pose.position.clone().sub(pose.target).normalize();
+      const right = new THREE.Vector3().crossVectors(pose.up, back);
+      if (right.lengthSq() < 1e-8) fail(`camera up parallel to the view at pitch ${i}`);
+      right.normalize();
+      if (pose.position.length() > ARENA_RADIUS - CAMERA.wallClearance + 0.08) {
+        fail(`camera left the shell at pitch ${i} (${pose.position.length().toFixed(2)})`);
+      }
+      if (prevLook && prevRight) {
+        maxLook = Math.max(maxLook, angle(prevLook, look));
+        maxRight = Math.max(maxRight, angle(prevRight, right));
+      }
+      prevLook = look;
+      prevRight = right;
+    }
+    const where = `r=${spot.length().toFixed(1)}`;
+    if (maxLook > (4 * Math.PI) / 180) {
+      fail(`look jumped ${deg(maxLook).toFixed(2)}° per 1° of pitch (${where})`);
+    }
+    if (maxRight > (8 * Math.PI) / 180) {
+      fail(`horizon rolled ${deg(maxRight).toFixed(2)}° per 1° of pitch (${where})`);
+    }
+  }
+
+  const up = new THREE.Vector3(0, 1, 0);
+  const facing = new THREE.Vector3(0, 0, 1);
+  let maxTransport = 0;
+  for (let i = 0; i <= 220; i++) {
+    const a = (i / 180) * Math.PI;
+    const next = new THREE.Vector3(0, Math.sin(a), Math.cos(a));
+    const before = up.clone();
+    transportUp(up, facing, next);
+    facing.copy(next);
+    maxTransport = Math.max(maxTransport, angle(before, up));
+  }
+  if (maxTransport > (4 * Math.PI) / 180) {
+    fail(`transported up snapped ${deg(maxTransport).toFixed(2)}° through inverted flight`);
+  }
+
+  for (const start of [new THREE.Vector3(0, 2, 8), new THREE.Vector3(0, 4, ARENA_RADIUS - PLAYER.radius - 1.2)]) {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.tunables.camRecenter = false;
+    const human = sim.getHuman();
+    human.position.copy(start);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    sim.yaw = 0;
+    sim.pitch = 0;
+    const intent = blankIntent();
+    intent.move.set(0, 0, 1);
+    let prevF = human.facing.clone();
+    let prevU = human.up.clone();
+    let prevLook: THREE.Vector3 | null = null;
+    let maxF = 0;
+    let maxU = 0;
+    let maxL = 0;
+    for (let i = 0; i < 220; i++) {
+      sim.pitch = Math.min(2.4, sim.pitch + 0.02);
+      sim.step(1 / 60, intent);
+      maxF = Math.max(maxF, angle(prevF, human.facing));
+      maxU = Math.max(maxU, angle(prevU, human.up));
+      prevF.copy(human.facing);
+      prevU.copy(human.up);
+      const pose = sim.getCameraPose(intent);
+      const look = pose.target.clone().sub(pose.position).normalize();
+      if (prevLook) maxL = Math.max(maxL, angle(prevLook, look));
+      prevLook = look;
+    }
+    if (maxF > (20 * Math.PI) / 180) fail(`facing snapped ${deg(maxF).toFixed(1)}° swimming through vertical`);
+    if (maxU > (20 * Math.PI) / 180) fail(`body up snapped ${deg(maxU).toFixed(1)}° swimming through vertical`);
+    if (maxL > (20 * Math.PI) / 180) fail(`camera look snapped ${deg(maxL).toFixed(1)}° swimming through vertical`);
+  }
 }
 
 function checkCamera(goalAxisUp: boolean, zoom: boolean): void {
@@ -258,6 +688,7 @@ function checkArcHand(): void {
 function checkArcBend(): void {
   const { sim, hold } = aimingSim();
   sim.tunables.shotCarry = 0;
+  sim.tunables.curveAimOffset = 0;
   sim.step(1 / 60, hold);
   if (sim.chargeGhost.length < 4) fail('arc preview missing');
   const start = sim.chargeGhost[0];
@@ -705,8 +1136,10 @@ function checkStraightAimMarker(): void {
   const along = sim.landingMarker.position.clone().sub(hand);
   const reach = along.length();
   if (along.normalize().dot(forward) < 0.98) fail('straight marker left the look ray');
-  if (Math.abs(reach - sim.tunables.arcAimDistance) > 0.75) {
-    fail(`marker distance ${reach.toFixed(2)} was not the straight throw`);
+  const straightReach =
+    sim.tunables.arcAimDistance * (BALL.drag / sim.tunables.ballDrag) * sim.tunables.throwSpeedScale;
+  if (Math.abs(reach - straightReach) > 0.75) {
+    fail(`marker distance ${reach.toFixed(2)} was not the straight throw (${straightReach.toFixed(2)})`);
   }
   if (sim.landingMarker.position.distanceTo(sim.ball.position) < 8) fail('held ball stole the landing marker');
 
@@ -1360,6 +1793,7 @@ function checkShotIntoGoal(): void {
   bent.sim.pitch = 0;
   bent.sim.tunables.arcHandCurve = 0.12;
   bent.sim.tunables.shotPowerAngle = 0;
+  bent.sim.tunables.curveAimOffset = 0;
   bent.sim.ball.position.copy(holdPoint(bent.sim));
   bent.sim.step(1 / 60, bent.hold);
   fillThrow(bent.sim, bent.hold);
@@ -2781,8 +3215,12 @@ function checkAimPowerModes(): void {
   aimed.hold.shootHeld = true;
   aimed.sim.step(1 / 60, aimed.hold);
   const started = aimed.sim.landingMarker.distance;
-  if (Math.abs(started - aimed.sim.tunables.arcAimDistance) > 2) {
-    fail(`target mode did not start on the aim point (${started.toFixed(1)})`);
+  const aimPoint =
+    aimed.sim.tunables.arcAimDistance *
+    (BALL.drag / aimed.sim.tunables.ballDrag) *
+    aimed.sim.tunables.throwSpeedScale;
+  if (Math.abs(started - aimPoint) > 2) {
+    fail(`target mode did not start on the aim point (${started.toFixed(1)} vs ${aimPoint.toFixed(1)})`);
   }
   const pullIn = blankIntent();
   pullIn.shootHeld = true;
@@ -3491,6 +3929,8 @@ export function runRotationChecks(): void {
   checkPointerLockGuard();
   checkCatchBeacon();
   checkGoalBoundArc();
+  checkPreviewMatchesFlight();
+  checkVerticalLook();
   checkCamera(false, false);
   checkCamera(false, true);
   checkCamera(true, false);

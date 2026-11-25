@@ -3,6 +3,7 @@ import {
   BASIN_CLEARANCE,
   BASIN_DISC_Y,
   CAUSTIC_FPS_DEFAULT,
+  CAUSTIC_SCROLL_DEFAULT,
   LIGHT_BANDS_DEFAULT,
   WATER_DEEP_DEFAULT,
   WATER_FOG_DEFAULT,
@@ -19,8 +20,12 @@ function fail(message: string): never {
   throw new Error(message);
 }
 
-if (Math.abs(CAUSTIC_FPS_DEFAULT - 1.5) > 1e-6) fail('caustic speed should be 1.5 fps, four times slower than 6');
-if (CAUSTIC_FPS_DEFAULT > 6 / 3) fail('caustic speed should be at least three times slower than 6 fps');
+const causticCycle = 4 / CAUSTIC_FPS_DEFAULT;
+if (causticCycle < 8) fail(`caustic cycle should last several seconds, got ${causticCycle.toFixed(2)}`);
+if (CAUSTIC_FPS_DEFAULT > 0.6) fail('caustic playback should be a long cross-fade, not a quick step');
+if (!(CAUSTIC_SCROLL_DEFAULT > 0) || CAUSTIC_SCROLL_DEFAULT > 0.12) {
+  fail('default caustic scroll should be a slow drift');
+}
 if (LIGHT_BANDS_DEFAULT) fail('diagonal light bands should be off by default');
 
 const mid = causticPhase(0.2, CAUSTIC_FPS_DEFAULT);

@@ -119,6 +119,8 @@ export class SceneView {
   private camUp = new THREE.Vector3(0, 1, 0);
   private worldUp = new THREE.Vector3(0, 1, 0);
   private camInitialized = false;
+  private camQuat = new THREE.Quaternion();
+  private camQuatReady = false;
   private camScratch = {
     offset: new THREE.Vector3(),
     pos: new THREE.Vector3(),
@@ -151,7 +153,8 @@ export class SceneView {
     waterRefraction: true,
     waterQuality: 'high',
     waterPixelScale: 1,
-    causticFps: 1.5,
+    causticFps: 0.4,
+    causticScroll: 0.04,
     showLightBands: false,
     waterTint: '#2E8A84',
     waterDeep: '#163A48',
@@ -476,7 +479,7 @@ export class SceneView {
       map: makeLandingGlow(),
       color: 0xffe066,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.32,
       depthTest: false,
       depthWrite: false,
       fog: false,
@@ -489,12 +492,12 @@ export class SceneView {
     group.visible = false;
     const glow = new THREE.Sprite(glowMat);
     glow.name = 'landingGlow';
-    glow.scale.set(3.1, 3.1, 1);
+    glow.scale.set(1.7, 1.7, 1);
     glow.renderOrder = 12;
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.78, 0.14, 10, 40), ringMat);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.52, 0.05, 8, 36), ringMat);
     ring.name = 'landingRing';
     ring.renderOrder = 13;
-    const core = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), markerMat);
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 8), markerMat);
     core.renderOrder = 14;
     group.add(glow, ring, core);
     this.shotMarker = group;
@@ -650,6 +653,38 @@ export class SceneView {
     line.visible = n >= 2;
   }
 
+  /**
+   * Point the chase camera from its position at the look target.
+   * `lookAt` picks an arbitrary axis when up is parallel to the view, which
+   * is the snap at straight up and straight down. A bad frame is also capped
+   * so it cannot roll the picture all the way around in one tick.
+   */
+  private aimChaseCamera(lambda: number, dt: number): void {
+    const back = this.camScratch.offset.copy(this.camera.position).sub(this.camTarget);
+    if (back.lengthSq() < 1e-10) return;
+    back.normalize();
+    const x = this.bodyX.crossVectors(this.camUp, back);
+    if (x.lengthSq() < 1e-6) return;
+    x.normalize();
+    const y = this.bodyY.crossVectors(back, x).normalize();
+    this.bodyBasis.makeBasis(x, y, back);
+    this.camQuat.setFromRotationMatrix(this.bodyBasis);
+    if (!this.camQuatReady) {
+      this.camera.quaternion.copy(this.camQuat);
+      this.camQuatReady = true;
+    } else {
+      const theta = this.camera.quaternion.angleTo(this.camQuat);
+      if (theta <= 0.45) {
+        this.camera.quaternion.copy(this.camQuat);
+      } else {
+        const step = Math.min(theta, Math.max(0.2, lambda * Math.max(0, dt)));
+        this.camera.quaternion.slerp(this.camQuat, theta > 1e-5 ? step / theta : 1);
+      }
+    }
+    this.camUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    this.camera.up.copy(this.camUp);
+  }
+
   /** Shot curve. Screen-space width, dark halo, drawn over the water. */
   private writeArc(points: THREE.Vector3[]): void {
     const n = Math.min(points.length, GHOST_MAX);
@@ -718,8 +753,7 @@ export class SceneView {
     if (view.lengthSq() < 1e-8) view.copy(this.camOffsetDir).negate();
     else view.normalize();
     stabilizeUp(this.camUp, view, pose.up, Math.max(0.5, sim.tunables.camLag), dt);
-    this.camera.up.copy(this.camUp);
-    this.camera.lookAt(this.camTarget);
+    this.aimChaseCamera(Math.max(0.5, sim.tunables.camLag), dt);
     if (Math.abs(this.camera.fov - pose.fov) > 0.01) {
       this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, pose.fov, 0.2);
       this.camera.updateProjectionMatrix();
@@ -1144,7 +1178,7 @@ export class SceneView {
     const dist = Math.max(0.5, this.camera.position.distanceTo(this.shotMarker.position));
     const locked = mark.lockId !== null;
     const pulse = (locked ? 1 + Math.sin(this.pulse * 9) * 0.08 : 1) * (1 + mark.pulse * 0.72);
-    this.shotMarker.scale.setScalar(THREE.MathUtils.clamp(dist * 0.034, 0.45, 3.4) * pulse);
+    this.shotMarker.scale.setScalar(THREE.MathUtils.clamp(dist * 0.022, 0.32, 2.05) * pulse);
     this.shotMarkerRing.lookAt(this.camera.position);
 
     const far = mark.outOfReach;
@@ -1153,9 +1187,9 @@ export class SceneView {
     this.shotMarkerMat.color.setHex(markerHex);
     this.shotMarkerRingMat.color.setHex(ringHex);
     this.shotMarkerGlowMat.color.setHex(markerHex);
-    this.shotMarkerMat.opacity = far ? 0.42 : 1;
-    this.shotMarkerRingMat.opacity = far ? 0.4 : 1;
-    this.shotMarkerGlowMat.opacity = far ? 0.35 : 0.85;
+    this.shotMarkerMat.opacity = far ? 0.28 : 0.62;
+    this.shotMarkerRingMat.opacity = far ? 0.22 : 0.46;
+    this.shotMarkerGlowMat.opacity = far ? 0.12 : 0.26;
 
     const label = `${Math.max(0, Math.round(mark.distance))}u`;
     if (label !== this.distanceShown) {
@@ -1165,9 +1199,9 @@ export class SceneView {
     const up = this.camScratch.offset.copy(this.camera.up);
     if (up.lengthSq() < 1e-6) up.set(0, 1, 0);
     else up.normalize();
-    const lift = THREE.MathUtils.clamp(dist * 0.05, 0.55, 2.6);
+    const lift = THREE.MathUtils.clamp(dist * 0.03, 0.36, 1.55);
     this.distanceSprite.position.copy(this.shotMarker.position).addScaledVector(up, lift);
-    const labelScale = THREE.MathUtils.clamp(dist * 0.02, 0.4, 2.4);
+    const labelScale = THREE.MathUtils.clamp(dist * 0.015, 0.32, 1.55);
     this.distanceSprite.scale.set(labelScale * 2, labelScale, 1);
   }
 

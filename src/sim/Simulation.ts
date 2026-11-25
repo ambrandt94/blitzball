@@ -35,7 +35,9 @@ import {
   goalCenter,
   lookBasis,
   rotateToward,
+  pullInsideSphere,
   stabilizeUp,
+  transportUp,
 } from './math';
 import { fumbleChance, inCatchCone, inCatchVolume, segmentHitsCatch, segmentHitsCone } from './catch';
 import {
@@ -47,7 +49,7 @@ import {
   resolveGoalRim,
   segmentScores,
 } from './goal';
-import { clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
+import { cappedBend, clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
 import { throwPoseSeconds } from '../render/throwPose';
 import { PULL_FULL_TRAVEL, TARGET_DISTANCE_SPEED } from './shotPower';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
@@ -262,6 +264,7 @@ export class Simulation {
     aim: new THREE.Vector3(),
     faceTarget: new THREE.Vector3(),
     upHint: new THREE.Vector3(),
+    prevFacing: new THREE.Vector3(),
     side: new THREE.Vector3(),
     predictPos: new THREE.Vector3(),
     predictVel: new THREE.Vector3(),
@@ -878,13 +881,16 @@ export class Simulation {
         this.shotAim.bendUp += -intent.lookDelta.y * sy * this.tunables.arcBendSpeed;
       }
       this.clampStoredBend();
-      if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(this.getHuman());
+      if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') {
+        this.refreshShotTarget();
+        this.updateChargeGhost(this.getHuman());
+      }
       return;
     }
     this.yaw += intent.lookDelta.x * sx;
     this.pitch -= intent.lookDelta.y * sy;
-    const maxPitch = Math.PI / 2 - 0.08;
-    this.pitch = THREE.MathUtils.clamp(this.pitch, -maxPitch, maxPitch);
+    // Pitch is not clamped at the horizon. Stopping 8° short of vertical
+    // made "swim straight up" stick, and the next look rolled the wrong way.
   }
 
   /** Mouse-wheel aim range. Call once per rendered frame, not per physics step. */
@@ -900,7 +906,7 @@ export class Simulation {
     if (applied === 0 || !this.shotAim.active) return;
     this.breakShotLock();
     this.refreshShotTarget();
-    if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
+    if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(this.getHuman());
   }
 
   /**
@@ -1149,7 +1155,9 @@ export class Simulation {
 
     let rate = this.tunables.bodyTurnRate;
     if (player.hasBall) rate *= PLAYER.carrierTurnMult;
+    this.tmp.prevFacing.copy(player.facing);
     rotateToward(player.facing, target, rate, dt);
+    transportUp(player.up, this.tmp.prevFacing, player.facing);
     this.alignBodyUp(player, dt);
   }
 
@@ -1751,8 +1759,14 @@ export class Simulation {
   }
 
   private aimDistance(): number {
+    const drag = Math.max(0.05, this.tunables.ballDrag);
+    const dragScale = BALL.drag / drag;
+    const delivery = this.kickingDelivery()
+      ? Math.max(1, this.tunables.kickRange)
+      : Math.max(0.2, this.tunables.throwSpeedScale);
+    // The wheel bias is already world units, so it is added after the scale.
     return THREE.MathUtils.clamp(
-      this.tunables.arcAimDistance + this.aimDistanceBias,
+      this.tunables.arcAimDistance * dragScale * delivery + this.aimDistanceBias,
       SHOT_ARC.minRange,
       ARENA_RADIUS - BALL.radius - 0.5,
     );
@@ -1805,7 +1819,7 @@ export class Simulation {
     }
     if (mode !== 'target') return;
     const minD = SHOT_ARC.minRange;
-    const maxD = Math.max(minD, this.aimDistance());
+    const maxD = this.maxFlightDistance();
     this.targetReach = THREE.MathUtils.clamp(this.straightAimDistance(), minD, maxD);
     const span = Math.max(0.001, maxD - minD);
     this.power.setAmount((this.targetReach - minD) / span);
@@ -1815,7 +1829,7 @@ export class Simulation {
   private straightAimDistance(): number {
     const human = this.getHuman();
     const hand = this.lookCarryPoint(human, this.tmp.holdTarget);
-    const raw = this.tmp.predictPos.copy(hand).addScaledVector(this.cameraBasis().forward, this.aimDistance());
+    const raw = this.tmp.predictPos.copy(hand).addScaledVector(this.cameraBasis().forward, this.maxFlightDistance());
     const out = this.tmp.predictVel;
     clampAimMarker(out, raw, hand, SHOT_ARC.minRange, this.markerLimit());
     return Math.max(SHOT_ARC.minRange, out.distanceTo(hand));
@@ -1826,14 +1840,14 @@ export class Simulation {
     if (!this.shotAim.active || delta === 0) return;
     this.breakShotLock();
     const minD = SHOT_ARC.minRange;
-    const maxD = Math.max(minD, this.aimDistance());
+    const maxD = this.maxFlightDistance();
     const past = maxD + 24;
     this.targetReach = THREE.MathUtils.clamp(this.targetReach + delta, minD, past);
     const span = Math.max(0.001, maxD - minD);
     this.power.setAmount((this.targetReach - minD) / span);
     this.charge.amount = this.power.amount();
     this.refreshShotTarget();
-    if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
+    if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(this.getHuman());
   }
 
   /** Mouse-down lengthens the pull. Mouse-up gives some of it back. */
@@ -1844,7 +1858,7 @@ export class Simulation {
     this.power.setAmount(this.pullTravel / full);
     this.charge.amount = this.power.amount();
     this.refreshShotTarget();
-    if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
+    if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(this.getHuman());
   }
 
   /** Landing distance for a power in 0..1, from a short lob out to the aim range. */
@@ -1852,18 +1866,65 @@ export class Simulation {
     return this.charge.kind === 'kick' || this.kickSwing.active;
   }
 
+  /** Farthest this delivery can send the ball, after drag, throw scale, and kick range. */
+  private maxFlightDistance(): number {
+    return Math.max(SHOT_ARC.minRange, this.aimDistance());
+  }
+
   private shotReach(power: number): number {
     const minD = SHOT_ARC.minRange;
-    const range = this.kickingDelivery() ? Math.max(1, this.tunables.kickRange) : 1;
-    const maxD = Math.max(minD, this.aimDistance() * range);
+    const maxD = this.maxFlightDistance();
     return THREE.MathUtils.lerp(minD, maxD, THREE.MathUtils.clamp(power, 0, 1));
+  }
+
+  /** Where this delivery leaves from. Kicks start at the foot; throws leave the hand. */
+  private releaseOrigin(player: PlayerState, out: THREE.Vector3): THREE.Vector3 {
+    if (this.kickingDelivery()) return this.footPoint(player, out);
+    return out.copy(this.ball.position);
+  }
+
+  /** Point `distance` from `origin` along the locked aim, kept inside the shell. */
+  private pointFrom(origin: THREE.Vector3, out: THREE.Vector3, distance: number): void {
+    const raw = this.tmp.predictPos.copy(origin).addScaledVector(this.lockedAim, distance);
+    clampAimMarker(out, raw, origin, SHOT_ARC.minRange, this.markerLimit());
+  }
+
+  /**
+   * Slide a landing opposite the mouse bend so the ball arcs out and comes back.
+   * `curveAimOffset` 0 leaves the spot on the aim ray. Kicks use `kickCurve`, same as the arc.
+   */
+  private applyCurveAimOffset(origin: THREE.Vector3, target: THREE.Vector3): void {
+    const gain = Math.max(0, this.tunables.curveAimOffset);
+    if (gain <= 1e-4 || this.shotAim.lockId !== null) return;
+    const chord = this.tmp.predictPos.copy(target).sub(origin);
+    const chordLen = chord.length();
+    if (chordLen < 1e-3) return;
+    chord.multiplyScalar(1 / chordLen);
+    const curve = this.kickingDelivery() ? Math.max(0, this.tunables.kickCurve) : 1;
+    const capped = cappedBend(
+      this.shotAim.bendRight * curve,
+      this.shotAim.bendUp * curve,
+      chordLen,
+      this.tunables.arcBendLimit,
+    );
+    if (capped.right * capped.right + capped.up * capped.up < 1e-6) return;
+    const basis = this.cameraBasis();
+    const axisUp = this.tmp.predictVel.copy(basis.up).addScaledVector(chord, -basis.up.dot(chord));
+    if (axisUp.lengthSq() < 1e-6) return;
+    axisUp.normalize();
+    const axisRight = this.tmp.aim.copy(basis.right).addScaledVector(chord, -basis.right.dot(chord));
+    axisRight.addScaledVector(axisUp, -axisRight.dot(axisUp));
+    if (axisRight.lengthSq() < 1e-6) axisRight.crossVectors(chord, axisUp);
+    if (axisRight.lengthSq() < 1e-6) return;
+    axisRight.normalize();
+    target.addScaledVector(axisRight, -capped.right * gain);
+    target.addScaledVector(axisUp, -capped.up * gain);
+    clampAimMarker(target, target, origin, SHOT_ARC.minRange, this.markerLimit());
   }
 
   /** Point `distance` from the hand along the locked aim, kept inside the shell. */
   private pointAlongAim(out: THREE.Vector3, distance: number): void {
-    const hand = this.ball.position;
-    const raw = this.tmp.predictPos.copy(hand).addScaledVector(this.lockedAim, distance);
-    clampAimMarker(out, raw, hand, SHOT_ARC.minRange, this.markerLimit());
+    this.pointFrom(this.ball.position, out, distance);
   }
 
   /**
@@ -1873,21 +1934,27 @@ export class Simulation {
    */
   private refreshShotTarget(): void {
     const power = THREE.MathUtils.clamp(this.charge.amount, 0, 1);
+    if (this.kickingDelivery()) this.shotAim.lockId = null;
     const minD = SHOT_ARC.minRange;
-    const range = this.kickingDelivery() ? Math.max(1, this.tunables.kickRange) : 1;
-    const maxD = Math.max(minD, this.aimDistance() * range);
-    this.pointAlongAim(this.landingMarker.minPosition, minD);
-    this.pointAlongAim(this.landingMarker.maxPosition, maxD);
+    const maxD = this.maxFlightDistance();
+    const origin = this.releaseOrigin(this.getHuman(), this.tmp.side);
+    this.pointFrom(origin, this.landingMarker.minPosition, minD);
+    this.pointFrom(origin, this.landingMarker.maxPosition, maxD);
     const aimingTarget = this.tunables.powerMode === 'target' && this.shotAim.active;
     if (this.shotAim.lockId === null) {
-      this.pointAlongAim(this.shotAim.target, this.shotReach(power));
-      if (aimingTarget) this.pointAlongAim(this.markerShown, this.targetReach);
-      else this.markerShown.copy(this.shotAim.target);
+      this.pointFrom(origin, this.shotAim.target, this.shotReach(power));
+      this.applyCurveAimOffset(origin, this.shotAim.target);
+      if (aimingTarget) {
+        this.pointFrom(origin, this.markerShown, this.targetReach);
+        this.applyCurveAimOffset(origin, this.markerShown);
+      } else {
+        this.markerShown.copy(this.shotAim.target);
+      }
     } else {
       this.markerShown.copy(this.shotAim.target);
     }
     this.landingMarker.outOfReach = aimingTarget && this.shotAim.lockId === null && this.targetReach > maxD + 0.35;
-    this.landingMarker.distance = this.ball.position.distanceTo(this.markerShown);
+    this.landingMarker.distance = origin.distanceTo(this.markerShown);
     this.syncPullBand();
   }
 
@@ -2125,6 +2192,7 @@ export class Simulation {
     this.charge.kind = 'kick';
     this.charge.amount = power;
     this.pointAlongAim(this.shotAim.target, this.shotReach(power));
+    this.applyCurveAimOffset(this.ball.position, this.shotAim.target);
     const arc = this.plannedArc(power);
     this.ball.arc = {
       p0: arc.p0,
@@ -2471,25 +2539,65 @@ export class Simulation {
     this.match.statusMessage = best ? 'Pass' : 'Pass (no target)';
   }
 
+  /**
+   * Arc the held kick would launch. The flight starts at the foot, with half
+   * the throw bend (`kickCurve`), the same way `launchKick` builds it.
+   * Throw previews use the ball where it is, which is the hand.
+   */
+  private previewArc(player: PlayerState): {
+    p0: THREE.Vector3;
+    p1: THREE.Vector3;
+    p2: THREE.Vector3;
+    duration: number;
+    carryLeft: number;
+    carryDir: THREE.Vector3 | null;
+    carrySpeed: number;
+  } {
+    if (this.charge.kind !== 'kick') return this.plannedArc(this.charge.amount);
+    const savedBall = this.ball.position.clone();
+    this.ball.position.copy(this.footPoint(player, this.tmp.side));
+    const arc = this.plannedArc(this.charge.amount);
+    this.ball.position.copy(savedBall);
+    return arc;
+  }
+
+  private sampleArc(arc: {
+    p0: THREE.Vector3;
+    p1: THREE.Vector3;
+    p2: THREE.Vector3;
+    carryLeft: number;
+    carryDir: THREE.Vector3 | null;
+  }): THREE.Vector3[] {
+    const samples: THREE.Vector3[] = [];
+    const point = new THREE.Vector3();
+    for (let i = 0; i <= SHOT_ARC.samples; i++) {
+      quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
+      samples.push(point.clone());
+    }
+    if (arc.carryLeft > 0.2 && arc.carryDir) {
+      for (let i = 1; i <= 8; i++) {
+        samples.push(arc.p2.clone().addScaledVector(arc.carryDir, arc.carryLeft * (i / 8)));
+      }
+    }
+    return samples;
+  }
+
+  /** Straight distance from where the ball leaves to where the preview ends. */
+  private noteFlightDistance(ghost: THREE.Vector3[]): void {
+    if (this.shotAim.lockId !== null || ghost.length < 2) return;
+    const origin = ghost[0]!;
+    const end = ghost[ghost.length - 1]!;
+    this.landingMarker.distance = origin.distanceTo(end);
+  }
+
   private updateChargeGhost(player: PlayerState): void {
     if (!this.tunables.showChargeGhost) {
       this.chargeGhost = [];
       return;
     }
-    if (this.charge.kind === 'shoot' && this.shotAim.active) {
-      const arc = this.plannedArc(this.charge.amount);
-      const samples: THREE.Vector3[] = [];
-      const point = new THREE.Vector3();
-      for (let i = 0; i <= SHOT_ARC.samples; i++) {
-        quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
-        samples.push(point.clone());
-      }
-      if (arc.carryLeft > 0.2 && arc.carryDir) {
-        for (let i = 1; i <= 8; i++) {
-          samples.push(arc.p2.clone().addScaledVector(arc.carryDir, arc.carryLeft * (i / 8)));
-        }
-      }
-      this.chargeGhost = samples;
+    if ((this.charge.kind === 'shoot' || this.charge.kind === 'kick') && this.shotAim.active) {
+      this.chargeGhost = this.sampleArc(this.previewArc(player));
+      this.noteFlightDistance(this.chargeGhost);
       return;
     }
     const isHuman = player.role === 'human';
@@ -2896,8 +3004,9 @@ export class Simulation {
     if (Math.abs(pitch) > 1e-4) {
       const offset = position.clone().sub(human.position);
       offset.applyAxisAngle(basis.right, pitch);
-      position.copy(human.position).add(offset);
-      if (this.tunables.camShell && position.length() > shellLimit) position.setLength(shellLimit);
+      const end = human.position.clone().add(offset);
+      if (this.tunables.camShell) pullInsideSphere(position, human.position, end, shellLimit);
+      else position.copy(end);
     }
     // On-ball aim looks down the throw. Off-ball, look just past the hands so
     // the reach and the ball in front of it share the frame.
@@ -3107,7 +3216,7 @@ export class Simulation {
     const human = this.getHuman();
     const basis = this.cameraBasis();
     const hand = this.lookCarryPoint(human, this.tmp.holdTarget);
-    const raw = this.tmp.predictPos.copy(hand).addScaledVector(basis.forward, this.aimDistance());
+    const raw = this.tmp.predictPos.copy(hand).addScaledVector(basis.forward, this.maxFlightDistance());
     clampAimMarker(out, raw, hand, SHOT_ARC.minRange, this.markerLimit());
     const mate = this.teammateOnLook();
     if (!mate) return null;
@@ -3122,7 +3231,7 @@ export class Simulation {
     const holding = this.ball.possession === 'held' && this.ball.ownerId === human.id;
     if (this.shotAim.active && holding) {
       this.refreshShotTarget();
-      if (this.charge.kind === 'shoot') this.updateChargeGhost(human);
+      if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(human);
       this.landingMarker.visible = true;
       this.landingMarker.position.copy(this.markerShown);
       this.landingMarker.lockId = this.shotAim.lockId;

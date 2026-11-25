@@ -129,6 +129,11 @@ export interface Tunables {
   arcBendSpeed: number;
   /** Cap on mouse bend as a fraction of the hand→marker chord. */
   arcBendLimit: number;
+  /**
+   * How far the landing slides opposite the mouse bend, as a fraction of that bend.
+   * Zero keeps the end on the aim ray. Throws and kicks both use it.
+   */
+  curveAimOffset: number;
   /** Resting lob height as a fraction of the hand→marker chord. */
   arcHeight: number;
   /**
@@ -237,6 +242,8 @@ export interface Tunables {
   waterPixelScale: number;
   /** Caustic web frames per second. */
   causticFps: number;
+  /** Caustic drift in tiles per second. */
+  causticScroll: number;
   /** Diagonal light bands across the water view. */
   showLightBands: boolean;
   /** Mid water colour. `#2E8A84` is the Clearer body. */

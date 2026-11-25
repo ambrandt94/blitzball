@@ -15,6 +15,9 @@ import {
   CAUSTIC_FPS_DEFAULT,
   CAUSTIC_FPS_MAX,
   CAUSTIC_FPS_MIN,
+  CAUSTIC_SCROLL_DEFAULT,
+  CAUSTIC_SCROLL_MAX,
+  CAUSTIC_SCROLL_MIN,
   LIGHT_BANDS_DEFAULT,
   colorsForPreset,
   loadWaterColors,
@@ -23,6 +26,7 @@ import {
 } from '../render/waterSettings';
 
 const POWER_MODE_KEY = 'blitzball.powerMode';
+const CURVE_AIM_OFFSET_KEY = 'blitzball.curveAimOffset';
 const SECTIONS_KEY = 'blitzball.devSections';
 
 export interface RosterBotView {
@@ -57,6 +61,31 @@ function loadPowerMode(): PowerMode | null {
 function savePowerMode(mode: PowerMode): void {
   try {
     localStorage.setItem(POWER_MODE_KEY, mode);
+  } catch {
+    // Ignore quota and private-mode failures.
+  }
+}
+
+/** Saved curve-aim offset, clamped to the slider. Null when nothing valid is stored. */
+export function loadCurveAimOffset(): number | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    return parseCurveAimOffset(localStorage.getItem(CURVE_AIM_OFFSET_KEY));
+  } catch {
+    return null;
+  }
+}
+
+export function parseCurveAimOffset(raw: string | null): number | null {
+  if (raw === null || raw.trim() === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(1.25, Math.max(0, n));
+}
+
+function saveCurveAimOffset(value: number): void {
+  try {
+    localStorage.setItem(CURVE_AIM_OFFSET_KEY, String(value));
   } catch {
     // Ignore quota and private-mode failures.
   }
@@ -141,6 +170,7 @@ export function defaultTunables(): Tunables {
     arcAimSpeed: SHOT_ARC.aimSpeed,
     arcBendSpeed: SHOT_ARC.bendSpeed,
     arcBendLimit: SHOT_ARC.bendLimit,
+    curveAimOffset: SHOT_ARC.curveAimOffset,
     arcHeight: SHOT_ARC.height,
     arcHandCurve: SHOT_ARC.handCurve,
     shotPowerRate: SHOT_ARC.powerRate,
@@ -171,6 +201,7 @@ export function defaultTunables(): Tunables {
     waterQuality: 'high',
     waterPixelScale: 1,
     causticFps: CAUSTIC_FPS_DEFAULT,
+    causticScroll: CAUSTIC_SCROLL_DEFAULT,
     showLightBands: LIGHT_BANDS_DEFAULT,
     waterTint: waterColors.tint,
     waterDeep: waterColors.deep,
@@ -218,6 +249,8 @@ export class DevPanel {
     this.mount = root;
     const saved = loadPowerMode();
     if (saved) this.tunables.powerMode = saved;
+    const savedOffset = loadCurveAimOffset();
+    if (savedOffset !== null) this.tunables.curveAimOffset = savedOffset;
     const savedRoster = loadRoster();
     if (savedRoster) {
       this.matchPreset = savedRoster.preset ?? 'custom';
@@ -270,6 +303,7 @@ export class DevPanel {
       this.range('Arc aim speed', 'arcAimSpeed', 4, 70, 1);
       this.range('Arc bend speed', 'arcBendSpeed', 0, 140, 1);
       this.range('Arc bend limit', 'arcBendLimit', 0, 1.5, 0.05);
+      this.range('Curve aim offset', 'curveAimOffset', 0, 1.25, 0.05);
       this.range('Arc height', 'arcHeight', 0, 0.8, 0.01);
       this.range('Arc hand curve', 'arcHandCurve', 0, 0.6, 0.01);
       this.range('Shot carry', 'shotCarry', 0, 60, 0.5);
@@ -358,6 +392,7 @@ export class DevPanel {
       this.bool('Water refraction', 'waterRefraction');
       this.range('Pixel scale', 'waterPixelScale', 1, 3, 1);
       this.range('Caustic speed', 'causticFps', CAUSTIC_FPS_MIN, CAUSTIC_FPS_MAX, 0.05);
+      this.range('Scroll speed', 'causticScroll', CAUSTIC_SCROLL_MIN, CAUSTIC_SCROLL_MAX, 0.005);
       this.bool('Light bands', 'showLightBands');
       this.waterColor('Water tint', 'waterTint');
       this.waterColor('Deep color', 'waterDeep');
@@ -879,7 +914,8 @@ export class DevPanel {
       const n = parseFloat(input.value);
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
       value.textContent = n.toFixed(2);
-      if (key === 'arenaRadius' || key === 'waterPixelScale' || key === 'causticFps') this.onChange(key);
+      if (key === 'arenaRadius' || key === 'waterPixelScale' || key === 'causticFps' || key === 'causticScroll') this.onChange(key);
+      if (key === 'curveAimOffset') saveCurveAimOffset(n);
       if (key === 'goalieSkill' || key === 'goalieSkillHome' || key === 'goalieSkillAway') this.persistRoster();
     });
     wrap.append(name, input, value);
