@@ -110,6 +110,8 @@ export interface Tunables {
   aimAssist: number;
   showChargeGhost: boolean;
   showDebugStats: boolean;
+  /** On-screen control list. Shown on the first visit. */
+  showHelp: boolean;
   /** Max facing rate, radians per second. */
   bodyTurnRate: number;
   /** Seconds the turn rate takes to catch up. Higher is smoother. */

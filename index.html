@@ -79,26 +79,52 @@
       }
       #hints {
         position: absolute;
-        left: 16px;
-        bottom: 16px;
-        max-width: 440px;
-        padding: 10px 14px;
-        background: rgba(6, 16, 32, 0.75);
-        border: 1px solid rgba(140, 180, 255, 0.2);
+        left: 12px;
+        bottom: 12px;
+        margin: 0;
+        padding: 7px 10px;
+        list-style: none;
+        max-width: 280px;
+        background: rgba(6, 16, 32, 0.72);
+        border: 1px solid rgba(140, 180, 255, 0.22);
         border-radius: 8px;
-        font-size: 0.78rem;
-        line-height: 1.45;
-        opacity: 0.9;
+        font-size: 0.72rem;
+        line-height: 1.35;
+        color: #d7e8ff;
+        pointer-events: none;
+      }
+      #hints li {
+        margin: 0;
       }
       #hints kbd {
         display: inline-block;
-        padding: 1px 5px;
+        padding: 0 4px;
         margin: 0 1px;
         border-radius: 3px;
         background: rgba(255, 255, 255, 0.1);
         border: 1px solid rgba(255, 255, 255, 0.2);
         font-family: ui-monospace, monospace;
-        font-size: 0.72rem;
+        font-size: 0.68rem;
+      }
+      #hints[hidden] {
+        display: none;
+      }
+      #help-hint {
+        position: absolute;
+        left: 12px;
+        bottom: 12px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(6, 16, 32, 0.55);
+        border: 1px solid rgba(140, 180, 255, 0.18);
+        color: #d7e8ff;
+        font-size: 0.68rem;
+        letter-spacing: 0.02em;
+        opacity: 0.75;
+        pointer-events: none;
+      }
+      #help-hint[hidden] {
+        display: none;
       }
       #status {
         position: absolute;
@@ -431,19 +457,18 @@
         <div id="status">Swim, catch, pass, shoot</div>
         <div id="possession" class="free">Ball free</div>
         <div id="debug-stats"></div>
-        <div id="hints">
-          <div><kbd>WASD</kbd> swim with camera · <kbd>E</kbd> swim up · <kbd>Q</kbd> swim down · <kbd>Shift</kbd> sprint</div>
-          <div><kbd>Mouse</kbd> look (right/up) · click captures · <kbd>Esc</kbd> releases</div>
-          <div><kbd>X</kbd> claim · while squared up, <kbd>X</kbd> toggles catch-ready · <kbd>Z</kbd> drop · hold <kbd>F</kbd> to pass</div>
-          <div>With the ball, hold <kbd>LMB</kbd> to throw. The aim locks to you and the ball stays in hand. Meter, Hold, and Tap: the mouse bends the arc and the marker slides with power. Target: mouse left/right bends, mouse up/down (or the wheel) sets where it lands. Pull: drag down to charge, sideways to bend. <kbd>RMB</kbd> cancels, including the tap window.</div>
-          <div>Without the ball, tap <kbd>Space</kbd> for a short shoulder check. Hold it to charge a power tackle (the bar by the reticle fills in about half a second) and release to lunge. While catch-ready, that press deflects a nearby ball along your aim and does not catch it. Taps during a tap-power window do not check.</div>
-          <div><kbd>C</kbd> kicks at any time, with or without the ball. Tap it, or hold to wind up and release to swing. The foot strikes during the fast part of the swing: a ball in that volume takes the foot's speed, your momentum, and the windup. Timing the sweet spot is a clean strike; an early or late touch is a scuff. A miss has a short recovery. F is pass only.</div>
-          <div>Hold <kbd>RMB</kbd> to square up. The body treads upright, with or without the ball, and swim speed drops. Without the ball, <kbd>X</kbd> toggles catch-ready: both hands reach, a soft pass in the cone is caught, and a very hard shot can fumble. Letting go of <kbd>RMB</kbd> drops the stance. With the ball, hold <kbd>C</kbd> while squared up to drop-kick: same aim marker, curve, and power mode as a throw, then the ball leaves the foot. Releasing <kbd>RMB</kbd> cancels that aimed kick. The aqua beacon is where a loose ball will settle.</div>
-          <div><kbd>G</kbd> call for a pass. The roster match menu sets 1v1 through 5v5. Field bots pass and shoot; goalies and test chasers stay on their own brains. A hand edit becomes Custom. Goalie skill and field AI skill are in the Teams section.</div>
-          <div><kbd>MMB</kbd> toggles wide view · <kbd>V</kbd> zoom · <kbd>`</kbd> dev panel (roster and sections) · <kbd>R</kbd> reset ball</div>
-          <div><kbd>P</kbd> pause the sim · <kbd>]</kbd> step one physics frame. Time scale is in the dev panel and defaults to 1x. Look and the camera keep running.</div>
-          <div>Gamepad: left stick move, right stick look (while RT or B is held it aims the arc), LT square up, RT throw, B kick (hold to wind, release to swing; with the ball and LT held it is the aimed drop-kick), A or X grab / catch-ready, Y drop, RB tap a light tackle or hold a power tackle, d-pad up/down to swim up and down, LB zoom</div>
-        </div>
+        <ul id="hints">
+          <li><kbd>WASD</kbd> swim · <kbd>E</kbd>/<kbd>Q</kbd> up/down</li>
+          <li><kbd>Mouse</kbd> look · <kbd>RMB</kbd> square up</li>
+          <li>Hold <kbd>LMB</kbd> throw · drag to curve</li>
+          <li><kbd>C</kbd> kick</li>
+          <li><kbd>Space</kbd> tackle</li>
+          <li><kbd>X</kbd> claim · <kbd>Z</kbd> drop · <kbd>F</kbd> pass</li>
+          <li><kbd>G</kbd> call pass · <kbd>V</kbd> zoom · <kbd>R</kbd> reset</li>
+          <li><kbd>P</kbd> pause · <kbd>]</kbd> step · <kbd>H</kbd> hide</li>
+          <li>Pad: <kbd>RT</kbd> throw · <kbd>B</kbd> kick · <kbd>RB</kbd> tackle</li>
+        </ul>
+        <div id="help-hint" hidden>H: help</div>
         <div id="tackle-meter" aria-hidden="true"><div class="fill" id="tackle-fill"></div></div>
         <div id="charge">
           <span id="charge-label">Power</span>

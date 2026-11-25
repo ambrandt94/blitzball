@@ -44,6 +44,7 @@ const CURVE_AIM_OFFSET_KEY = 'blitzball.curveAimOffset';
 const TIME_SCALE_KEY = 'blitzball.timeScale';
 const TIME_SCALE_VERSION_KEY = 'blitzball.timeScaleVersion';
 const TIME_SCALE_FLIGHT_KEY = 'blitzball.timeScaleFlight';
+const SHOW_HELP_KEY = 'blitzball.showHelp';
 const SECTIONS_KEY = 'blitzball.devSections';
 
 export interface RosterBotView {
@@ -128,6 +129,25 @@ function loadFlightOnly(): boolean {
     return localStorage.getItem(TIME_SCALE_FLIGHT_KEY) === '1';
   } catch {
     return false;
+  }
+}
+
+function loadShowHelp(): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return true;
+    const stored = localStorage.getItem(SHOW_HELP_KEY);
+    if (stored === null) return true;
+    return stored === '1';
+  } catch {
+    return true;
+  }
+}
+
+function saveShowHelp(on: boolean): void {
+  try {
+    localStorage.setItem(SHOW_HELP_KEY, on ? '1' : '0');
+  } catch {
+    // Ignore quota and private-mode failures.
   }
 }
 
@@ -225,6 +245,7 @@ export function defaultTunables(): Tunables {
     aimAssist: 0.35,
     showChargeGhost: true,
     showDebugStats: true,
+    showHelp: true,
     bodyTurnRate: PLAYER.bodyTurnRate,
     turnSmooth: PLAYER.turnSmooth,
     bodyIdleSpeed: PLAYER.bodyIdleSpeed,
@@ -344,6 +365,7 @@ export class DevPanel {
     const savedScale = loadTimeScale();
     if (savedScale !== null) this.tunables.timeScale = savedScale;
     this.tunables.timeScaleFlightOnly = loadFlightOnly();
+    this.tunables.showHelp = loadShowHelp();
     const savedRoster = loadRoster();
     if (savedRoster) {
       this.matchPreset = savedRoster.preset ?? 'custom';
@@ -368,6 +390,14 @@ export class DevPanel {
     const value = input?.parentElement?.querySelector('.value');
     if (input) input.value = String(TIME_SCALE_DEFAULT);
     if (value) value.textContent = `${TIME_SCALE_DEFAULT.toFixed(2)}x`;
+  }
+
+  setShowHelp(shown: boolean): void {
+    this.tunables.showHelp = shown;
+    saveShowHelp(shown);
+    const box = this.root.querySelector<HTMLInputElement>('input[data-key="showHelp"]');
+    if (box) box.checked = shown;
+    this.onChange('showHelp');
   }
 
   setPaused(paused: boolean): void {
@@ -700,6 +730,7 @@ export class DevPanel {
       this.bool('Charge ghost', 'showChargeGhost');
       this.bool('Debug stats', 'showDebugStats');
       this.bool('Show AI intent', 'showAiIntent');
+      this.bool('Show help', 'showHelp');
     });
   }
 
@@ -1091,6 +1122,10 @@ export class DevPanel {
       if (key === 'goalAxisUp' || key === 'waterRefraction' || key === 'showLightBands') this.onChange(key);
       if (key === 'goalieHomeOverride' || key === 'goalieAwayOverride') this.persistRoster();
       if (key === 'timeScaleFlightOnly') saveFlightOnly(input.checked);
+      if (key === 'showHelp') {
+        saveShowHelp(input.checked);
+        this.onChange(key);
+      }
     });
     row.append(lab, input);
     this.mount.append(row);
