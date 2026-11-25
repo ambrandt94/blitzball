@@ -6,7 +6,13 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { ARENA_RADIUS, ARENA_REFERENCE, BALL } from '../game/constants';
 import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
-import { FOCUS_RING_RADIUS } from '../sim/focusCircle';
+import {
+  BIG_RING_SCALE_MAX,
+  BIG_RING_SCALE_MIN,
+  BIG_RING_SCALE_PER_M,
+  FOCUS_RING_RADIUS,
+  bigFocusRadius,
+} from '../sim/focusCircle';
 import { authoritativeUp } from '../sim/math';
 import { ChaseRig } from './chaseCamera';
 import { buildArenaDressing, type ArenaVisuals, type WaterRig } from './arenaDressing';
@@ -1257,11 +1263,18 @@ export class SceneView {
     }
     const dist = Math.max(0.5, this.camera.position.distanceTo(this.shotMarker.position));
     const locked = mark.lockId !== null;
-    const radius = mark.focusRadius > 0 ? mark.focusRadius : FOCUS_RING_RADIUS * THREE.MathUtils.clamp(dist * 0.022, 0.32, 2.05);
+    const radius = mark.focusRadius > 0 ? mark.focusRadius : bigFocusRadius(dist);
     const scale = Math.max(1e-4, radius / FOCUS_RING_RADIUS);
-    this.shotMarker.scale.setScalar(scale);
+    // The ring grows to the big focus circle. The dot stays a cursor on that edge.
+    this.shotMarker.scale.setScalar(1);
+    this.shotMarkerRing.scale.setScalar(scale);
     const core = this.shotMarker.getObjectByName('landingCore');
-    if (core) core.position.copy(mark.position).sub(circleAt).divideScalar(scale);
+    const glow = this.shotMarker.getObjectByName('landingGlow');
+    if (core) core.position.copy(mark.position).sub(circleAt);
+    if (glow) {
+      glow.position.copy(core ? core.position : mark.position);
+      glow.scale.set(0.9, 0.9, 1);
+    }
     this.shotMarkerRing.lookAt(this.camera.position);
 
     const far = mark.outOfReach;
@@ -1296,7 +1309,7 @@ export class SceneView {
     const toCam = this.camScratch.view.copy(this.camera.position).sub(point);
     if (toCam.lengthSq() > 1e-4) mesh.position.addScaledVector(toCam.normalize(), 0.55);
     const dist = Math.max(0.5, this.camera.position.distanceTo(mesh.position));
-    mesh.scale.setScalar(THREE.MathUtils.clamp(dist * 0.046, 0.65, 4.8));
+    mesh.scale.setScalar(THREE.MathUtils.clamp(dist * BIG_RING_SCALE_PER_M, BIG_RING_SCALE_MIN, BIG_RING_SCALE_MAX));
     mesh.lookAt(this.camera.position);
   }
 

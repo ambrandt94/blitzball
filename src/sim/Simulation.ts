@@ -50,7 +50,7 @@ import {
   resolveGoalRim,
   segmentScores,
 } from './goal';
-import { focusCircleRadius } from './focusCircle';
+import { FOCUS_FULL_SWIPE, bigFocusRadius } from './focusCircle';
 import { clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
 import { KICK_SWEET, KICK_SWING_TIME, kickFootPoint, kickFootSpeed, kickQuality } from './kick';
 import { throwPoseSeconds } from '../render/throwPose';
@@ -1946,24 +1946,33 @@ export class Simulation {
    * `curveAimOffset` 0 leaves the spot on the aim ray. Kicks use `kickCurve`, same as the arc.
    */
   /**
-   * Signed fraction of a full bend, -1..1 on each axis. A kick keeps `kickCurve`
-   * of the throw's bend. Full is the old chord cap, so extra mouse past it does nothing.
+   * Signed bend inside the big focus ring. Each axis is in -cap..cap, and the
+   * pair is pulled back so a diagonal lands on the ring instead of outside it.
+   * A kick keeps `kickCurve` of the throw. Cap is 1 at the default bend limit,
+   * and never more than the ring.
    */
-  private bendFraction(chordLen: number): { right: number; up: number } {
+  private bendFraction(): { right: number; up: number } {
     const curve = this.kickingDelivery() ? Math.max(0, this.tunables.kickCurve) : 1;
-    const full = Math.max(1e-4, this.tunables.arcBendLimit) * Math.max(1e-4, chordLen);
-    return {
-      right: THREE.MathUtils.clamp((this.shotAim.bendRight * curve) / full, -1, 1),
-      up: THREE.MathUtils.clamp((this.shotAim.bendUp * curve) / full, -1, 1),
-    };
+    const speed = Math.max(1, this.tunables.arcBendSpeed);
+    const full = speed * FOCUS_FULL_SWIPE;
+    const cap = Math.min(1, Math.max(0, this.tunables.arcBendLimit) / Math.max(0.05, SHOT_ARC.bendLimit));
+    let right = (this.shotAim.bendRight * curve) / full;
+    let up = (this.shotAim.bendUp * curve) / full;
+    const len = Math.hypot(right, up);
+    if (len > cap && len > 1e-8) {
+      const scale = cap / len;
+      right *= scale;
+      up *= scale;
+    }
+    return { right, up };
   }
 
-  /** Camera-to-marker distance used to size the focus circle the same way the view does. */
+  /** Camera-to-marker distance used to size the big ring the same way the view does. */
   private focusRadius(origin: THREE.Vector3, straight: THREE.Vector3): number {
     const ahead = origin.distanceTo(straight);
     const follow = Math.max(1.5, this.tunables.camDistance);
     const camDist = Math.hypot(follow + ahead, this.tunables.camHeight);
-    return focusCircleRadius(camDist);
+    return bigFocusRadius(camDist);
   }
 
   private applyCurveAimOffset(origin: THREE.Vector3, target: THREE.Vector3): void {
@@ -1973,7 +1982,7 @@ export class Simulation {
     const chordLen = chord.length();
     if (chordLen < 1e-3) return;
     chord.multiplyScalar(1 / chordLen);
-    const frac = this.bendFraction(chordLen);
+    const frac = this.bendFraction();
     if (frac.right * frac.right + frac.up * frac.up < 1e-8) return;
     const basis = this.cameraBasis();
     const axisUp = this.tmp.predictVel.copy(basis.up).addScaledVector(chord, -basis.up.dot(chord));
@@ -2143,12 +2152,13 @@ export class Simulation {
         }
       }
     }
-    // No mouse bend and no hand-curve slider: the control point stays on the
-    // chord. A resting lob or power loft was bending the line before any look input.
-    const frac = this.bendFraction(p0.distanceTo(p2));
-    const mouse = frac.right * frac.right + frac.up * frac.up > 1e-8;
-    const hand = Math.abs(this.tunables.arcHandCurve) > 1e-6;
-    const height = mouse || hand ? Math.max(0, this.tunables.arcHeight + this.tunables.shotPowerAngle * power) : 0;
+    // Loft scales with the vertical bend (and with an explicit hand-curve
+    // slider). Zero mouse input stays on the chord at every distance and
+    // charge. There is no threshold where a lob switches on.
+    const frac = this.bendFraction();
+    const vertical = Math.min(1, Math.abs(frac.up));
+    const handBlend = Math.min(1, Math.abs(this.tunables.arcHandCurve) / 0.12);
+    const loft = Math.max(vertical, handBlend) * Math.max(0, this.tunables.arcHeight + this.tunables.shotPowerAngle * power);
     const radius = this.focusRadius(p0, p2);
     const basis = this.cameraBasis();
     const p1 = shapedControl(
@@ -2157,12 +2167,12 @@ export class Simulation {
       p2,
       basis.right,
       basis.up,
-      height,
+      loft,
       frac.right * radius,
       frac.up * radius,
       this.tunables.arcBendLimit,
       limit,
-      hand ? this.tunables.arcHandCurve : 0,
+      this.tunables.arcHandCurve,
     );
     const straight = Math.max(0.5, p0.distanceTo(p2));
     const via = p0.distanceTo(p1) + p1.distanceTo(p2);
