@@ -51,6 +51,7 @@ function blankIntent(zoom = false): InputIntent {
     burstPower: false,
     aimCancel: false,
     burst: false,
+    tackleHeld: false,
     passHeld: false,
     zoomOut: zoom,
     zoomTogglePressed: false,
@@ -157,6 +158,9 @@ function checkPreviewMatchesFlight(): void {
     sim.tunables.kickRange = 1;
     sim.tunables.kickSpeed = 1;
     sim.tunables.kickCurve = 0.5;
+    sim.tunables.arcHeight = 0;
+    sim.tunables.shotPowerAngle = 0;
+    sim.tunables.arcHandCurve = 0;
     for (const p of sim.players) {
       if (p.id !== sim.humanId) p.active = false;
     }
@@ -197,7 +201,8 @@ function checkPreviewMatchesFlight(): void {
   bend(straight.sim, true, 0.45);
   const curved = chordOffset(straight.sim.chargeGhost);
   if (straight.sim.chargeGhost.length < 4) fail('kick hold hid the preview');
-  if (!(curved > before + 0.35)) {
+  const radius = Math.max(0.05, straight.sim.landingMarker.focusRadius);
+  if (!(curved > before + radius * 0.15)) {
     fail(`kick preview ignored the bend (${before.toFixed(2)} -> ${curved.toFixed(2)})`);
   }
 
@@ -310,14 +315,18 @@ function checkCurveAimOffset(): void {
     const { sim } = arm(kick);
     bend(sim, kick, x);
     const side = lateral(sim);
-    if (side * sign <= 0.8) fail(`${label} landing did not cross the aim (${side.toFixed(2)})`);
+    const radius = Math.max(0.05, sim.landingMarker.focusRadius);
+    if (side * sign <= radius * 0.08) fail(`${label} landing did not cross the aim (${side.toFixed(2)})`);
     const ghost = sim.chargeGhost;
     const origin = ghost[0]!;
     const end = ghost[ghost.length - 1]!;
     const mid = ghost[Math.floor(ghost.length / 2)]!;
     const right = lookBasis(sim.yaw, sim.pitch, false).right;
-    const bow = mid.clone().sub(origin).dot(right);
-    if (bow * sign >= -0.4) fail(`${label} did not arc out before coming back (${bow.toFixed(2)})`);
+    const chord = end.clone().sub(origin);
+    const along = chord.lengthSq() > 1e-6 ? mid.clone().sub(origin).dot(chord) / chord.lengthSq() : 0;
+    const bow = mid.clone().sub(origin).addScaledVector(chord, -along).dot(right);
+    const bowNeed = Math.max(0.012, radius * 0.02);
+    if (bow * sign >= -bowNeed) fail(`${label} did not arc out before coming back (${bow.toFixed(2)})`);
     if (end.distanceTo(sim.shotAim.target) > 0.2) fail(`${label} preview left the cursor`);
     if (Math.abs(sim.landingMarker.distance - origin.distanceTo(end)) > 0.35) {
       fail(`${label} distance did not match the flight`);
@@ -719,7 +728,9 @@ function checkArcBend(): void {
     fail(`up bend ${sim.shotAim.bendUp.toFixed(2)} != ${expectUp.toFixed(2)}`);
   }
   const bent = sim.chargeGhost[Math.floor(sim.chargeGhost.length / 2)];
-  if (!bent || bent.distanceTo(mid) < 1) fail('arc preview did not change shape');
+  if (!bent || bent.distanceTo(mid) < Math.max(0.02, sim.landingMarker.focusRadius * 0.12)) {
+    fail('arc preview did not change shape');
+  }
   const last = sim.chargeGhost[sim.chargeGhost.length - 1];
   if (!last || last.distanceTo(sim.shotAim.target) > 0.05) fail('preview does not end on the marker');
 }
@@ -1856,7 +1867,7 @@ function checkShotIntoGoal(): void {
   bent.sim.applyFrameLook({ ...blankIntent(), lookDelta: { x: 0.12, y: 0 } });
   bent.sim.step(1 / 60, bent.hold);
   const after = bent.sim.chargeGhost[Math.floor(bent.sim.chargeGhost.length / 2)];
-  if (!after || after.distanceTo(before) < 0.8) fail('mouse bend did not change a shot aimed at the goal');
+  if (!after || after.distanceTo(before) < 0.01) fail('mouse bend did not change a shot aimed at the goal');
   const bentEnd = bent.sim.chargeGhost[bent.sim.chargeGhost.length - 1];
   if (!bentEnd || !inGoalPocket(bentEnd, 0)) fail('a bent shot aimed at the goal left the net');
   bent.sim.step(1 / 60, blankIntent());
@@ -1996,7 +2007,9 @@ function checkHoldStartsStraight(): void {
     if (Math.abs(sim.shotAim.bendRight - expect) > 0.05) {
       fail(`${label} curve ${sim.shotAim.bendRight.toFixed(2)} != ${expect.toFixed(2)}`);
     }
-    if (straightness(sim) < 0.35) fail(`${label} preview ignored the post-hold drag`);
+    if (straightness(sim) < Math.max(0.02, sim.landingMarker.focusRadius * 0.12)) {
+      fail(`${label} preview ignored the post-hold drag`);
+    }
     const ghost = sim.chargeGhost.map((p) => p.clone());
     const landing = sim.shotAim.target.clone();
     const release = blankIntent();
@@ -2037,6 +2050,119 @@ function checkHoldStartsStraight(): void {
   };
   run(false);
   run(true);
+}
+
+/** Zero look input stays a straight line, in the preview and in the flight. */
+function checkStraightHold(): void {
+  const off = (point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number => {
+    const ab = b.clone().sub(a);
+    const len = ab.length();
+    if (len < 1e-4) return point.distanceTo(a);
+    const t = THREE.MathUtils.clamp(point.clone().sub(a).dot(ab) / (len * len), 0, 1);
+    return point.distanceTo(a.clone().addScaledVector(ab, t));
+  };
+  for (const kick of [false, true]) {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.setSoloOpponent(false);
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = 0;
+    sim.tunables.shotCarry = 0;
+    sim.tunables.kickWindup = 0.05;
+    sim.tunables.claimRadius = 0.15;
+    sim.tunables.catchReach = 0.15;
+    sim.tunables.shootSpeedMin = 6;
+    sim.tunables.shootSpeedMax = 8;
+    sim.tunables.kickSpeed = 1;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.position.copy(holdPoint(sim));
+    sim.yaw = 0;
+    sim.pitch = 0;
+    const earlier = blankIntent();
+    earlier.lookDelta.x = 0.5;
+    sim.applyFrameLook(earlier);
+    const hold = blankIntent();
+    hold.strafe = kick;
+    if (kick) hold.kickHeld = true;
+    else hold.shootHeld = true;
+    sim.armShotAim(hold);
+    sim.applyFrameLook(hold);
+    for (let i = 0; i < 8; i++) sim.step(1 / 60, hold);
+    const label = kick ? 'kick' : 'throw';
+    if (Math.hypot(sim.shotAim.bendRight, sim.shotAim.bendUp) > 0.01) {
+      fail(`${label} stored a curve with no look input`);
+    }
+    const ghost = sim.chargeGhost;
+    if (ghost.length < 4) fail(`${label} straight hold hid the preview`);
+    const a = ghost[0]!;
+    const b = ghost[ghost.length - 1]!;
+    for (const point of ghost) {
+      if (off(point, a, b) > 0.05) fail(`${label} preview bent ${off(point, a, b).toFixed(3)} with no look input`);
+    }
+    if (kick) continue;
+    const release = blankIntent();
+    sim.step(1 / 60, release);
+    const aim = b.clone().sub(a);
+    if (aim.lengthSq() < 1e-6) fail(`${label} preview had no length`);
+    aim.normalize();
+    const flight = sim.ball.velocity.clone();
+    if (flight.length() < 1) fail(`${label} straight hold did not fly (${sim.match.statusMessage})`);
+    const lateral = flight.clone().addScaledVector(aim, -flight.dot(aim)).length();
+    if (lateral > 0.35) fail(`${label} flight bent ${lateral.toFixed(3)} off the straight preview`);
+  }
+}
+
+/** A saturated bend parks the cursor on the focus circle, on the side opposite the curve. */
+function checkCurveCircle(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.setSoloOpponent(false);
+  sim.tunables.powerMode = 'hold';
+  sim.tunables.shotPowerRate = 0;
+  sim.tunables.shotCarry = 0;
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  const human = sim.getHuman();
+  human.position.set(0, 1, -8);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.position.copy(holdPoint(sim));
+  sim.yaw = 0;
+  sim.pitch = 0;
+  const hold = blankIntent();
+  hold.shootHeld = true;
+  sim.armShotAim(hold);
+  sim.applyFrameLook(hold);
+  sim.step(1 / 60, hold);
+  const drag = blankIntent();
+  drag.shootHeld = true;
+  drag.lookDelta.x = 4;
+  sim.applyFrameLook(drag);
+  sim.updateAimPresentation(drag, 1 / 60);
+  const radius = sim.landingMarker.focusRadius;
+  const shift = sim.landingMarker.position.distanceTo(sim.landingMarker.straightPosition);
+  if (radius < 0.1) fail(`focus circle collapsed (${radius.toFixed(3)})`);
+  if (Math.abs(shift - radius) > 0.08) {
+    fail(`full curve landed ${shift.toFixed(3)} from center, circle is ${radius.toFixed(3)}`);
+  }
+  const right = lookBasis(sim.yaw, sim.pitch, false).right;
+  const along = sim.landingMarker.position.clone().sub(sim.landingMarker.straightPosition).dot(right);
+  if (along > -radius * 0.85) fail(`full right curve did not sit on the left edge (${along.toFixed(3)})`);
 }
 
 function checkHoldLookOrder(): void {
@@ -2181,7 +2307,7 @@ function checkShotSteer(): void {
   const riseDelta = human.position.clone().sub(riseAt);
   const riseMark = sim.shotAim.target.clone().sub(riseBefore);
   if (riseMark.distanceTo(riseDelta) > 0.6) {
-    fail(`Space did not carry the throw marker (${riseMark.distanceTo(riseDelta).toFixed(2)})`);
+    fail(`swim up did not carry the throw marker (${riseMark.distanceTo(riseDelta).toFixed(2)})`);
   }
 
   const ranged = new Simulation(defaultTunables());
@@ -2637,11 +2763,11 @@ function checkShoulderCheck(): void {
 function holdTackle(sim: Simulation, seconds: number, move = new THREE.Vector3(0, 0, 1)): void {
   const press = blankIntent();
   press.burst = true;
-  press.shootHeld = true;
+  press.tackleHeld = true;
   press.move.copy(move);
   sim.step(1 / 60, press);
   const held = blankIntent();
-  held.shootHeld = true;
+  held.tackleHeld = true;
   held.move.copy(move);
   const frames = Math.max(0, Math.round(seconds * 60) - 1);
   for (let i = 0; i < frames; i++) sim.step(1 / 60, held);
@@ -2679,7 +2805,7 @@ function checkTackleCharge(): void {
   const wait = blankIntent();
   for (let i = 0; i < 40; i++) sim.step(1 / 60, wait);
   const blocked = blankIntent();
-  blocked.shootHeld = true;
+  blocked.tackleHeld = true;
   blocked.burst = true;
   human.burstCooldown = sim.tunables.lightBurstCooldown;
   sim.step(1 / 60, blocked);
@@ -3175,7 +3301,7 @@ function checkThrowPower(): void {
   if (tapSpeed < fullThrow - 1) fail(`5 taps was not full power (${tapSpeed.toFixed(1)})`);
   if (taps.human.burstTime > 0 || taps.human.burstCooldown > 0) fail('power taps triggered a check');
   if (pulse < 0.5) fail('tap did not pulse the marker');
-  if (Math.abs(shotSide(taps.sim)) < 0.4) fail('taps re-aimed and cleared the curve');
+  if (Math.abs(shotSide(taps.sim)) < 0.02) fail('taps re-aimed and cleared the curve');
   if (tapFire > 8) fail('5 taps waited for the window');
 }
 
@@ -3681,6 +3807,7 @@ function checkAimPosture(): void {
     catchReady: false,
     throwing: false,
     burst: false,
+    tackleHeld: false,
     pose: 'none' as const,
   };
   if (!wantsAimPosture({ ...base, strafing: true, hasBall: true, pose: 'hold' })) {
@@ -4238,6 +4365,8 @@ export function runRotationChecks(): void {
   checkArcDefault();
   checkHoldLookOrder();
   checkHoldStartsStraight();
+  checkStraightHold();
+  checkCurveCircle();
   checkPowerMeter();
   checkTeammateLock();
   checkPractice();

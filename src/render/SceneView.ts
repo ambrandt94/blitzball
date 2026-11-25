@@ -6,6 +6,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { ARENA_RADIUS, ARENA_REFERENCE, BALL } from '../game/constants';
 import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
+import { FOCUS_RING_RADIUS } from '../sim/focusCircle';
 import { authoritativeUp } from '../sim/math';
 import { ChaseRig } from './chaseCamera';
 import { buildArenaDressing, type ArenaVisuals, type WaterRig } from './arenaDressing';
@@ -593,10 +594,11 @@ export class SceneView {
     glow.name = 'landingGlow';
     glow.scale.set(1.7, 1.7, 1);
     glow.renderOrder = 12;
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.52, 0.05, 8, 36), ringMat);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(FOCUS_RING_RADIUS, 0.05, 8, 36), ringMat);
     ring.name = 'landingRing';
     ring.renderOrder = 13;
     const core = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 8), markerMat);
+    core.name = 'landingCore';
     core.renderOrder = 14;
     group.add(glow, ring, core);
     this.shotMarker = group;
@@ -788,6 +790,7 @@ export class SceneView {
       burstPower: false,
       aimCancel: false,
       burst: false,
+      tackleHeld: false,
       passHeld: false,
       zoomOut: intentZoom,
       zoomTogglePressed: false,
@@ -1246,15 +1249,19 @@ export class SceneView {
     this.placeReach(this.reachMax, mark.maxPosition, showReach);
     if (!mark.visible) return;
 
-    this.shotMarker.position.copy(mark.position);
-    const toCam = this.camScratch.view.copy(this.camera.position).sub(mark.position);
+    const circleAt = mark.focusRadius > 0 ? mark.straightPosition : mark.position;
+    this.shotMarker.position.copy(circleAt);
+    const toCam = this.camScratch.view.copy(this.camera.position).sub(circleAt);
     if (toCam.lengthSq() > 1e-4) {
       this.shotMarker.position.addScaledVector(toCam.normalize(), 0.85);
     }
     const dist = Math.max(0.5, this.camera.position.distanceTo(this.shotMarker.position));
     const locked = mark.lockId !== null;
-    const pulse = (locked ? 1 + Math.sin(this.pulse * 9) * 0.08 : 1) * (1 + mark.pulse * 0.72);
-    this.shotMarker.scale.setScalar(THREE.MathUtils.clamp(dist * 0.022, 0.32, 2.05) * pulse);
+    const radius = mark.focusRadius > 0 ? mark.focusRadius : FOCUS_RING_RADIUS * THREE.MathUtils.clamp(dist * 0.022, 0.32, 2.05);
+    const scale = Math.max(1e-4, radius / FOCUS_RING_RADIUS);
+    this.shotMarker.scale.setScalar(scale);
+    const core = this.shotMarker.getObjectByName('landingCore');
+    if (core) core.position.copy(mark.position).sub(circleAt).divideScalar(scale);
     this.shotMarkerRing.lookAt(this.camera.position);
 
     const far = mark.outOfReach;

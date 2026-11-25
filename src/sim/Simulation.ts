@@ -50,7 +50,8 @@ import {
   resolveGoalRim,
   segmentScores,
 } from './goal';
-import { cappedBend, clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
+import { focusCircleRadius } from './focusCircle';
+import { clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
 import { KICK_SWEET, KICK_SWING_TIME, kickFootPoint, kickFootSpeed, kickQuality } from './kick';
 import { throwPoseSeconds } from '../render/throwPose';
 import { PULL_FULL_TRAVEL, TARGET_DISTANCE_SPEED } from './shotPower';
@@ -211,6 +212,8 @@ export class Simulation {
   readonly landingMarker: LandingMarkerState = {
     visible: false,
     position: new THREE.Vector3(),
+    straightPosition: new THREE.Vector3(),
+    focusRadius: 0,
     lockId: null,
     distance: 0,
     showReach: false,
@@ -1091,7 +1094,7 @@ export class Simulation {
       return;
     }
 
-    if (this.tackleArmed && !intent.shootHeld) {
+    if (this.tackleArmed && !intent.tackleHeld) {
       const held = this.tackleHold;
       this.clearTackleCharge();
       const tap = Math.max(0.04, this.tunables.tackleTapTime);
@@ -1104,12 +1107,12 @@ export class Simulation {
       return;
     }
 
-    if (!this.tackleArmed && intent.burst && intent.shootHeld && ready) {
+    if (!this.tackleArmed && intent.burst && intent.tackleHeld && ready) {
       this.tackleArmed = true;
       this.tackleHold = 0;
     }
 
-    if (this.tackleArmed && intent.shootHeld) {
+    if (this.tackleArmed && intent.tackleHeld) {
       this.tackleHold += dt;
       const full = Math.max(0.05, this.tunables.tackleChargeTime);
       this.tackleCharge.active = true;
@@ -1117,7 +1120,7 @@ export class Simulation {
       return;
     }
 
-    if (!this.tackleArmed && intent.burst && !intent.shootHeld && ready) {
+    if (!this.tackleArmed && intent.burst && !intent.tackleHeld && ready) {
       this.fireTackle(player, wish, 'light', 0);
     }
   }
@@ -1942,21 +1945,36 @@ export class Simulation {
    * Slide a landing opposite the mouse bend so the ball arcs out and comes back.
    * `curveAimOffset` 0 leaves the spot on the aim ray. Kicks use `kickCurve`, same as the arc.
    */
+  /**
+   * Signed fraction of a full bend, -1..1 on each axis. A kick keeps `kickCurve`
+   * of the throw's bend. Full is the old chord cap, so extra mouse past it does nothing.
+   */
+  private bendFraction(chordLen: number): { right: number; up: number } {
+    const curve = this.kickingDelivery() ? Math.max(0, this.tunables.kickCurve) : 1;
+    const full = Math.max(1e-4, this.tunables.arcBendLimit) * Math.max(1e-4, chordLen);
+    return {
+      right: THREE.MathUtils.clamp((this.shotAim.bendRight * curve) / full, -1, 1),
+      up: THREE.MathUtils.clamp((this.shotAim.bendUp * curve) / full, -1, 1),
+    };
+  }
+
+  /** Camera-to-marker distance used to size the focus circle the same way the view does. */
+  private focusRadius(origin: THREE.Vector3, straight: THREE.Vector3): number {
+    const ahead = origin.distanceTo(straight);
+    const follow = Math.max(1.5, this.tunables.camDistance);
+    const camDist = Math.hypot(follow + ahead, this.tunables.camHeight);
+    return focusCircleRadius(camDist);
+  }
+
   private applyCurveAimOffset(origin: THREE.Vector3, target: THREE.Vector3): void {
-    const gain = Math.max(0, this.tunables.curveAimOffset);
-    if (gain <= 1e-4 || this.shotAim.lockId !== null) return;
+    const slider = THREE.MathUtils.clamp(this.tunables.curveAimOffset, 0, 1);
+    if (slider <= 1e-4 || this.shotAim.lockId !== null) return;
     const chord = this.tmp.predictPos.copy(target).sub(origin);
     const chordLen = chord.length();
     if (chordLen < 1e-3) return;
     chord.multiplyScalar(1 / chordLen);
-    const curve = this.kickingDelivery() ? Math.max(0, this.tunables.kickCurve) : 1;
-    const capped = cappedBend(
-      this.shotAim.bendRight * curve,
-      this.shotAim.bendUp * curve,
-      chordLen,
-      this.tunables.arcBendLimit,
-    );
-    if (capped.right * capped.right + capped.up * capped.up < 1e-6) return;
+    const frac = this.bendFraction(chordLen);
+    if (frac.right * frac.right + frac.up * frac.up < 1e-8) return;
     const basis = this.cameraBasis();
     const axisUp = this.tmp.predictVel.copy(basis.up).addScaledVector(chord, -basis.up.dot(chord));
     if (axisUp.lengthSq() < 1e-6) return;
@@ -1966,8 +1984,10 @@ export class Simulation {
     if (axisRight.lengthSq() < 1e-6) axisRight.crossVectors(chord, axisUp);
     if (axisRight.lengthSq() < 1e-6) return;
     axisRight.normalize();
-    target.addScaledVector(axisRight, -capped.right * gain);
-    target.addScaledVector(axisUp, -capped.up * gain);
+    // Opposite the bend, and never past the focus circle.
+    const radius = this.focusRadius(origin, target) * slider;
+    target.addScaledVector(axisRight, -frac.right * radius);
+    target.addScaledVector(axisUp, -frac.up * radius);
     clampAimMarker(target, target, origin, SHOT_ARC.minRange, this.markerLimit());
   }
 
@@ -1992,15 +2012,21 @@ export class Simulation {
     const aimingTarget = this.tunables.powerMode === 'target' && this.shotAim.active;
     if (this.shotAim.lockId === null) {
       this.pointFrom(origin, this.shotAim.target, this.shotReach(power));
+      this.landingMarker.straightPosition.copy(this.shotAim.target);
+      this.landingMarker.focusRadius = this.focusRadius(origin, this.shotAim.target);
       this.applyCurveAimOffset(origin, this.shotAim.target);
       if (aimingTarget) {
         this.pointFrom(origin, this.markerShown, this.targetReach);
+        this.landingMarker.straightPosition.copy(this.markerShown);
+        this.landingMarker.focusRadius = this.focusRadius(origin, this.markerShown);
         this.applyCurveAimOffset(origin, this.markerShown);
       } else {
         this.markerShown.copy(this.shotAim.target);
       }
     } else {
       this.markerShown.copy(this.shotAim.target);
+      this.landingMarker.straightPosition.copy(this.shotAim.target);
+      this.landingMarker.focusRadius = this.focusRadius(origin, this.shotAim.target);
     }
     this.landingMarker.outOfReach = aimingTarget && this.shotAim.lockId === null && this.targetReach > maxD + 0.35;
     this.landingMarker.distance = origin.distanceTo(this.markerShown);
@@ -2117,10 +2143,13 @@ export class Simulation {
         }
       }
     }
-    // Hand curve and resting height are full on the first frame. Power only
-    // adds a small loft on top, so the preview does not ease in from a tall lob.
-    const height = Math.max(0, this.tunables.arcHeight + this.tunables.shotPowerAngle * power);
-    const curve = this.kickingDelivery() ? Math.max(0, this.tunables.kickCurve) : 1;
+    // No mouse bend and no hand-curve slider: the control point stays on the
+    // chord. A resting lob or power loft was bending the line before any look input.
+    const frac = this.bendFraction(p0.distanceTo(p2));
+    const mouse = frac.right * frac.right + frac.up * frac.up > 1e-8;
+    const hand = Math.abs(this.tunables.arcHandCurve) > 1e-6;
+    const height = mouse || hand ? Math.max(0, this.tunables.arcHeight + this.tunables.shotPowerAngle * power) : 0;
+    const radius = this.focusRadius(p0, p2);
     const basis = this.cameraBasis();
     const p1 = shapedControl(
       new THREE.Vector3(),
@@ -2129,11 +2158,11 @@ export class Simulation {
       basis.right,
       basis.up,
       height,
-      this.shotAim.bendRight * curve,
-      this.shotAim.bendUp * curve,
+      frac.right * radius,
+      frac.up * radius,
       this.tunables.arcBendLimit,
       limit,
-      this.tunables.arcHandCurve,
+      hand ? this.tunables.arcHandCurve : 0,
     );
     const straight = Math.max(0.5, p0.distanceTo(p2));
     const via = p0.distanceTo(p1) + p1.distanceTo(p2);
@@ -3408,8 +3437,10 @@ export class Simulation {
       return;
     }
     this.landingMarker.lockId = this.placeStraightLanding(this.landingMarker.position);
+    this.landingMarker.straightPosition.copy(this.landingMarker.position);
     this.landingMarker.visible = true;
     const hand = this.lookCarryPoint(human, this.tmp.predictVel);
+    this.landingMarker.focusRadius = this.focusRadius(hand, this.landingMarker.position);
     this.landingMarker.distance = this.landingMarker.position.distanceTo(hand);
   }
 }

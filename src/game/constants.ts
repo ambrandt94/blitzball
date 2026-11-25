@@ -126,18 +126,18 @@ export const PLAYER = {
 export const SHOT_ARC = {
   /** Look-ray distance to the marker when the aim starts. */
   aimDistance: 32,
-  /** How fast A/D, W/S, and Space/C slide the marker, world units per second. */
+  /** How fast A/D and W/S slide the marker, world units per second. */
   aimSpeed: 22,
   /** World units of control-point bend per radian of mouse. */
   bendSpeed: 42,
   /** Max mouse bend as a fraction of the origin→target chord. */
   bendLimit: 0.85,
   /**
-   * Landing shift opposite the mouse bend, as a fraction of that bend.
-   * About a third puts the outward bow and the return landing on equal footing.
-   * Zero keeps the spot on the aim ray.
+   * How far a full bend slides the landing across the focus circle.
+   * 1 puts a max curve on the circle's edge. 0 keeps the spot on the aim ray.
+   * The shift never goes past the circle.
    */
-  curveAimOffset: 0.35,
+  curveAimOffset: 1,
   height: 0.06,
   /** Fraction of the chord, toward camera-right / the right hand. 0 throws straight. */
   handCurve: 0,
