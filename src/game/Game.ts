@@ -2,6 +2,8 @@ import { FIXED_DT } from './constants';
 import { InputManager } from '../input/InputManager';
 import { SceneView } from '../render/SceneView';
 import { Simulation } from '../sim/Simulation';
+import { BLITZBALL_OUTFITS } from '../characters/blitzball';
+import { loadCharacterSettings, saveCharacterSettings } from '../ui/characterSettings';
 import { DevPanel, defaultTunables } from '../ui/DevPanel';
 import type { InputIntent } from './types';
 
@@ -116,7 +118,15 @@ export class Game {
         applyRoster: (spec) => this.sim.applyRoster(spec),
         exportRoster: () => this.sim.exportRoster(),
       },
+      {
+        outfits: BLITZBALL_OUTFITS.map((outfit) => ({ id: outfit.id, label: outfit.label })),
+        onChange: (settings) => {
+          saveCharacterSettings(settings);
+          this.view.setCharacters(settings);
+        },
+      },
     );
+    this.view.setCharacters(loadCharacterSettings());
     const shot = new URLSearchParams(location.search).get('shot');
     if (shot === 'wide' || shot === 'inside' || shot === 'ball' || shot === 'windup' || shot === 'bank' || shot === 'play') {
       this.shotMode = shot;

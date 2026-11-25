@@ -1,0 +1,13 @@
+{
+  "name": "character-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Data-driven humanoid wardrobe: races, layered slots, garment hides, and team tint.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "peerDependencies": {
+    "three": ">=0.150.0"
+  }
+}

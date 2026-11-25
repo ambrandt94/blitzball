@@ -13,11 +13,15 @@ import { BubblePool } from './bubbles';
 import { createCatchBeacon } from './catchBeacon';
 import { blendLimbPose, swimLimbPose } from './limbs';
 import { buildGoalFrame } from './goalFrame';
+import { BLITZBALL_OUTFITS, createBlitzballKit, type OutfitId } from '../characters/blitzball';
+import { loadCharacter, loadTintMask } from '../../packages/character-kit/src/index.ts';
+import type { WardrobeManifest } from '../../packages/character-kit/src/index.ts';
+import { loadCharacterSettings, type CharacterSettings } from '../ui/characterSettings';
 import { createSwimmer } from './swimmer';
 import {
-  attachSwimmerModel,
   prepareSwimmerTemplate,
   readCarrierPalm,
+  replaceSwimmerModel,
   swimmerRig,
   updateSwimmerRig,
   type SwimmerTemplate,
@@ -145,6 +149,8 @@ export class SceneView {
   private splashMat!: THREE.MeshBasicMaterial;
   private nearBubbleAcc = 0;
   private swimmerTemplate: SwimmerTemplate | null = null;
+  private characters: CharacterSettings = loadCharacterSettings();
+  private outfitTemplates = new Map<OutfitId, { template: SwimmerTemplate; masks: Record<string, THREE.Texture | null> }>();
   private visuals: ArenaVisuals = {
     waterStyle: 'trailbound',
     waterPreset: 'Clearer',
@@ -257,11 +263,82 @@ export class SceneView {
     }
   }
 
+  /** Live outfit picks. The next player sync dresses anyone who changed. */
+  setCharacters(settings: CharacterSettings): void {
+    this.characters = settings;
+    for (const group of this.playerMeshes.values()) this.dress(group);
+  }
+
+  private outfitFor(group: THREE.Group): OutfitId {
+    const team = group.userData.team === 1 ? 1 : 0;
+    if (group.userData.marker === 'you') return this.characters.human;
+    return this.characters.team[team];
+  }
+
+  private dress(group: THREE.Group): void {
+    const outfit = this.outfitFor(group);
+    const packed = this.outfitTemplates.get(outfit) ?? this.outfitTemplates.values().next().value;
+    if (!packed) {
+      if (this.swimmerTemplate && !swimmerRig(group)) {
+        const team = group.userData.team === 1 ? 1 : 0;
+        const playerId = typeof group.userData.playerId === 'number' ? group.userData.playerId : 0;
+        replaceSwimmerModel(group, this.swimmerTemplate, team, playerId);
+        this.markGameplay(group);
+      }
+      return;
+    }
+    if (group.userData.outfit === outfit && swimmerRig(group)) return;
+    const team = group.userData.team === 1 ? 1 : 0;
+    const playerId = typeof group.userData.playerId === 'number' ? group.userData.playerId : 0;
+    replaceSwimmerModel(group, packed.template, team, playerId, packed.masks);
+    group.userData.outfit = outfit;
+    this.markGameplay(group);
+  }
+
   /**
-   * If public/models/swimmer.glb loads, each swimmer swaps the wetsuit mesh for
-   * a skinned clone. A failed load leaves the procedural body in place.
+   * Character Forge swimwear, one prebaked GLB per outfit so bots stay on a few
+   * materials. A failed load falls back to the older single wetsuit.
    */
   private async tryLoadSwimmerModel(): Promise<void> {
+    const root = `${import.meta.env.BASE_URL}characters/`;
+    try {
+      const response = await fetch(`${root}wardrobe.json`);
+      if (!response.ok) throw new Error('wardrobe missing');
+      const manifest = (await response.json()) as WardrobeManifest;
+      const kit = createBlitzballKit(manifest);
+      const masks = new Map<string, THREE.Texture>();
+      for (const outfit of BLITZBALL_OUTFITS) {
+        const asset = await loadCharacter(kit, kit.loadoutFromOutfit(outfit.id), root, { preferBaked: true });
+        const template = prepareSwimmerTemplate(asset.scene, asset.animations);
+        if (!template) continue;
+        const tex: Record<string, THREE.Texture | null> = {};
+        for (const [materialName, garmentId] of Object.entries(asset.tintMaterials)) {
+          const garment = kit.garment(garmentId);
+          if (!garment?.mask) {
+            tex[materialName] = null;
+            continue;
+          }
+          let mask = masks.get(garment.mask);
+          if (!mask) {
+            mask = await loadTintMask(`${root}${garment.mask}`);
+            masks.set(garment.mask, mask);
+          }
+          tex[materialName] = mask;
+        }
+        this.outfitTemplates.set(outfit.id, { template, masks: tex });
+      }
+      if (this.outfitTemplates.size > 0) {
+        for (const group of this.playerMeshes.values()) this.dress(group);
+        return;
+      }
+    } catch {
+      // Fall through to the single wetsuit.
+    }
+    await this.tryLoadLegacySwimmer();
+  }
+
+  /** Older single-file wetsuit. Used only when the wardrobe files are absent. */
+  private async tryLoadLegacySwimmer(): Promise<void> {
     const url = `${import.meta.env.BASE_URL}models/swimmer.glb`;
     try {
       const response = await fetch(url);
@@ -270,12 +347,7 @@ export class SceneView {
       const template = prepareSwimmerTemplate(gltf.scene, gltf.animations);
       if (!template) return;
       this.swimmerTemplate = template;
-      for (const group of this.playerMeshes.values()) {
-        const team = group.userData.team === 1 ? 1 : 0;
-        const playerId = typeof group.userData.playerId === 'number' ? group.userData.playerId : 0;
-        attachSwimmerModel(group, template, team, playerId);
-        this.markGameplay(group);
-      }
+      for (const group of this.playerMeshes.values()) this.dress(group);
     } catch {
       // Procedural swimmers stay.
     }
@@ -578,7 +650,7 @@ export class SceneView {
       group.userData.team = p.team;
       group.userData.playerId = p.id;
       group.userData.marker = marker;
-      if (this.swimmerTemplate) attachSwimmerModel(group, this.swimmerTemplate, p.team, p.id);
+      this.dress(group);
       group.visible = p.active && p.role !== 'stub';
       this.markGameplay(group);
       this.scene.add(group);

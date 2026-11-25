@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { installTeamTint } from '../../packages/character-kit/src/index.ts';
 import { ensureWaterFog } from './waterFog';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { BALL, PLAYER } from '../game/constants';
@@ -281,7 +282,7 @@ export function prepareSwimmerTemplate(
     if (!mesh.isMesh) return;
     for (const material of materialList(mesh)) {
       nearestTextures(material);
-      if (material.name === 'TeamTint') tint = true;
+      if (material.name === 'TeamTint' || material.name === 'TeamTint_under') tint = true;
     }
   });
   if (!tint) return null;
@@ -302,7 +303,11 @@ function requireBone(root: THREE.Object3D, name: string): THREE.Bone {
   return found as THREE.Bone;
 }
 
-function tintClone(root: THREE.Object3D, team: 0 | 1): void {
+function tintClone(
+  root: THREE.Object3D,
+  team: 0 | 1,
+  masks?: Record<string, THREE.Texture | null>,
+): void {
   const suit = TEAM[team].suit;
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
@@ -312,10 +317,13 @@ function tintClone(root: THREE.Object3D, team: 0 | 1): void {
       const cloned = material.clone();
       cloned.userData.waterFog = false;
       nearestTextures(cloned);
-      ensureWaterFog(cloned);
-      if (cloned instanceof THREE.MeshStandardMaterial && cloned.name === 'TeamTint') {
-        cloned.color.setHex(suit);
+      if (
+        cloned instanceof THREE.MeshStandardMaterial &&
+        (cloned.name === 'TeamTint' || cloned.name === 'TeamTint_under')
+      ) {
+        installTeamTint(cloned, suit, masks?.[cloned.name] ?? null, { invertMask: true });
       }
+      ensureWaterFog(cloned);
       return cloned;
     });
     mesh.material = next.length === 1 ? next[0]! : next;
@@ -343,12 +351,13 @@ export function attachSwimmerModel(
   template: SwimmerTemplate,
   team: 0 | 1,
   playerId: number,
+  masks?: Record<string, THREE.Texture | null>,
 ): SwimmerRig | null {
   const existing = group.userData.swimmerRig as SwimmerRig | undefined;
   if (existing) return existing;
   const clone = cloneSkinned(template.scene) as THREE.Group;
   try {
-    tintClone(clone, team);
+    tintClone(clone, team, masks);
     const wrapper = new THREE.Group();
     wrapper.name = 'swimmerModel';
     wrapper.scale.setScalar(SWIMMER_MODEL_SCALE);
@@ -462,6 +471,34 @@ export function attachSwimmerModel(
     });
     return null;
   }
+}
+
+function releaseModel(model: THREE.Object3D): void {
+  model.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    for (const material of materialList(mesh)) material.dispose();
+  });
+}
+
+/** Drop the current rig and dress this swimmer again. Geometries stay on the template. */
+export function replaceSwimmerModel(
+  group: THREE.Group,
+  template: SwimmerTemplate,
+  team: 0 | 1,
+  playerId: number,
+  masks?: Record<string, THREE.Texture | null>,
+): SwimmerRig | null {
+  const existing = group.userData.swimmerRig as SwimmerRig | undefined;
+  if (existing) {
+    const badge = existing.model.getObjectByName('teamBadge');
+    if (badge) group.add(badge);
+    existing.mixer.stopAllAction();
+    group.remove(existing.model);
+    releaseModel(existing.model);
+    delete group.userData.swimmerRig;
+  }
+  return attachSwimmerModel(group, template, team, playerId, masks);
 }
 
 export function swimmerRig(group: THREE.Object3D): SwimmerRig | null {
