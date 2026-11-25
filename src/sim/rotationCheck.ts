@@ -3383,6 +3383,7 @@ function windupRig(): { group: THREE.Group; rig: SwimmerRig } {
     upperR,
     lowerR,
     handR,
+    palmSocket: null,
     hips,
     thighL,
     thighR,

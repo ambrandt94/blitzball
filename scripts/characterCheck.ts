@@ -1,105 +1,62 @@
 /**
- * Wardrobe resolution and garment binding. Run with:
+ * Character Forge runtime 2.2.0 wardrobe. Run with:
  *   npx vite-node scripts/characterCheck.ts
  */
 import { readFileSync } from 'node:fs';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { applyHidePlan, attachGarment } from '../packages/character-kit/src/index.ts';
-import { createBlitzballKit, type OutfitId } from '../src/characters/blitzball';
-import type { WardrobeManifest } from '../packages/character-kit/src/index.ts';
+import * as THREE from 'three';
+import CF from '../public/cf/2.2.0/cf-runtime.mjs';
+import { outfitFromSaved, piecesForOutfit, recipeForOutfit } from '../src/characters/forge';
 import { parseCharacterSettings } from '../src/ui/characterSettings';
 
 function fail(message: string): never {
   throw new Error(message);
 }
 
-const manifest = JSON.parse(readFileSync('public/characters/wardrobe.json', 'utf8')) as WardrobeManifest;
-const kit = createBlitzballKit(manifest);
+const manifest = JSON.parse(readFileSync('public/cf/kits/blitzball/blitzball.cfkit.json', 'utf8')) as {
+  format: string;
+  namespace: string;
+  garments: Record<string, { hides?: string[]; dye?: { region: string; kind: string }[] }>;
+  clips: Record<string, { file: string }>;
+};
+if (manifest.format !== 'cf-kit/1') fail(`kit format ${manifest.format}`);
+if (manifest.namespace !== 'blitzball') fail('kit namespace');
+for (const id of ['trunks', 'onepiece', 'boardshorts', 'boardshorts_asym']) {
+  if (!manifest.garments[id]) fail(`missing garment ${id}`);
+}
+if (!manifest.clips.Swim || !manifest.clips.Tread) fail('kit clips');
+if (!manifest.garments.boardshorts_asym?.hides?.includes('trunks:leg_L')) fail('asym hide');
+if (manifest.garments.trunks?.dye?.[0]?.kind !== 'tint') fail('tint dye');
 
-const expectHidden: Record<OutfitId, { worn: string[]; visible: string[]; body: string[]; part?: string }> = {
-  onepiece: { worn: ['blitzball/onepiece'], visible: ['blitzball/onepiece'], body: ['Body_pelvis', 'Body_torso'] },
-  trunks: { worn: ['blitzball/trunks'], visible: ['blitzball/trunks'], body: ['Body_pelvis'] },
-  boardshorts: {
-    worn: ['blitzball/trunks', 'blitzball/boardshorts'],
-    visible: ['blitzball/boardshorts'],
-    body: ['Body_pelvis', 'Body_thigh_L', 'Body_thigh_R'],
-  },
-  boardshorts_asym: {
-    worn: ['blitzball/trunks', 'blitzball/boardshorts_asym'],
-    visible: ['blitzball/trunks', 'blitzball/boardshorts_asym'],
-    body: ['Body_pelvis', 'Body_thigh_L'],
-    part: 'Garment_trunks_leg_L',
-  },
+const runtime = CF as {
+  init(o: { THREE: typeof THREE; baseUrl: string }): Promise<unknown>;
+  loadKit(src: object, o?: { baseUrl?: string }): Promise<{ namespace: string; garments: string[]; clips: string[] }>;
+  blankRecipe(race?: string): object;
+  normalize(r: object): { outfit: Record<string, { id: string }>; dye: Record<string, Record<string, string>> };
+  equip(r: object, slot: string, id: string): { recipe: { outfit: Record<string, { id: string }>; dye: Record<string, Record<string, string>> } };
+  dye(r: object, id: string, region: string, value: string): { recipe: { outfit: Record<string, { id: string }>; dye: Record<string, Record<string, string>> } };
 };
 
-for (const [id, expect] of Object.entries(expectHidden) as [OutfitId, (typeof expectHidden)[OutfitId]][]) {
-  const plan = kit.resolve(kit.loadoutFromOutfit(id));
-  const worn = [...plan.worn].sort().join(',');
-  const wantWorn = [...expect.worn].sort().join(',');
-  if (worn !== wantWorn) fail(`${id} wore ${worn}`);
-  const visible = [...plan.visible].sort().join(',');
-  const wantVisible = [...expect.visible].sort().join(',');
-  if (visible !== wantVisible) fail(`${id} showed ${visible}`);
-  for (const node of expect.body) {
-    if (!plan.hiddenBodyNodes.includes(node)) fail(`${id} left ${node} visible`);
-  }
-  if (!plan.bakedFile) fail(`${id} had no baked look`);
-  if (expect.part && !plan.hiddenGarmentNodes.some((item) => item.nodeName === expect.part)) {
-    fail(`${id} did not hide ${expect.part}`);
-  }
-}
+await runtime.init({ THREE, baseUrl: new URL('../public/cf/2.2.0/', import.meta.url).href });
+const loaded = await runtime.loadKit(manifest, {
+  baseUrl: new URL('../public/cf/kits/blitzball/', import.meta.url).href,
+});
+if (!loaded.garments.includes('blitzball/boardshorts')) fail(`garments ${loaded.garments.join(',')}`);
+if (!loaded.clips.includes('Swim') || !loaded.clips.includes('Tread')) fail(`clips ${loaded.clips.join(',')}`);
 
-const catalog = kit.registry();
-if (catalog.project !== 'blitzball') fail(`registry project was ${catalog.project}`);
-if (catalog.bands.join('<') !== 'under<base<mid<armor<outer') fail('band order changed');
-const shorts = catalog.garments.find((garment) => garment.id === 'blitzball/boardshorts');
-if (!shorts?.displaces.includes('blitzball/boardshorts_asym')) fail('displaces was not prefixed');
-if (!shorts.incompatible.includes('blitzball/boardshorts_asym')) fail('incompatible did not mirror displaces');
-
-const both = kit.loadoutFromOutfit('boardshorts');
-both.slots.legs = 'blitzball/boardshorts';
-both.slots.torso_inner = 'blitzball/onepiece';
-const mixed = kit.resolve(both);
-if (mixed.visible.includes('blitzball/trunks')) fail('one-piece left the trunks on');
-if (!mixed.hiddenBodyNodes.includes('Body_torso')) fail('one-piece left the torso skin on');
-
-const round = kit.parse(kit.serialize(kit.loadoutFromOutfit('boardshorts_asym', { 'blitzball/trunks': '#112233' })));
-if (!round || round.outfit !== 'boardshorts_asym' || round.colors['blitzball/trunks'] !== '#112233') {
-  fail('loadout did not round-trip');
+const cf = runtime as unknown as Parameters<typeof recipeForOutfit>[0];
+const board = recipeForOutfit(cf, 'boardshorts', '#1c6fe0');
+if (board.outfit.legs?.id !== 'blitzball/boardshorts') fail('board shorts were not equipped');
+if (board.dye['blitzball/boardshorts']?.team?.toLowerCase() !== '#1c6fe0') fail('team dye missing');
+const asym = recipeForOutfit(cf, 'boardshorts_asym', '#f2642a');
+if (asym.outfit.smallclothes?.id !== 'blitzball/trunks' || asym.outfit.legs?.id !== 'blitzball/boardshorts_asym') {
+  fail('asymmetric shorts were not worn over trunks');
 }
-if (kit.parse('{') !== null) fail('broken loadout parsed');
-if (parseCharacterSettings('{"human":"trunks","team":["onepiece","boardshorts_asym"]}')?.human !== 'trunks') {
-  fail('character settings did not parse');
-}
+if (piecesForOutfit('onepiece')[0]?.[1] !== 'blitzball/onepiece') fail('one-piece id');
+
+if (outfitFromSaved('blitzball/trunks') !== 'trunks') fail('prefixed save did not map');
+if (outfitFromSaved('onepiece') !== 'onepiece') fail('old save did not map');
+const saved = parseCharacterSettings('{"human":"blitzball/boardshorts","team":["trunks","boardshorts_asym"]}');
+if (!saved || saved.human !== 'boardshorts' || saved.team[1] !== 'boardshorts_asym') fail('settings parse');
 if (parseCharacterSettings('{"human":"cape","team":["trunks","trunks"]}') !== null) fail('unknown outfit parsed');
-
-(globalThis as { self?: typeof globalThis }).self = globalThis;
-const loader = new GLTFLoader();
-async function parse(file: string) {
-  const buf = readFileSync(file);
-  const bytes = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
-  return loader.parseAsync(bytes, '');
-}
-
-const base = await parse('public/characters/swimmer_base.glb');
-const garment = await parse('public/characters/garment_trunks.glb');
-const meshes = attachGarment(base, garment);
-if (meshes.length !== 3) fail(`trunks attached ${meshes.length} meshes`);
-const hand = base.scene.getObjectByName('Hand_R');
-const bound = meshes[0]?.skeleton.bones.find((bone) => bone.name === 'Hand_R');
-if (!hand || bound !== hand) fail('garment did not bind to the base hand');
-const asym = kit.resolve(kit.loadoutFromOutfit('boardshorts_asym'));
-applyHidePlan(base.scene, { 'blitzball/trunks': meshes }, asym, kit.baseSegments());
-const hidden = meshes
-  .filter((mesh) => !mesh.visible)
-  .map((mesh) => mesh.name)
-  .sort();
-if (hidden.join(',') !== 'Garment_trunks_leg_L,Garment_trunks_upper') {
-  fail(`asymmetric shorts hid ${hidden.join(',') || 'nothing'}`);
-}
-const pelvis = base.scene.getObjectByName('Body_pelvis');
-const thighR = base.scene.getObjectByName('Body_thigh_R');
-if (!pelvis || pelvis.visible) fail('asymmetric shorts left the pelvis skin on');
-if (!thighR?.visible) fail('asymmetric shorts hid the bare right thigh');
 
 console.log('character checks passed');

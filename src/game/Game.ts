@@ -2,7 +2,7 @@ import { FIXED_DT } from './constants';
 import { InputManager } from '../input/InputManager';
 import { SceneView } from '../render/SceneView';
 import { Simulation } from '../sim/Simulation';
-import { BLITZBALL_OUTFITS } from '../characters/blitzball';
+import { BLITZBALL_OUTFITS } from '../characters/outfits';
 import { loadCharacterSettings, saveCharacterSettings } from '../ui/characterSettings';
 import { DevPanel, defaultTunables } from '../ui/DevPanel';
 import type { InputIntent } from './types';
