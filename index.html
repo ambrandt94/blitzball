@@ -124,7 +124,29 @@
         border-color: #ffe066;
         color: #ffe066;
       }
-      #charge {
+      #tackle-meter {
+        position: absolute;
+        top: 58%;
+        left: 50%;
+        width: 84px;
+        height: 8px;
+        transform: translate(-50%, -50%);
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.72);
+        border: 1px solid rgba(255, 196, 120, 0.9);
+        box-shadow: 0 0 10px rgba(255, 150, 60, 0.35);
+        overflow: hidden;
+        opacity: 0;
+        pointer-events: none;
+      }
+      #tackle-meter.visible {
+        opacity: 1;
+      }
+      #tackle-meter .fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #ff8a3d, #ffe066);
+      }
         position: absolute;
         bottom: 148px;
         left: 50%;
@@ -391,12 +413,13 @@
           <div><kbd>Mouse</kbd> look (right/up) · click captures · <kbd>Esc</kbd> releases</div>
           <div><kbd>E</kbd> claim · <kbd>Q</kbd> drop · hold <kbd>F</kbd> charge pass</div>
           <div>With the ball, hold <kbd>LMB</kbd> to throw. The aim locks to you and the ball stays in hand. Meter, Hold, and Tap: the mouse bends the arc and the marker slides with power. Target: mouse left/right bends, mouse up/down (or the wheel) sets where it lands. Pull: drag down to charge, sideways to bend. <kbd>RMB</kbd> cancels, including the tap window.</div>
-          <div>Without the ball, <kbd>LMB</kbd> shoulder-checks along your swim (or your facing, if you are not steering). It knocks swimmers back and pops a held ball loose. The click that captures the mouse does not check. Taps during a tap-power window do not check.</div>
+          <div>Without the ball, tap <kbd>LMB</kbd> for a short shoulder check. Hold it to charge a power tackle (the bar by the reticle fills in about half a second) and release to lunge. A tap is a shorter lunge with less knockback. A power tackle hits harder, is less sure to pop the ball until the bar is full, and you recover for a moment. Both hit teammates. The click that captures the mouse does not check. Taps during a tap-power window do not check.</div>
           <div>Hold <kbd>RMB</kbd> off-ball to reach and catch (wider mitt, no aim mark). With the ball, <kbd>RMB</kbd> puts the landing marker on the straight throw and shows no curve. The number on the marker is the landing distance. Faint rings mark min and max reach while you throw. The aqua beacon is where a loose ball will settle.</div>
           <div><kbd>G</kbd> call for a pass. The dev panel roster adds and removes bots (six a side, or none). A <b>Test chaser</b> swims slowly and holds the ball. <b>Normal</b> teammates pass back; normal defense holds unless Normal defense chases is on.</div>
           <div><kbd>MMB</kbd> toggles wide view · <kbd>V</kbd> zoom · <kbd>`</kbd> dev panel (roster and sections) · <kbd>R</kbd> reset ball</div>
           <div>Gamepad: left stick move (while RT is held it creeps and the right stick bends the arc), RB/LT up/down, A claim, X pass, RT shoot, Y aim, LB zoom</div>
         </div>
+        <div id="tackle-meter" aria-hidden="true"><div class="fill" id="tackle-fill"></div></div>
         <div id="charge">
           <span id="charge-label">Power</span>
           <div class="track"><div class="fill" id="charge-fill"></div></div>

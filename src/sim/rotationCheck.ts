@@ -1743,7 +1743,12 @@ function checkShoulderCheck(): void {
   if (enemy.staggerTime <= 0) fail('checked swimmer was not staggered');
   if (human.hitFlash <= 0 || enemy.hitFlash <= 0) fail('check did not flash both swimmers');
   if (sim.cameraShake <= 0) fail('a landed check did not shake the camera');
-  if (human.burstCooldown < 0.75) fail(`check cooldown was ${human.burstCooldown.toFixed(2)}`);
+  if (human.burstCooldown < sim.tunables.lightBurstCooldown * 0.7) {
+    fail(`light check cooldown was ${human.burstCooldown.toFixed(2)}`);
+  }
+  if (human.burstCooldown > sim.tunables.lightBurstCooldown + 0.08) {
+    fail('a tap used the power-tackle cooldown');
+  }
   const gap = human.position.distanceTo(enemy.position);
   if (gap < PLAYER.radius * 2 - 0.05) fail(`check left the bodies overlapping (${gap.toFixed(3)})`);
 
@@ -1812,6 +1817,176 @@ function checkShoulderCheck(): void {
   if (swimmer.velocity.length() > PLAYER.maxSpeed * 0.45) {
     fail(`stagger still swam at ${swimmer.velocity.length().toFixed(2)}`);
   }
+}
+
+function holdTackle(sim: Simulation, seconds: number, move = new THREE.Vector3(0, 0, 1)): void {
+  const press = blankIntent();
+  press.burst = true;
+  press.shootHeld = true;
+  press.move.copy(move);
+  sim.step(1 / 60, press);
+  const held = blankIntent();
+  held.shootHeld = true;
+  held.move.copy(move);
+  const frames = Math.max(0, Math.round(seconds * 60) - 1);
+  for (let i = 0; i < frames; i++) sim.step(1 / 60, held);
+}
+
+function checkTackleCharge(): void {
+  const sim = new Simulation(defaultTunables());
+  const human = solo(sim);
+  human.position.set(0, 0, -8);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.position.set(30, 20, 10);
+  sim.ball.claimLock = 9;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+
+  holdTackle(sim, 0.08);
+  if (!sim.tackleCharge.active || sim.tackleCharge.amount <= 0) fail('tackle charge did not show');
+  if (sim.tackleCharge.amount > sim.tunables.tackleTapTime / sim.tunables.tackleChargeTime + 0.08) {
+    fail(`a tap filled the bar to ${sim.tackleCharge.amount.toFixed(2)}`);
+  }
+  if (human.burstTime > 0) fail('the check lunged before release');
+  sim.step(1 / 60, blankIntent());
+  if (sim.tackleCharge.active) fail('the charge bar stayed up after release');
+  if (human.burstTime <= 0) fail('a short click did not shoulder-check');
+  if (human.staggerTime > 0) fail('a tap staggered the checker');
+  if (human.burstCooldown > sim.tunables.lightBurstCooldown + 0.02) fail('a tap took the power cooldown');
+  const tapSpeed = human.velocity.length();
+  if (tapSpeed > sim.tunables.lightBurstSpeed * 1.08) fail(`tap lunged at ${tapSpeed.toFixed(2)}`);
+  if (tapSpeed < sim.tunables.lightBurstSpeed * 0.7) fail(`tap was too weak (${tapSpeed.toFixed(2)})`);
+
+  const wait = blankIntent();
+  for (let i = 0; i < 40; i++) sim.step(1 / 60, wait);
+  const blocked = blankIntent();
+  blocked.shootHeld = true;
+  blocked.burst = true;
+  human.burstCooldown = sim.tunables.lightBurstCooldown;
+  sim.step(1 / 60, blocked);
+  if (sim.tackleCharge.active) fail('a check on cooldown started a charge');
+
+  human.burstCooldown = 0;
+  human.burstTime = 0;
+  human.velocity.set(0, 0, 0);
+  holdTackle(sim, sim.tunables.tackleChargeTime);
+  if (sim.tackleCharge.amount < 0.95) fail(`full charge only reached ${sim.tackleCharge.amount.toFixed(2)}`);
+  sim.step(1 / 60, blankIntent());
+  if (sim.tackleCharge.active) fail('power release left the bar up');
+  const powerSpeed = human.velocity.length();
+  if (powerSpeed < sim.tunables.burstSpeed * 0.75) fail(`power tackle was ${powerSpeed.toFixed(2)}`);
+  if (human.staggerTime < sim.tunables.tackleSelfStagger * 0.5) fail('power tackle did not self-stagger');
+  if (human.burstCooldown < sim.tunables.burstCooldown * 0.7) {
+    fail(`power cooldown was ${human.burstCooldown.toFixed(2)}`);
+  }
+
+  const lightHit = new Simulation(defaultTunables());
+  lightHit.setSoloOpponent(false);
+  lightHit.kickoffLock = 0;
+  lightHit.tunables.defenseActive = false;
+  const tapper = solo(lightHit);
+  const lightFoe = lightHit.players.find((p) => p.team === 1 && p.role === 'ai');
+  if (!lightFoe) fail('missing a light-check target');
+  tapper.position.set(0, 0, 0);
+  tapper.velocity.set(0, 0, 0);
+  tapper.facing.set(0, 0, 1);
+  tapper.up.set(0, 1, 0);
+  lightHit.yaw = 0;
+  lightHit.pitch = 0;
+  lightFoe.position.set(0, 0, 0.85);
+  lightFoe.velocity.set(0, 0, 0);
+  lightFoe.active = true;
+  lightFoe.hasBall = true;
+  lightHit.ball.possession = 'held';
+  lightHit.ball.ownerId = lightFoe.id;
+  lightHit.ball.position.set(0, 0.15, 1.5);
+  const tap = blankIntent();
+  tap.burst = true;
+  tap.move.set(0, 0, 1);
+  lightHit.step(1 / 60, tap);
+  const lightLoose: string = lightHit.ball.possession;
+  if (lightFoe.hasBall || lightLoose !== 'free') fail('a tap did not pop the ball');
+  const lightKnock = lightFoe.velocity.length();
+
+  const powerHit = new Simulation(defaultTunables());
+  powerHit.setSoloOpponent(false);
+  powerHit.kickoffLock = 0;
+  powerHit.tunables.defenseActive = false;
+  powerHit.tunables.tacklePopMin = 1;
+  powerHit.tunables.tacklePopMax = 1;
+  const charger = solo(powerHit);
+  const powerFoe = powerHit.players.find((p) => p.team === 1 && p.role === 'ai');
+  if (!powerFoe) fail('missing a power-tackle target');
+  charger.position.set(0, 0, 0);
+  charger.velocity.set(0, 0, 0);
+  charger.facing.set(0, 0, 1);
+  charger.up.set(0, 1, 0);
+  powerHit.yaw = 0;
+  powerHit.pitch = 0;
+  powerFoe.position.set(0, 0, 0.85);
+  powerFoe.velocity.set(0, 0, 0);
+  powerFoe.active = true;
+  powerFoe.hasBall = true;
+  powerHit.ball.possession = 'held';
+  powerHit.ball.ownerId = powerFoe.id;
+  powerHit.ball.position.set(0, 0.15, 1.5);
+  holdTackle(powerHit, powerHit.tunables.tackleChargeTime);
+  powerHit.step(1 / 60, blankIntent());
+  const powerLoose: string = powerHit.ball.possession;
+  if (powerFoe.hasBall || powerLoose !== 'free') fail('a full power tackle did not pop the ball');
+  if (powerFoe.velocity.length() < lightKnock + 4) {
+    fail(`power knock ${powerFoe.velocity.length().toFixed(2)} was not above the tap ${lightKnock.toFixed(2)}`);
+  }
+  if (powerFoe.staggerTime <= 0) fail('power tackle did not stagger the target');
+  const pal = powerHit.players.find((p) => p.team === 0 && p.role === 'ai');
+  if (!pal) fail('missing a teammate for friendly fire');
+  charger.burstCooldown = 0;
+  charger.burstTime = 0;
+  charger.staggerTime = 0;
+  charger.position.set(0, 0, 0);
+  charger.velocity.set(0, 0, 0);
+  pal.position.set(0, 0, 0.85);
+  pal.velocity.set(0, 0, 0);
+  pal.active = true;
+  pal.hasBall = true;
+  powerHit.ball.possession = 'held';
+  powerHit.ball.ownerId = pal.id;
+  powerHit.ball.position.set(0, 0.15, 1.5);
+  holdTackle(powerHit, powerHit.tunables.tackleChargeTime);
+  powerHit.step(1 / 60, blankIntent());
+  const friendLoose: string = powerHit.ball.possession;
+  if (pal.hasBall || friendLoose !== 'free') fail('power tackle did not check a teammate');
+
+  const whiff = new Simulation(defaultTunables());
+  whiff.setSoloOpponent(false);
+  whiff.kickoffLock = 0;
+  whiff.tunables.defenseActive = false;
+  whiff.tunables.tacklePopMin = 0;
+  whiff.tunables.tacklePopMax = 0;
+  const swimmer = solo(whiff);
+  const holder = whiff.players.find((p) => p.team === 1 && p.role === 'ai');
+  if (!holder) fail('missing a carrier who keeps the ball');
+  swimmer.position.set(0, 0, 0);
+  swimmer.velocity.set(0, 0, 0);
+  swimmer.facing.set(0, 0, 1);
+  swimmer.up.set(0, 1, 0);
+  whiff.yaw = 0;
+  whiff.pitch = 0;
+  holder.position.set(0, 0, 0.85);
+  holder.velocity.set(0, 0, 0);
+  holder.active = true;
+  holder.hasBall = true;
+  whiff.ball.possession = 'held';
+  whiff.ball.ownerId = holder.id;
+  whiff.ball.position.set(0, 0.15, 1.5);
+  holdTackle(whiff, whiff.tunables.tackleChargeTime);
+  whiff.step(1 / 60, blankIntent());
+  if (!holder.hasBall || whiff.ball.possession !== 'held') fail('a zero pop chance still stripped the ball');
+  if (holder.staggerTime <= 0 || holder.velocity.length() < 4) fail('a missed pop did not knock the carrier');
 }
 
 function checkDrillOpponent(): void {
@@ -2654,6 +2829,7 @@ export function runRotationChecks(): void {
   checkTriangleOpening();
   checkBodiesSeparate();
   checkShoulderCheck();
+  checkTackleCharge();
   checkDrillOpponent();
   checkRosterEdit();
   checkArenaShell();

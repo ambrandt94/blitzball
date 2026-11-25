@@ -80,6 +80,10 @@ function makePlayer(
     burstCooldown: 0,
     burstPuff: 0,
     burstDir: new THREE.Vector3(0, 0, 1),
+    burstSpeedCap: 0,
+    burstKnock: 0,
+    burstPop: 0,
+    burstPopChance: 1,
     checkMask: 0,
     knockTime: 0,
     staggerTime: 0,
@@ -196,6 +200,10 @@ export class Simulation {
   kickoffLock = 0;
   /** 0..1 impact shake. The view reads it; the sim decays it. */
   cameraShake = 0;
+  /** Off-ball tackle charge. Hidden unless the button is held. */
+  readonly tackleCharge = { active: false, amount: 0 };
+  private tackleArmed = false;
+  private tackleHold = 0;
   /** Seconds the ball is outside the shell before the throw-in. */
   breachTime = 0;
   readonly breachPoint = new THREE.Vector3();
@@ -300,6 +308,10 @@ export class Simulation {
         p.burstTime = 0;
         p.burstCooldown = 0;
         p.burstPuff = 0;
+        p.burstSpeedCap = 0;
+        p.burstKnock = 0;
+        p.burstPop = 0;
+        p.burstPopChance = 1;
         p.checkMask = 0;
         p.knockTime = 0;
         p.staggerTime = 0;
@@ -341,6 +353,10 @@ export class Simulation {
     this.kickoffLock = 2.2;
     this.match.statusMessage = 'Face-off…';
     this.cameraShake = 0;
+    this.tackleArmed = false;
+    this.tackleHold = 0;
+    this.tackleCharge.active = false;
+    this.tackleCharge.amount = 0;
     this.breachTime = 0;
     this.nearShell = 0;
     this.impactPulse = 0;
@@ -883,30 +899,7 @@ export class Simulation {
     // The throw hold keeps the camera locked. WASD still swims, just slowly.
     // shotAim stays active through the release frame.
     const aimingShot = isHuman && player.hasBall && (intent.shootHeld || this.shotAim.active);
-
-    const canBurst =
-      isHuman &&
-      intent.burst &&
-      !player.hasBall &&
-      !aimingShot &&
-      !this.shotAim.active &&
-      !this.power.capturing() &&
-      player.burstCooldown <= 0 &&
-      this.kickoffLock <= 0 &&
-      this.match.resetTimer <= 0;
-    if (canBurst) {
-      const dir = player.burstDir;
-      if (wish.lengthSq() > 1e-6) dir.copy(wish).normalize();
-      else if (player.facing.lengthSq() > 1e-8) dir.copy(player.facing).normalize();
-      else dir.set(0, 0, 1);
-      player.checkMask = 0;
-      this.tmp.burstLaunch.copy(dir).multiplyScalar(Math.max(4, this.tunables.burstSpeed));
-      player.velocity.lerp(this.tmp.burstLaunch, 0.88);
-      player.burstTime = Math.max(0.05, this.tunables.burstDuration);
-      player.burstCooldown = Math.max(0.05, this.tunables.burstCooldown);
-      player.burstPuff = 1;
-      this.playPose(player, 'burst', player.burstTime + 0.06);
-    }
+    if (isHuman) this.updateTackle(player, intent, wish, dt, aimingShot);
 
     const bursting = player.burstTime > 0 && player.burstDir.lengthSq() > 1e-6;
     if (bursting) wish.copy(player.burstDir).normalize();
@@ -923,7 +916,7 @@ export class Simulation {
     if (player.sprinting) maxSpeed *= Math.max(1, this.tunables.sprintMult);
     if (aimingShot) maxSpeed *= PLAYER.throwSwimMult;
     else if (aimLocked && !bursting) maxSpeed *= this.tunables.strafeSpeedMult;
-    if (bursting) maxSpeed = Math.max(4, this.tunables.burstSpeed);
+    if (bursting) maxSpeed = Math.max(4, player.burstSpeedCap > 0 ? player.burstSpeedCap : this.tunables.burstSpeed);
     if (player.staggerTime > 0 && !bursting) {
       maxSpeed *= 0.16;
       accel *= 0.22;
@@ -943,6 +936,110 @@ export class Simulation {
     clampMagnitude(player.velocity, maxSpeed * (bursting ? 1.02 : 1.15));
     player.position.addScaledVector(player.velocity, dt);
     constrainPlayerToSphere(player.position, player.velocity, PLAYER.radius);
+  }
+
+  /**
+   * Off-ball left click. A release inside the tap window is a light check.
+   * Holding fills a power tackle and the mouse-up fires it. A one-frame
+   * `burst` without the button held is the light check, so headless clicks
+   * still lunge.
+   */
+  private updateTackle(
+    player: PlayerState,
+    intent: InputIntent,
+    wish: THREE.Vector3,
+    dt: number,
+    aimingShot: boolean,
+  ): void {
+    const ready =
+      !player.hasBall &&
+      !aimingShot &&
+      !this.shotAim.active &&
+      !this.power.capturing() &&
+      player.burstCooldown <= 0 &&
+      this.kickoffLock <= 0 &&
+      this.match.resetTimer <= 0;
+
+    if (this.tackleArmed && (player.hasBall || aimingShot || this.shotAim.active)) {
+      this.clearTackleCharge();
+      return;
+    }
+
+    if (this.tackleArmed && !intent.shootHeld) {
+      const held = this.tackleHold;
+      this.clearTackleCharge();
+      const tap = Math.max(0.04, this.tunables.tackleTapTime);
+      if (held <= tap) this.fireTackle(player, wish, 'light', 0);
+      else {
+        const span = Math.max(0.05, this.tunables.tackleChargeTime - tap);
+        const intensity = THREE.MathUtils.clamp((held - tap) / span, 0, 1);
+        this.fireTackle(player, wish, 'power', intensity);
+      }
+      return;
+    }
+
+    if (!this.tackleArmed && intent.burst && intent.shootHeld && ready) {
+      this.tackleArmed = true;
+      this.tackleHold = 0;
+    }
+
+    if (this.tackleArmed && intent.shootHeld) {
+      this.tackleHold += dt;
+      const full = Math.max(0.05, this.tunables.tackleChargeTime);
+      this.tackleCharge.active = true;
+      this.tackleCharge.amount = THREE.MathUtils.clamp(this.tackleHold / full, 0, 1);
+      return;
+    }
+
+    if (!this.tackleArmed && intent.burst && !intent.shootHeld && ready) {
+      this.fireTackle(player, wish, 'light', 0);
+    }
+  }
+
+  private clearTackleCharge(): void {
+    this.tackleArmed = false;
+    this.tackleHold = 0;
+    this.tackleCharge.active = false;
+    this.tackleCharge.amount = 0;
+  }
+
+  private fireTackle(player: PlayerState, wish: THREE.Vector3, kind: 'light' | 'power', intensity: number): void {
+    const dir = player.burstDir;
+    if (wish.lengthSq() > 1e-6) dir.copy(wish).normalize();
+    else if (player.facing.lengthSq() > 1e-8) dir.copy(player.facing).normalize();
+    else dir.set(0, 0, 1);
+
+    const lightSpeed = Math.max(4, this.tunables.lightBurstSpeed);
+    const powerSpeed = Math.max(lightSpeed, this.tunables.burstSpeed);
+    const lightWindow = Math.max(0.05, this.tunables.lightBurstDuration);
+    const powerWindow = Math.max(lightWindow, this.tunables.burstDuration);
+    const lightCooldown = Math.max(0.05, this.tunables.lightBurstCooldown);
+    const powerCooldown = Math.max(lightCooldown, this.tunables.burstCooldown);
+    const lightKnock = Math.max(1, this.tunables.lightKnock);
+    const powerKnock = Math.max(lightKnock, this.tunables.checkKnock);
+    const lightPop = PLAYER.checkPop * 0.72;
+    const t = THREE.MathUtils.clamp(intensity, 0, 1);
+    const speed = kind === 'light' ? lightSpeed : THREE.MathUtils.lerp(lightSpeed, powerSpeed, Math.max(0.2, t));
+    const window = kind === 'light' ? lightWindow : THREE.MathUtils.lerp(lightWindow, powerWindow, t);
+    const cooldown = kind === 'light' ? lightCooldown : THREE.MathUtils.lerp(lightCooldown + 0.2, powerCooldown, t);
+
+    player.checkMask = 0;
+    player.burstSpeedCap = speed;
+    player.burstKnock = kind === 'light' ? lightKnock : THREE.MathUtils.lerp(lightKnock, powerKnock, t);
+    player.burstPop = kind === 'light' ? lightPop : THREE.MathUtils.lerp(lightPop, PLAYER.checkPop, t);
+    const popMin = THREE.MathUtils.clamp(this.tunables.tacklePopMin, 0, 1);
+    const popMax = THREE.MathUtils.clamp(Math.max(popMin, this.tunables.tacklePopMax), 0, 1);
+    player.burstPopChance = kind === 'light' ? 1 : THREE.MathUtils.lerp(popMin, popMax, t);
+    this.tmp.burstLaunch.copy(dir).multiplyScalar(speed);
+    player.velocity.lerp(this.tmp.burstLaunch, 0.88);
+    player.burstTime = window;
+    player.burstCooldown = cooldown;
+    player.burstPuff = kind === 'light' ? 0.55 : 0.7 + 0.3 * t;
+    if (kind === 'power') {
+      const recover = Math.max(0, this.tunables.tackleSelfStagger) * (0.35 + 0.65 * t);
+      player.staggerTime = Math.max(player.staggerTime, recover);
+    }
+    this.playPose(player, 'burst', player.burstTime + 0.06);
   }
 
   /**
@@ -2245,7 +2342,9 @@ export class Simulation {
 
   private applyCheck(checker: PlayerState, target: PlayerState, dir: THREE.Vector3): void {
     checker.checkMask |= 1 << target.id;
-    target.velocity.copy(dir).multiplyScalar(PLAYER.checkKnock);
+    const knock = checker.burstKnock > 0 ? checker.burstKnock : Math.max(4, this.tunables.checkKnock);
+    const popSpeed = checker.burstPop > 0 ? checker.burstPop : PLAYER.checkPop;
+    target.velocity.copy(dir).multiplyScalar(knock);
     target.knockTime = PLAYER.checkKnockTime;
     target.staggerTime = PLAYER.checkStagger;
     target.hitFlash = 1;
@@ -2256,10 +2355,10 @@ export class Simulation {
     checker.velocity.addScaledVector(dir, -3.2);
     if (checker.id === this.humanId || target.id === this.humanId) this.cameraShake = 1;
     if (target.id === this.humanId && this.shotAim.active) this.clearShotAim();
-    if (target.hasBall && this.ball.ownerId === target.id) {
+    if (target.hasBall && this.ball.ownerId === target.id && Math.random() < checker.burstPopChance) {
       const fromPalm = this.carryPalm.has(target.id);
       if (fromPalm) this.stickBallToHand(target);
-      this.releaseBall(dir.clone().multiplyScalar(PLAYER.checkPop));
+      this.releaseBall(dir.clone().multiplyScalar(popSpeed));
       if (!fromPalm) {
         this.ball.position.copy(target.position).addScaledVector(dir, PLAYER.radius + BALL.radius + 0.4);
       }
@@ -2267,7 +2366,7 @@ export class Simulation {
       target.actionPose = 'none';
       target.actionPoseTime = 0;
     }
-    this.match.statusMessage = 'Shoulder check!';
+    this.match.statusMessage = checker.burstSpeedCap > this.tunables.lightBurstSpeed + 1 ? 'Power tackle!' : 'Shoulder check!';
   }
 
   private checkGoals(): void {

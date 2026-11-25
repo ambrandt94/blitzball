@@ -50,12 +50,31 @@ export interface Tunables {
   passSpeed: number;
   shootSpeedMin: number;
   shootSpeedMax: number;
-  /** Peak speed of the off-ball shoulder check. */
+  /** Peak speed of a full power tackle. */
   burstSpeed: number;
-  /** Seconds the check can still hit someone. */
+  /** Seconds a full power tackle can still hit someone. */
   burstDuration: number;
-  /** Seconds before another check. */
+  /** Seconds before another check after a full power tackle. */
   burstCooldown: number;
+  /** Peak speed of a quick-click shoulder check. */
+  lightBurstSpeed: number;
+  /** Seconds a tap can still hit someone. */
+  lightBurstDuration: number;
+  /** Seconds before another check after a tap. */
+  lightBurstCooldown: number;
+  /** Knockback of a tap, along the check. */
+  lightKnock: number;
+  /** Holds at or under this stay a tap. Longer holds become a power tackle. */
+  tackleTapTime: number;
+  /** Seconds of hold that fill the power tackle. */
+  tackleChargeTime: number;
+  /** Chance a power tackle knocks the ball loose, from a short charge to full. */
+  tacklePopMin: number;
+  tacklePopMax: number;
+  /** Seconds of self-stagger after a full power tackle. */
+  tackleSelfStagger: number;
+  /** Knockback of a full power tackle, along the check. */
+  checkKnock: number;
   ballDrag: number;
   aimAssist: number;
   showChargeGhost: boolean;
@@ -178,6 +197,14 @@ export interface PlayerState {
   burstPuff: number;
   /** World direction locked at the moment of the check. */
   burstDir: THREE.Vector3;
+  /** Speed cap of the lunge that is playing. 0 uses the power-tackle speed. */
+  burstSpeedCap: number;
+  /** Knockback of the lunge that is playing. 0 uses the power-tackle knock. */
+  burstKnock: number;
+  /** Ball pop speed of the lunge that is playing. 0 uses the default pop. */
+  burstPop: number;
+  /** Chance this lunge knocks a held ball loose. */
+  burstPopChance: number;
   /** Bitmask of player ids this check has already hit. */
   checkMask: number;
   /** Seconds of ragdoll left from a shoulder check. Steering is ignored. */

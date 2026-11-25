@@ -46,8 +46,24 @@ export const PLAYER = {
    */
   burstSpeed: 40,
   burstDuration: 0.26,
-  burstCooldown: 0.9,
-  /** Speed a checked swimmer is thrown, along the check. */
+  /** Full power-tackle cooldown. A tap is shorter. */
+  burstCooldown: 1.15,
+  /** Quick-click shoulder check. Shorter lunge than a charged tackle. */
+  lightBurstSpeed: 26,
+  lightBurstDuration: 0.14,
+  lightBurstCooldown: 0.45,
+  /** Knockback of a tap. A charged tackle scales up to `checkKnock`. */
+  lightKnock: 10,
+  /** Release at or under this hold and the click stays a light check. */
+  tackleTapTime: 0.15,
+  /** Hold that fills a power tackle. */
+  tackleChargeTime: 0.55,
+  /** Chance a power tackle pops the ball, at the start of the charge and at full. */
+  tacklePopMin: 0.4,
+  tacklePopMax: 1,
+  /** Self-stagger at a full power tackle, in seconds. */
+  tackleSelfStagger: 0.34,
+  /** Speed a checked swimmer is thrown, along a full power tackle. */
   checkKnock: 21,
   /** Seconds of reduced control after the knock ends. */
   checkStagger: 0.55,

@@ -62,6 +62,8 @@ export class Game {
   private chargeFill: HTMLElement;
   private chargeLabel: HTMLElement;
   private chargePips: HTMLElement;
+  private tackleEl: HTMLElement;
+  private tackleFill: HTMLElement;
   private goalBanner: HTMLElement | null;
   private lastThrowFeedback = 0;
   private audioCtx: AudioContext | null = null;
@@ -104,6 +106,8 @@ export class Game {
     this.chargeFill = document.getElementById('charge-fill')!;
     this.chargeLabel = document.getElementById('charge-label')!;
     this.chargePips = document.getElementById('charge-pips')!;
+    this.tackleEl = document.getElementById('tackle-meter')!;
+    this.tackleFill = document.getElementById('tackle-fill')!;
     this.goalBanner = document.getElementById('goal-banner');
 
     this.onResize();
@@ -221,6 +225,11 @@ export class Game {
       this.chargeEl.classList.remove('visible');
       this.syncPips(0, 0);
     }
+
+    const tackle = this.sim.tackleCharge;
+    this.tackleEl.classList.toggle('visible', tackle.active);
+    this.tackleEl.setAttribute('aria-hidden', tackle.active ? 'false' : 'true');
+    if (tackle.active) this.tackleFill.style.width = `${Math.round(tackle.amount * 100)}%`;
 
     this.debugStats.style.display = this.tunables.showDebugStats ? 'block' : 'none';
     if (this.tunables.showDebugStats) {

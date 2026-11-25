@@ -92,6 +92,16 @@ export function defaultTunables(): Tunables {
     burstSpeed: PLAYER.burstSpeed,
     burstDuration: PLAYER.burstDuration,
     burstCooldown: PLAYER.burstCooldown,
+    lightBurstSpeed: PLAYER.lightBurstSpeed,
+    lightBurstDuration: PLAYER.lightBurstDuration,
+    lightBurstCooldown: PLAYER.lightBurstCooldown,
+    lightKnock: PLAYER.lightKnock,
+    tackleTapTime: PLAYER.tackleTapTime,
+    tackleChargeTime: PLAYER.tackleChargeTime,
+    tacklePopMin: PLAYER.tacklePopMin,
+    tacklePopMax: PLAYER.tacklePopMax,
+    tackleSelfStagger: PLAYER.tackleSelfStagger,
+    checkKnock: PLAYER.checkKnock,
     ballDrag: BALL.drag,
     aimAssist: 0.35,
     showChargeGhost: true,
@@ -207,9 +217,22 @@ export class DevPanel {
       this.bool('Paddle anim', 'swimAnim');
       this.range('Paddle rate', 'swimAnimRate', 0.2, 4, 0.1);
       this.range('Paddle amount', 'swimAnimAmount', 0, 1.4, 0.05);
-      this.range('Check speed', 'burstSpeed', 16, 60, 0.5);
-      this.range('Check window', 'burstDuration', 0.08, 0.5, 0.01);
-      this.range('Check cooldown', 'burstCooldown', 0.2, 1.6, 0.01);
+    });
+
+    this.section('Tackle / Checking', 'tackle', () => {
+      this.range('Light speed', 'lightBurstSpeed', 8, 40, 0.5);
+      this.range('Light window', 'lightBurstDuration', 0.05, 0.35, 0.01);
+      this.range('Light cooldown', 'lightBurstCooldown', 0.1, 1.2, 0.01);
+      this.range('Light knock', 'lightKnock', 4, 30, 0.5);
+      this.range('Tap time', 'tackleTapTime', 0.05, 0.35, 0.01);
+      this.range('Charge time', 'tackleChargeTime', 0.2, 1.2, 0.01);
+      this.range('Power speed', 'burstSpeed', 16, 60, 0.5);
+      this.range('Power window', 'burstDuration', 0.08, 0.55, 0.01);
+      this.range('Power cooldown', 'burstCooldown', 0.3, 2, 0.01);
+      this.range('Power knock', 'checkKnock', 8, 40, 0.5);
+      this.range('Pop chance min', 'tacklePopMin', 0, 1, 0.01);
+      this.range('Pop chance full', 'tacklePopMax', 0, 1, 0.01);
+      this.range('Self stagger', 'tackleSelfStagger', 0, 0.8, 0.01);
     });
 
     this.section('Camera', 'camera', () => {
