@@ -5,6 +5,12 @@ export type TeamId = 0 | 1;
 /** How a held throw turns into shot power. `meter` is the default. */
 export type PowerMode = 'meter' | 'tap' | 'hold' | 'target' | 'pull';
 
+/** Chase look-ahead when ball cam is off. `aim` looks down the camera. */
+export type LookAheadMode = 'aim' | 'move' | 'ball';
+
+/** Saved camera framing. `custom` is any hand edit after a preset. */
+export type CameraPresetId = 'close' | 'default' | 'broadcast' | 'ball' | 'cinematic' | 'custom';
+
 export type PlayerRole = 'human' | 'ai' | 'stub';
 
 /** `chaser` is the slow test opponent. `normal` uses teammate or defense AI. */
@@ -140,6 +146,30 @@ export interface Tunables {
   shoulderOffset: number;
   /** Ease rate for that shift (1/seconds). Higher is snappier. */
   shoulderTransition: number;
+  /** Chase camera distance behind the swimmer. */
+  camDistance: number;
+  /** Camera height above the chase line, in world units. */
+  camHeight: number;
+  /** Extra pitch of the camera boom, in radians. Positive lifts the camera. */
+  camPitch: number;
+  /** Chase field of view. Wide view adds the built-in zoom-out gap on top. */
+  camFov: number;
+  /** How quickly the chase camera catches its pose (1/seconds). Higher is stiffer. */
+  camLag: number;
+  /** Where the chase look-ahead points when ball cam is off. */
+  lookAhead: LookAheadMode;
+  /** After the mouse rests, ease the view back behind the body. */
+  camRecenter: boolean;
+  /** Seconds of still look before auto-recenter starts. */
+  camRecenterDelay: number;
+  /** Look at the ball instead of down the aim. */
+  ballCam: boolean;
+  /** Camera distance while V or middle-click wide view is on. */
+  wideDistance: number;
+  /** Keep the chase camera inside the shell. Off lets a long follow sit outside. */
+  camShell: boolean;
+  /** Named camera setup. `custom` means the sliders no longer match a preset. */
+  cameraPreset: CameraPresetId;
   /** Stadium sunbeams. Off hides them; strength scales what is left at the shell. */
   showSunbeams: boolean;
   /** 0 hides the shafts. 1 is the tuned rim brightness. */

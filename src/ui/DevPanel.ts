@@ -1,6 +1,15 @@
-import { ARENA_RADIUS, BALL, CAMERA, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
-import type { BotBehavior, PowerMode, RosterSpec, Tunables } from '../game/types';
+import { ARENA_RADIUS, BALL, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
+import type { BotBehavior, CameraPresetId, PowerMode, RosterSpec, Tunables } from '../game/types';
 import { loadRoster, saveRoster } from './rosterStorage';
+import {
+  applyCameraPreset,
+  applyCameraSave,
+  isLookAhead,
+  loadCameraSettings,
+  noteCameraEdit,
+  saveCameraSettings,
+  defaultCameraFields,
+} from './cameraSettings';
 
 const POWER_MODE_KEY = 'blitzball.powerMode';
 const SECTIONS_KEY = 'blitzball.devSections';
@@ -129,10 +138,9 @@ export function defaultTunables(): Tunables {
     soloOpponent: true,
     arenaRadius: ARENA_RADIUS,
     teammatePassDelay: PRACTICE.passDelay,
-    shoulderOffset: CAMERA.shoulderOffset,
-    shoulderTransition: CAMERA.shoulderTransition,
     showSunbeams: true,
     sunbeamIntensity: 0.7,
+    ...defaultCameraFields(),
   };
 }
 
@@ -161,6 +169,8 @@ export class DevPanel {
     if (saved) this.tunables.powerMode = saved;
     const savedRoster = loadRoster();
     if (savedRoster) this.roster.applyRoster(savedRoster);
+    const savedCamera = loadCameraSettings();
+    if (savedCamera) applyCameraSave(this.tunables, savedCamera);
     this.collapsed = loadCollapsed();
     this.render();
   }
@@ -236,12 +246,28 @@ export class DevPanel {
     });
 
     this.section('Camera', 'camera', () => {
+      this.cameraPresetRow();
+      this.camRange('Follow distance', 'camDistance', 2, 24, 0.1);
+      this.camRange('Height', 'camHeight', 0, 10, 0.05);
+      this.camRange('Pitch offset', 'camPitch', -0.45, 0.45, 0.01);
+      this.camRange('Shoulder offset', 'shoulderOffset', 0, 4, 0.05);
+      this.camRange('Shoulder ease', 'shoulderTransition', 1, 18, 0.1);
+      this.camRange('FOV', 'camFov', 35, 100, 1);
+      this.camRange('Follow lag', 'camLag', 1, 24, 0.5);
+      this.camChoice('Look ahead', 'lookAhead', [
+        { value: 'aim', label: 'Aim' },
+        { value: 'move', label: 'Movement' },
+        { value: 'ball', label: 'Ball' },
+      ]);
+      this.camBool('Auto-recenter', 'camRecenter');
+      this.camRange('Recenter delay', 'camRecenterDelay', 0, 2.5, 0.05);
+      this.camBool('Ball cam', 'ballCam');
+      this.camRange('Wide distance', 'wideDistance', 12, 70, 0.5);
+      this.camBool('Shell collision', 'camShell');
       this.bool('Goal-axis up', 'goalAxisUp');
       this.bool('Zoom hold (V / LB)', 'zoomHoldMode');
       this.bool('Invert look X', 'mouseLookInvertX');
       this.bool('Invert look Y', 'mouseLookInvertY');
-      this.range('Shoulder offset', 'shoulderOffset', 0, 3.2, 0.05);
-      this.range('Shoulder transition', 'shoulderTransition', 1, 18, 0.1);
     });
 
     this.section('Arena', 'arena', () => {
@@ -407,6 +433,146 @@ export class DevPanel {
     });
     block.append(head, body);
     this.root.append(block);
+  }
+
+  private cameraPresetRow(): void {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('label');
+    lab.textContent = 'Preset';
+    lab.style.flex = '1';
+    const select = document.createElement('select');
+    select.dataset.preset = 'camera';
+    const options: { value: CameraPresetId; label: string }[] = [
+      { value: 'close', label: 'Close' },
+      { value: 'default', label: 'Default' },
+      { value: 'broadcast', label: 'Broadcast' },
+      { value: 'ball', label: 'Ball cam' },
+      { value: 'cinematic', label: 'Cinematic' },
+      { value: 'custom', label: 'Custom' },
+    ];
+    for (const option of options) {
+      const item = document.createElement('option');
+      item.value = option.value;
+      item.textContent = option.label;
+      select.append(item);
+    }
+    select.value = this.tunables.cameraPreset;
+    select.addEventListener('change', () => {
+      const value = select.value as CameraPresetId;
+      if (value === 'custom') {
+        noteCameraEdit(this.tunables);
+        saveCameraSettings(this.tunables);
+        return;
+      }
+      applyCameraPreset(this.tunables, value);
+      this.syncCameraWidgets();
+      saveCameraSettings(this.tunables);
+    });
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.textContent = 'Reset';
+    reset.title = 'Restore the Default camera preset';
+    reset.addEventListener('click', () => {
+      applyCameraPreset(this.tunables, 'default');
+      this.syncCameraWidgets();
+      saveCameraSettings(this.tunables);
+    });
+    row.append(lab, select, reset);
+    this.mount.append(row);
+  }
+
+  private markCameraCustom(): void {
+    if (this.tunables.cameraPreset === 'custom') return;
+    noteCameraEdit(this.tunables);
+    const select = this.root.querySelector<HTMLSelectElement>('select[data-preset="camera"]');
+    if (select) select.value = 'custom';
+  }
+
+  private syncCameraWidgets(): void {
+    const select = this.root.querySelector<HTMLSelectElement>('select[data-preset="camera"]');
+    if (select) select.value = this.tunables.cameraPreset;
+    for (const input of this.root.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-cam]')) {
+      const key = input.dataset.cam;
+      if (!key) continue;
+      const value = (this.tunables as unknown as Record<string, unknown>)[key];
+      if (input instanceof HTMLInputElement && input.type === 'checkbox') {
+        input.checked = Boolean(value);
+      } else {
+        input.value = String(value);
+      }
+      const readout = input.parentElement?.querySelector('.value');
+      if (readout && typeof value === 'number') readout.textContent = value.toFixed(2);
+    }
+  }
+
+  private camRange(label: string, key: keyof Tunables, min: number, max: number, step: number): void {
+    const wrap = document.createElement('label');
+    const name = document.createElement('span');
+    name.textContent = label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.dataset.cam = key;
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(this.tunables[key]);
+    const value = document.createElement('span');
+    value.className = 'value';
+    value.textContent = Number(this.tunables[key]).toFixed(2);
+    input.addEventListener('input', () => {
+      const n = parseFloat(input.value);
+      (this.tunables as unknown as Record<string, unknown>)[key] = n;
+      value.textContent = n.toFixed(2);
+      this.markCameraCustom();
+      saveCameraSettings(this.tunables);
+    });
+    wrap.append(name, input, value);
+    this.mount.append(wrap);
+  }
+
+  private camBool(label: string, key: keyof Tunables): void {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('label');
+    lab.style.flex = '1';
+    lab.textContent = label;
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.dataset.cam = key;
+    input.checked = Boolean(this.tunables[key]);
+    input.addEventListener('change', () => {
+      (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
+      this.markCameraCustom();
+      saveCameraSettings(this.tunables);
+    });
+    row.append(lab, input);
+    this.mount.append(row);
+  }
+
+  private camChoice(label: string, key: 'lookAhead', options: { value: string; label: string }[]): void {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('label');
+    lab.style.flex = '1';
+    lab.textContent = label;
+    const input = document.createElement('select');
+    input.dataset.cam = key;
+    for (const option of options) {
+      const item = document.createElement('option');
+      item.value = option.value;
+      item.textContent = option.label;
+      input.append(item);
+    }
+    input.value = this.tunables.lookAhead;
+    input.addEventListener('change', () => {
+      if (!isLookAhead(input.value)) return;
+      this.tunables.lookAhead = input.value;
+      this.markCameraCustom();
+      saveCameraSettings(this.tunables);
+    });
+    row.append(lab, input);
+    this.mount.append(row);
   }
 
   private bool(label: string, key: keyof Tunables): void {

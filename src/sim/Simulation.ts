@@ -2408,12 +2408,13 @@ export class Simulation {
     const span = Math.max(0.25, this.tunables.shoulderOffset);
     // Catch framing is centered. The throwing shoulder only eases in once the ball is in hand.
     const shoulder01 = THREE.MathUtils.clamp(Math.abs(this.shoulderLateral) / span, 0, 1) * (1 - catch01);
-    const dist = zoom
-      ? CAMERA.zoomOutDistance
-      : THREE.MathUtils.lerp(CAMERA.chaseDistance, CAMERA.catchDistance, catch01);
+    const follow = Math.max(1.5, this.tunables.camDistance);
+    const catchExtra = Math.max(0, CAMERA.catchDistance - CAMERA.chaseDistance);
+    const dist = zoom ? Math.max(follow, this.tunables.wideDistance) : follow + catch01 * catchExtra;
     const height =
-      (zoom ? CAMERA.zoomOutHeight : THREE.MathUtils.lerp(CAMERA.chaseHeight, CAMERA.catchHeight, catch01)) +
+      (zoom ? CAMERA.zoomOutHeight : this.tunables.camHeight + catch01 * (CAMERA.catchHeight - CAMERA.chaseHeight)) +
       0.3 * shoulder01;
+    const shellLimit = this.tunables.camShell ? ARENA_RADIUS - CAMERA.wallClearance : ARENA_RADIUS * 8;
     const position = chaseCameraPosition(
       new THREE.Vector3(),
       human.position,
@@ -2421,10 +2422,17 @@ export class Simulation {
       basis.worldUp,
       dist,
       height,
-      ARENA_RADIUS - CAMERA.wallClearance,
+      shellLimit,
       basis.right,
       this.shoulderLateral * (1 - catch01),
     );
+    const pitch = this.tunables.camPitch;
+    if (Math.abs(pitch) > 1e-4) {
+      const offset = position.clone().sub(human.position);
+      offset.applyAxisAngle(basis.right, pitch);
+      position.copy(human.position).add(offset);
+      if (this.tunables.camShell && position.length() > shellLimit) position.setLength(shellLimit);
+    }
     // On-ball aim looks down the throw. Off-ball, look just past the hands so
     // the reach and the ball in front of it share the frame.
     const shoulderAhead = THREE.MathUtils.lerp(CAMERA.lookAhead * 0.35, CAMERA.lookAhead * 2.4, shoulder01);
@@ -2433,13 +2441,23 @@ export class Simulation {
       .clone()
       .addScaledVector(basis.forward, ahead)
       .addScaledVector(basis.worldUp, 0.4 * (1 - shoulder01 * 0.65) * (1 - catch01 * 0.75));
+    if (!zoom && this.tunables.ballCam) {
+      target.lerp(this.ball.position, 0.82);
+    } else if (!zoom && this.tunables.lookAhead === 'move' && human.velocity.lengthSq() > 4) {
+      target.addScaledVector(human.velocity.clone().normalize(), follow * 0.35);
+    } else if (!zoom && this.tunables.lookAhead === 'ball') {
+      const toBall = this.ball.position.clone().sub(human.position);
+      const len = toBall.length();
+      if (len > 0.5) target.addScaledVector(toBall, Math.min(1, (follow * 0.45) / len));
+    }
+    const chaseFov = THREE.MathUtils.clamp(this.tunables.camFov, 30, 110);
     return {
       position,
       target,
       // Pitched basis up, not world up. World up is parallel to the look
       // direction at the pole, and lookAt's cross product flips there.
       up: basis.up,
-      fov: zoom ? CAMERA.zoomOutFov : CAMERA.fov,
+      fov: zoom ? chaseFov + (CAMERA.zoomOutFov - CAMERA.fov) : chaseFov,
     };
   }
 
@@ -2451,6 +2469,7 @@ export class Simulation {
     this.noteCatchStance(intent);
     this.strafing = intent.strafe;
     this.updateShoulder(Math.max(0, dt));
+    this.updateRecenter(intent, Math.max(0, dt));
     if (this.landingMarker.pulse > 0) {
       this.landingMarker.pulse = Math.max(0, this.landingMarker.pulse - Math.max(0, dt) * 4.2);
     }
@@ -2539,6 +2558,32 @@ export class Simulation {
     const lateral = this.tmp.side.copy(this.ball.position).sub(player.position).dot(right);
     if (Math.abs(lateral) < 0.45) return 1;
     return Math.sign(lateral);
+  }
+
+  /** Tracks how long the mouse has been still, for auto-recenter. */
+  private lookIdle = 0;
+
+  private updateRecenter(intent: InputIntent, dt: number): void {
+    if (!this.tunables.camRecenter || this.shotAim.active || this.power.capturing()) {
+      this.lookIdle = 0;
+      return;
+    }
+    const looking = Math.abs(intent.lookDelta.x) + Math.abs(intent.lookDelta.y) > 1e-5;
+    if (looking) {
+      this.lookIdle = 0;
+      return;
+    }
+    this.lookIdle += dt;
+    if (this.lookIdle < Math.max(0, this.tunables.camRecenterDelay)) return;
+    const human = this.getHuman();
+    const basis = this.cameraBasis();
+    const flat = human.facing.clone().addScaledVector(basis.worldUp, -human.facing.dot(basis.worldUp));
+    if (flat.lengthSq() < 1e-6) return;
+    flat.normalize();
+    const yawErr = Math.atan2(basis.right.dot(flat), basis.forward.dot(flat));
+    const alpha = 1 - Math.exp(-4 * dt);
+    this.yaw += yawErr * alpha;
+    this.pitch += (0 - this.pitch) * alpha * 0.35;
   }
 
   private updateShoulder(dt: number): void {

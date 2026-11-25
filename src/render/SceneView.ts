@@ -559,17 +559,17 @@ export class SceneView {
     } else {
       // Orbit the offset around the swimmer. A world-position lerp cuts a
       // chord through the body on a fast turn, and lookAt then rolls.
-      if (desiredOffset.lengthSq() > 1e-8) rotateToward(this.camOffsetDir, desiredOffset, CAMERA.lag, dt);
+      if (desiredOffset.lengthSq() > 1e-8) rotateToward(this.camOffsetDir, desiredOffset, sim.tunables.camLag, dt);
       const desiredLen = Math.max(0.25, desiredOffset.length());
-      this.camOffsetLen = THREE.MathUtils.damp(this.camOffsetLen, desiredLen, CAMERA.lag, dt);
-      this.camTarget.lerp(pose.target, 1 - Math.exp(-CAMERA.lag * dt));
+      this.camOffsetLen = THREE.MathUtils.damp(this.camOffsetLen, desiredLen, sim.tunables.camLag, dt);
+      this.camTarget.lerp(pose.target, 1 - Math.exp(-Math.max(0.5, sim.tunables.camLag) * dt));
     }
     const camPos = this.camScratch.pos.copy(humanPos).addScaledVector(this.camOffsetDir, this.camOffsetLen);
     this.camera.position.copy(camPos);
     const view = this.camScratch.view.copy(this.camTarget).sub(camPos);
     if (view.lengthSq() < 1e-8) view.copy(this.camOffsetDir).negate();
     else view.normalize();
-    stabilizeUp(this.camUp, view, pose.up, CAMERA.lag, dt);
+    stabilizeUp(this.camUp, view, pose.up, Math.max(0.5, sim.tunables.camLag), dt);
     this.camera.up.copy(this.camUp);
     this.camera.lookAt(this.camTarget);
     if (Math.abs(this.camera.fov - pose.fov) > 0.01) {

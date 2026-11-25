@@ -10,6 +10,7 @@ import { fitBallModel } from '../render/blitzball';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
 import { defaultTunables } from '../ui/DevPanel';
+import { applyCameraPreset, cameraSettingsBlob, noteCameraEdit, parseCameraSettings } from '../ui/cameraSettings';
 import { parseRoster } from '../ui/rosterStorage';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
@@ -2775,6 +2776,99 @@ function checkRosterEdit(): void {
   if (!chaser.hasBall || sim.ball.ownerId !== chaser.id) fail('test chaser dropped the ball');
 }
 
+function checkCameraSettings(): void {
+  const tunables = defaultTunables();
+  if (tunables.cameraPreset !== 'default') fail('camera did not start on the Default preset');
+  if (tunables.camDistance !== CAMERA.chaseDistance || tunables.camFov !== CAMERA.fov) {
+    fail('default follow distance or FOV drifted from the chase camera');
+  }
+  if (tunables.wideDistance !== CAMERA.zoomOutDistance || !tunables.camShell || tunables.ballCam) {
+    fail('default wide view or shell collision changed');
+  }
+  applyCameraPreset(tunables, 'close');
+  const closePreset: string = tunables.cameraPreset;
+  if (closePreset !== 'close' || tunables.camDistance >= CAMERA.chaseDistance) {
+    fail('Close preset did not pull the camera in');
+  }
+  tunables.camDistance += 0.4;
+  noteCameraEdit(tunables);
+  const edited: string = tunables.cameraPreset;
+  if (edited !== 'custom') fail('a manual edit stayed on the Close preset');
+  const parsed = parseCameraSettings(JSON.stringify(cameraSettingsBlob(tunables)));
+  if (!parsed || parsed.preset !== 'custom' || parsed.camDistance !== tunables.camDistance) {
+    fail('camera settings did not round-trip');
+  }
+  if (parseCameraSettings('nope') !== null) fail('broken camera JSON was accepted');
+  if (parseCameraSettings(JSON.stringify({ preset: 'fly' })) !== null) fail('unknown camera preset was accepted');
+  applyCameraPreset(tunables, 'default');
+  if (tunables.camDistance !== CAMERA.chaseDistance || tunables.cameraPreset !== 'default') {
+    fail('reset did not restore the Default preset');
+  }
+
+  const sim = new Simulation(tunables);
+  sim.kickoffLock = 0;
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(1, 0, 0);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.position.set(12, 0, 0);
+  sim.ball.velocity.set(0, 0, 0);
+  const aim = sim.getCameraPose(blankIntent());
+  sim.tunables.lookAhead = 'move';
+  human.velocity.set(14, 0, 0);
+  const moving = sim.getCameraPose(blankIntent());
+  if (moving.target.x <= aim.target.x + 0.4) fail('movement look-ahead ignored swim velocity');
+  sim.tunables.lookAhead = 'aim';
+  sim.tunables.ballCam = true;
+  const tracked = sim.getCameraPose(blankIntent());
+  if (tracked.target.distanceTo(sim.ball.position) >= aim.target.distanceTo(sim.ball.position)) {
+    fail('ball cam did not look toward the ball');
+  }
+  sim.tunables.ballCam = false;
+
+  const wide = blankIntent(true);
+  const near = sim.getCameraPose(blankIntent()).position.distanceTo(human.position);
+  sim.tunables.wideDistance = 50;
+  const far = sim.getCameraPose(wide).position.distanceTo(human.position);
+  if (far < near + 10) fail(`wide view stayed close (${far.toFixed(1)} vs ${near.toFixed(1)})`);
+  if (sim.zoomOutLatched) fail('reading the wide pose latched the wide view');
+
+  const shell = ARENA_RADIUS - PLAYER.radius - 0.05;
+  human.position.set(0, 0, shell);
+  human.velocity.set(0, 0, 0);
+  sim.yaw = Math.PI;
+  sim.pitch = 0;
+  sim.tunables.camDistance = 18;
+  sim.tunables.camPitch = 0;
+  sim.tunables.camShell = false;
+  if (sim.getCameraPose(blankIntent()).position.length() < ARENA_RADIUS + 1) {
+    fail('shell collision off kept a long follow inside the sphere');
+  }
+  sim.tunables.camShell = true;
+  if (sim.getCameraPose(blankIntent()).position.length() > ARENA_RADIUS - CAMERA.wallClearance + 0.05) {
+    fail('shell collision on let the camera leave the sphere');
+  }
+
+  human.position.set(0, 0, 0);
+  human.facing.set(1, 0, 0);
+  sim.yaw = 0;
+  sim.pitch = 0.2;
+  sim.tunables.camRecenter = true;
+  sim.tunables.camRecenterDelay = 0.1;
+  sim.tunables.camShell = true;
+  sim.tunables.camDistance = CAMERA.chaseDistance;
+  const before = angle(sim.getCameraPose(blankIntent()).target.clone().sub(human.position).normalize(), human.facing);
+  const idle = blankIntent();
+  for (let i = 0; i < 40; i++) sim.updateAimPresentation(idle, 1 / 60);
+  const afterForward = new THREE.Vector3(0, 0, 1);
+  afterForward.copy(lookBasis(sim.yaw, sim.pitch, false).forward);
+  const after = angle(afterForward, human.facing);
+  if (after > before - 0.2) fail(`auto-recenter left the view ${deg(after).toFixed(1)}° off the body`);
+}
+
 function checkWideCamera(): void {
   const sim = new Simulation(defaultTunables());
   if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
@@ -2843,6 +2937,7 @@ export function runRotationChecks(): void {
   checkCarryPalm();
   checkThrowPoses();
   checkAimPowerModes();
+  checkCameraSettings();
   checkWideCamera();
   checkBallFit();
   checkSpeeds();
