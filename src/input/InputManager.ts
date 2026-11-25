@@ -20,6 +20,8 @@ const KEYS = {
   zoom: ['KeyV'],
   reset: ['KeyR'],
   toggleDev: ['Backquote'],
+  pause: ['KeyP'],
+  step: ['BracketRight'],
 };
 
 function deadzone(v: number, dz = INPUT.stickDeadzone): number {
@@ -42,6 +44,7 @@ export class InputManager {
   private mmbPressed = false;
   private clickGate = new PrimaryClickGate();
   private wheel = 0;
+  private playback = { pause: false, step: false };
   /** Set when pointerrawupdate already recorded this frame's motion. */
   private sawPointerDelta = false;
   private canvas: HTMLElement;
@@ -377,6 +380,10 @@ export class InputManager {
       intent.resetBall = intent.resetBall || Boolean(pad.resetBall);
     }
 
+    this.playback = {
+      pause: this.anyJust(KEYS.pause),
+      step: this.anyJust(KEYS.step),
+    };
     this.justPressed.clear();
     this.lmbPressed = false;
     this.rmbPressed = false;
@@ -385,5 +392,10 @@ export class InputManager {
     if (this.pointerLocked) this.blurGameFocus();
 
     return intent;
+  }
+
+  /** Pause and single-step edges from the sample that just ran. */
+  takePlayback(): { pause: boolean; step: boolean } {
+    return this.playback;
   }
 }

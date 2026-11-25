@@ -264,6 +264,14 @@ export interface Tunables {
   stadiumDetail: StadiumDetail;
   /** Instanced spectator billboards. */
   crowdDensity: CrowdDensity;
+  /** Arm's length of the goalie save volume, in metres from the chest. */
+  goalieReach: number;
+  /** Seconds after a shot is read before the goalie commits to a line. */
+  goalieReaction: number;
+  /** 0–1. Higher makes stretches and hard shots parry instead of stick. */
+  goalieCatchDifficulty: number;
+  /** Simulation speed relative to the rendered frame. 1 is real time. */
+  timeScale: number;
   /** 0–100. Reaction, prediction, speed, and catch chance for both goalies. */
   goalieSkill: number;
   /** Used when the home override is on. */

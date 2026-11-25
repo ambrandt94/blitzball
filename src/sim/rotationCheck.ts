@@ -3,7 +3,7 @@
  *   npx tsx src/sim/rotationCheck.ts
  */
 import * as THREE from 'three';
-import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, ROSTER, SHOT_ARC, setArenaRadius } from '../game/constants';
+import { ARENA_RADIUS, BALL, CAMERA, FIXED_DT, GOAL, PLAYER, ROSTER, SHOT_ARC, setArenaRadius } from '../game/constants';
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
@@ -21,6 +21,7 @@ import { kickFootPoint } from './kick';
 import { authoritativeUp, lookBasis, rotateToward, stabilizeUp, transportUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
+import { TIME_SCALE_DEFAULT, clampTimeScale, takeFixedSteps } from './timeScale';
 
 function fail(message: string): never {
   throw new Error(message);
@@ -4180,6 +4181,153 @@ function checkGoalies(): void {
   }
   if (!scored) fail('a low-skill goalie stopped a shot at the far side of the mouth');
   if (weak.hasBall) fail('a low-skill goalie caught the shot they should have missed');
+  checkGoalieSaves();
+}
+
+/** Arm's length only. Misses are not pulled. A slow shot sticks. A fast corner usually does not. */
+function checkGoalieSaves(): void {
+  const homeZ = (sim: Simulation): number => {
+    const keeper = sim.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+    if (!keeper) fail('goalie save check lost the keeper');
+    return keeper.position.z;
+  };
+
+  const rig = (goalie: boolean): Simulation => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.tunables.ballDrag = 0.2;
+    sim.tunables.goalieSkill = 80;
+    if (goalie) sim.applyRoster({ home: [], away: ['goalie'] });
+    else sim.applyRoster({ home: [], away: [] });
+    sim.getHuman().position.set(-20, 0, -24);
+    sim.getHuman().velocity.set(0, 0, 0);
+    return sim;
+  };
+
+  const launch = (sim: Simulation, x: number, z: number, vz: number): void => {
+    sim.ball.possession = 'free';
+    sim.ball.ownerId = null;
+    sim.ball.arc = null;
+    sim.ball.claimLock = 0;
+    sim.ball.velocity.set(0, 0, vz);
+    sim.ball.position.set(x, 0.4, z);
+  };
+
+  const miss = rig(true);
+  const ghost = rig(false);
+  miss.tunables.goalieReaction = 2;
+  const keeper = miss.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+  if (!keeper) fail('outside-reach check lost the goalie');
+  const reach = miss.tunables.goalieReach;
+  keeper.position.set(0, 0.4, homeZ(miss));
+  keeper.velocity.set(0, 0, 0);
+  const passX = reach + 0.35;
+  launch(miss, passX, homeZ(miss) - 18, 24);
+  launch(ghost, passX, homeZ(miss) - 18, 24);
+  const startVel = miss.ball.velocity.clone();
+  for (let i = 0; i < 80; i++) {
+    miss.step(1 / 60, blankIntent());
+    ghost.step(1 / 60, blankIntent());
+    if (miss.ball.possession !== 'free') fail('a ball outside reach was caught');
+    if (miss.ball.position.distanceTo(ghost.ball.position) > 0.05) {
+      fail(`outside reach the ball was pulled (${miss.ball.position.distanceTo(ghost.ball.position).toFixed(3)})`);
+    }
+  }
+  const lateral = miss.ball.velocity.clone().addScaledVector(startVel.clone().normalize(), -miss.ball.velocity.dot(startVel.clone().normalize()));
+  if (lateral.length() > 0.35) fail(`outside reach the trajectory bent (${lateral.length().toFixed(3)})`);
+
+  const slow = rig(true);
+  slow.tunables.goalieSkill = 100;
+  const stopper = slow.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+  if (!stopper) fail('slow-shot check lost the goalie');
+  launch(slow, 0.1, homeZ(slow) - 22, 14);
+  let caught = false;
+  for (let i = 0; i < 200 && !caught; i++) {
+    const before = slow.ball.position.clone();
+    const vel = slow.ball.velocity.clone();
+    slow.step(1 / 60, blankIntent());
+    if (slow.ball.possession === 'free') {
+      const step = slow.ball.position.clone().sub(before);
+      const along = vel.lengthSq() > 1 ? step.dot(vel.clone().normalize()) : step.length();
+      const off = step.clone().addScaledVector(vel.clone().normalize(), -along);
+      if (vel.length() > 2 && off.length() > 0.12) {
+        fail(`the ball drifted toward the goalie before contact (${off.length().toFixed(3)})`);
+      }
+    }
+    if (slow.match.score[0] > 0) fail('a slow central shot beat a set goalie');
+    caught = stopper.hasBall;
+  }
+  if (!caught) fail(`a slow central shot was not caught (${slow.match.statusMessage})`);
+
+  let beaten = 0;
+  const trials = 8;
+  for (let n = 0; n < trials; n++) {
+    const fast = rig(true);
+    fast.tunables.goalieSkill = 70;
+    const x = 4.4 + n * 0.45;
+    launch(fast, x, homeZ(fast) - 16, 40);
+    let clean = false;
+    for (let i = 0; i < 90; i++) {
+      fast.step(1 / 60, blankIntent());
+      const keeperHit = fast.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+      if (keeperHit?.hasBall) clean = true;
+    }
+    if (!clean) beaten++;
+  }
+  if (beaten < 5) fail(`fast corner shots were caught too often (${trials - beaten}/${trials} saves)`);
+}
+
+/** The same shot, advanced with the playback clock, matches at 0.1x and 1x. */
+function checkTimeScale(): void {
+  if (clampTimeScale(Number.NaN) !== TIME_SCALE_DEFAULT) fail('a bad time scale did not fall back to 1x');
+  if (clampTimeScale(9) !== 2 || clampTimeScale(0) !== 0.05) fail('time scale was not clamped');
+  const slowFrame = takeFixedSteps(0, 1 / 60, 0.1, FIXED_DT, 8, false, false);
+  if (slowFrame.steps !== 0) fail('0.1x took a physics step on a single rendered frame');
+  if (Math.abs(slowFrame.accum - (1 / 60) * 0.1) > 1e-9) fail('0.1x did not scale the accumulated sim time');
+  const paused = takeFixedSteps(0.02, 1 / 60, 1, FIXED_DT, 8, true, false);
+  if (paused.steps !== 0 || paused.accum !== 0.02) fail('pause still advanced the sim');
+  const stepped = takeFixedSteps(0.02, 1 / 60, 1, FIXED_DT, 8, true, true);
+  if (stepped.steps !== 1) fail('step frame did not run exactly one physics step');
+
+  const fly = (scale: number): { pos: THREE.Vector3; vel: THREE.Vector3 } => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.setSoloOpponent(false);
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(30, 20, -40);
+    human.velocity.set(0, 0, 0);
+    sim.ball.possession = 'free';
+    sim.ball.ownerId = null;
+    sim.ball.arc = null;
+    sim.ball.claimLock = 0;
+    sim.ball.position.set(0, 0.4, 0);
+    sim.ball.velocity.set(2.5, 0.4, 11);
+    let accum = 0;
+    let simulated = 0;
+    const target = 0.5;
+    let guard = 0;
+    while (simulated < target - 1e-8 && guard < 8000) {
+      const next = takeFixedSteps(accum, 1 / 60, scale, FIXED_DT, 8, false, false);
+      accum = next.accum;
+      for (let i = 0; i < next.steps; i++) sim.step(FIXED_DT, blankIntent());
+      simulated += next.steps * FIXED_DT;
+      guard++;
+    }
+    if (Math.abs(simulated - target) > 1e-6) fail(`${scale}x simulated ${simulated.toFixed(4)}s`);
+    return { pos: sim.ball.position.clone(), vel: sim.ball.velocity.clone() };
+  };
+
+  const full = fly(1);
+  const slow = fly(0.1);
+  if (full.pos.distanceTo(slow.pos) > 1e-6) {
+    fail(`0.1x shot landed ${full.pos.distanceTo(slow.pos).toFixed(6)} off the 1x shot`);
+  }
+  if (full.vel.distanceTo(slow.vel) > 1e-6) {
+    fail(`0.1x shot velocity differed by ${full.vel.distanceTo(slow.vel).toFixed(6)}`);
+  }
 }
 
 function checkCameraSettings(): void {
@@ -4529,6 +4677,7 @@ export function runRotationChecks(): void {
   checkDrillOpponent();
   checkRosterEdit();
   checkGoalies();
+  checkTimeScale();
   checkArenaShell();
   checkWallRicochet();
   checkRimDeflection();

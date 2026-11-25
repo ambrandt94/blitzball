@@ -1,4 +1,5 @@
 import { FIXED_DT } from './constants';
+import { takeFixedSteps } from '../sim/timeScale';
 import { InputManager } from '../input/InputManager';
 import { SceneView } from '../render/SceneView';
 import { Simulation } from '../sim/Simulation';
@@ -54,6 +55,8 @@ export class Game {
   private dev: DevPanel;
   private canvas: HTMLCanvasElement;
   private accum = 0;
+  private paused = false;
+  private stepOnce = false;
   private last = 0;
   private running = false;
   private lastZoom = false;
@@ -130,6 +133,12 @@ export class Game {
       (settings) => {
         saveIndicatorSettings(settings);
         this.view.setIndicators(settings);
+      },
+      {
+        togglePause: () => this.togglePause(),
+        step: () => {
+          this.stepOnce = true;
+        },
       },
     );
     this.view.setCharacters(loadCharacterSettings());
@@ -233,7 +242,6 @@ export class Game {
     if (!this.running) return;
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
-    this.accum += dt;
 
     if (this.shotMode) {
       this.view.sync(this.sim, false, dt);
@@ -243,6 +251,9 @@ export class Game {
     }
 
     const fresh = this.input.sample(dt);
+    const playback = this.input.takePlayback();
+    if (playback.pause) this.togglePause();
+    if (playback.step) this.stepOnce = true;
     if (fresh.toggleDev) this.dev.toggle();
     // Mouse look is a per-frame distance, not a per-tick rate. Arm the shot
     // first so this sample is the curve's origin: it does not bend the arc
@@ -254,13 +265,21 @@ export class Game {
 
     const intent = this.pendingEdge ? orEdges(this.pendingEdge, fresh) : fresh;
 
-    let steps = 0;
-    while (this.accum >= FIXED_DT && steps < 5) {
+    const clock = takeFixedSteps(
+      this.accum,
+      dt,
+      this.tunables.timeScale,
+      FIXED_DT,
+      8,
+      this.paused,
+      this.stepOnce,
+    );
+    this.accum = clock.accum;
+    this.stepOnce = false;
+    for (let steps = 0; steps < clock.steps; steps++) {
       this.sim.step(FIXED_DT, steps === 0 ? intent : withoutEdges(intent));
-      this.accum -= FIXED_DT;
-      steps++;
     }
-    this.pendingEdge = steps > 0 ? null : intent;
+    this.pendingEdge = clock.steps > 0 ? null : intent;
 
     this.sim.updateAimPresentation(fresh, dt);
     this.lastZoom = this.sim.isZoomOut(fresh);
@@ -270,6 +289,11 @@ export class Game {
 
     requestAnimationFrame(this.frame);
   };
+
+  private togglePause(): void {
+    this.paused = !this.paused;
+    this.dev.setPaused(this.paused);
+  }
 
   private updateHud(): void {
     this.scoreA.textContent = String(this.sim.match.score[0]);
