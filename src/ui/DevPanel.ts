@@ -1,4 +1,4 @@
-import { ARENA_RADIUS, BALL, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
+import { ARENA_RADIUS, BALL, GOALIE, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
 import type { BotBehavior, CameraPresetId, MatchPresetId, PowerMode, RosterSpec, Tunables } from '../game/types';
 import { loadRoster, saveRoster } from './rosterStorage';
 import {
@@ -234,6 +234,9 @@ export function defaultTunables(): Tunables {
     teammatePassDelay: PRACTICE.passDelay,
     showSunbeams: true,
     sunbeamIntensity: 0.7,
+    goalieReach: GOALIE.reach,
+    goalieReaction: GOALIE.reaction,
+    goalieCatchDifficulty: GOALIE.catchDifficulty,
     goalieSkill: 70,
     goalieSkillHome: 70,
     goalieSkillAway: 70,
@@ -588,6 +591,9 @@ export class DevPanel {
     this.section('Teams', 'teams', () => {
       this.bool('Normal defense chases', 'defenseActive');
       this.range('Teammate pass delay', 'teammatePassDelay', 0.3, 3, 0.05);
+      this.range('Goalie reach', 'goalieReach', 0.7, 2.2, 0.05);
+      this.range('Goalie reaction time', 'goalieReaction', 0.04, 0.55, 0.01);
+      this.range('Catch difficulty', 'goalieCatchDifficulty', 0, 1, 0.01);
       this.range('Goalie skill', 'goalieSkill', 0, 100, 1);
       this.bool('Home skill override', 'goalieHomeOverride');
       this.range('Home goalie skill', 'goalieSkillHome', 0, 100, 1);

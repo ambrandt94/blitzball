@@ -25,7 +25,7 @@ import type {
 import { createPowerStrategy, type PowerStrategy, type PowerTuning } from './shotPower';
 import { DummyAI } from '../ai/DummyAI';
 import type { AiDelivery, AiMark } from '../ai/FieldAI';
-import { GoalieAI, goalieCatchSpeed, goalieSkill01 } from '../ai/GoalieAI';
+import { GoalieAI, goalieSkill01, goalieSwimSpeed } from '../ai/GoalieAI';
 import { TeammateAI } from '../ai/TeammateAI';
 import {
   authoritativeUp,
@@ -764,6 +764,8 @@ export class Simulation {
         }
         const keeper = this.goalie.think(p, this.ball, this.tunables, motion);
         this.movePlayer(p, keeper, motion, false);
+        this.faceGoalieToShot(p, motion);
+        if (this.goalie.diving(p.id) && p.actionPose !== 'claim') this.playPose(p, 'burst', 0.32);
         this.resolveGoalie(p, keeper);
         continue;
       }
@@ -1043,6 +1045,9 @@ export class Simulation {
     let accel = bursting ? this.tunables.playerAccel * 1.65 : this.tunables.playerAccel;
     if (player.hasBall) maxSpeed *= PLAYER.carrierSpeedMult;
     if (player.sprinting) maxSpeed *= Math.max(1, this.tunables.sprintMult);
+    if (!isHuman && player.aiBehavior === 'goalie' && !bursting) {
+      maxSpeed = goalieSwimSpeed(goalieSkill01(this.tunables, player.team));
+    }
     if (aimingShot) maxSpeed *= PLAYER.throwSwimMult;
     else if (aimLocked && !bursting) maxSpeed *= this.tunables.strafeSpeedMult;
     if (bursting) maxSpeed = Math.max(4, player.burstSpeedCap > 0 ? player.burstSpeedCap : this.tunables.burstSpeed);
@@ -1239,8 +1244,17 @@ export class Simulation {
   }
 
   private resolveGoalie(player: PlayerState, intent: InputIntent): void {
-    if (intent.claim) this.tryClaim(player);
     if (intent.pass && player.hasBall) this.goalieDistribute(player);
+  }
+
+  /** Hands stay toward an incoming shot so the short reach volume faces the ball. */
+  private faceGoalieToShot(player: PlayerState, dt: number): void {
+    if (player.hasBall || this.ball.possession === 'held') return;
+    const to = this.tmp.faceTarget.copy(this.ball.position).sub(player.position);
+    if (to.lengthSq() < 0.2) return;
+    const intoGoal = -this.goalieInward(player.team).z;
+    if (this.ball.velocity.z * intoGoal < 3 && !this.ball.arc) return;
+    rotateToward(player.facing, to.normalize(), 5.5, dt);
   }
 
   /** Pass to a field teammate, or clear up the pool when nobody is there. */
@@ -1274,35 +1288,76 @@ export class Simulation {
   }
 
   /**
-   * A goalie who has stepped onto the ball either catches a shot they can handle
-   * or punches it back into the pool. Curved shots are still live arcs until then.
+   * A save is contact with a short reach volume swept along this step's motion.
+   * Nothing pulls or teleports the ball. The edge of that reach, or a hard
+   * shot, parries. A clean catch is a slower ball near the chest.
    */
   private resolveGoalieContacts(): void {
     if (this.ball.possession === 'held' || this.ball.claimLock > 0) return;
+    const reach = Math.max(0.45, this.tunables.goalieReach);
     for (const player of this.players) {
-      if (!player.active || player.aiBehavior !== 'goalie') continue;
-      const skill = goalieSkill01(this.tunables, player.team);
-      const dist = player.position.distanceTo(this.ball.position);
-      const block = PLAYER.radius + BALL.radius + 0.85 + skill * 0.7;
-      if (dist > block) continue;
-      const intoGoal = this.goalieInward(player.team).multiplyScalar(-1);
-      const closing = this.ball.velocity.dot(intoGoal);
-      const shot = this.ball.arc !== null || closing > 2;
-      if (!shot) continue;
-      const speed = Math.max(this.ball.velocity.length(), this.ball.arc ? 16 : 0);
-      if (speed <= goalieCatchSpeed(skill)) {
-        this.ball.arc = null;
-        this.giveBall(player);
-        this.match.statusMessage = 'Goalie save';
+      if (!player.active || player.aiBehavior !== 'goalie' || player.hasBall) continue;
+      const closest = this.segmentClosest(player.position, this.ballFrom, this.ball.position);
+      if (closest > reach) continue;
+      const speed = this.ball.velocity.length();
+      // The frame the ball arrives only touches the near side of the volume.
+      // Stretch is how far the path misses the chest, not that first contact.
+      const miss = this.pathMiss(player.position, this.ballFrom, this.ball.position);
+      const stretch = THREE.MathUtils.clamp(miss / reach, 0, 1);
+      if (this.goalieShouldParry(stretch, speed)) {
+        this.parryFromGoalie(player, speed);
         return;
       }
       this.ball.arc = null;
-      if (closing > 0) this.ball.velocity.addScaledVector(intoGoal, -closing * 1.7);
-      this.ball.velocity.addScaledVector(this.goalieInward(player.team), Math.max(8, speed * 0.35));
-      this.ball.claimLock = 0.18;
-      this.match.statusMessage = 'Parry';
+      this.giveBall(player);
+      this.match.statusMessage = 'Goalie save';
       return;
     }
+  }
+
+  /** Perpendicular distance from `point` to the line through this step. */
+  private pathMiss(point: THREE.Vector3, from: THREE.Vector3, to: THREE.Vector3): number {
+    const ab = this.tmp.predictVel.copy(to).sub(from);
+    const len2 = ab.lengthSq();
+    if (len2 < 1e-10) return point.distanceTo(to);
+    const t = this.tmp.side.copy(point).sub(from).dot(ab) / len2;
+    return this.tmp.predictPos.copy(from).addScaledVector(ab, t).distanceTo(point);
+  }
+
+  /** Distance from `point` to the closest spot on the segment. */
+  private segmentClosest(point: THREE.Vector3, from: THREE.Vector3, to: THREE.Vector3): number {
+    const ab = this.tmp.predictVel.copy(to).sub(from);
+    const len2 = ab.lengthSq();
+    const t = len2 > 1e-8 ? THREE.MathUtils.clamp(this.tmp.side.copy(point).sub(from).dot(ab) / len2, 0, 1) : 0;
+    return this.tmp.predictPos.copy(from).addScaledVector(ab, t).distanceTo(point);
+  }
+
+  /**
+   * Near the chest and not particularly fast, it sticks. A stretch or a
+   * heater is a parry. Difficulty shifts that line toward parries.
+   */
+  private goalieShouldParry(stretch: number, speed: number): boolean {
+    const difficulty = THREE.MathUtils.clamp(this.tunables.goalieCatchDifficulty, 0, 1);
+    const soft = speed < 16 + (1 - difficulty) * 8;
+    if (stretch < 0.72 && soft && difficulty < 0.9) return false;
+    if (stretch > 0.84 || speed > 28 + (1 - difficulty) * 10) return true;
+    const chance = THREE.MathUtils.clamp(stretch * 0.45 + speed / 48 + difficulty * 0.4, 0, 0.9);
+    return Math.random() < chance;
+  }
+
+  /** Knock the ball back along the goalie's facing. The position stays where contact happened. */
+  private parryFromGoalie(player: PlayerState, speed: number): void {
+    const facing = player.facing.clone();
+    if (facing.lengthSq() < 1e-6) facing.copy(this.goalieInward(player.team));
+    else facing.normalize();
+    const closing = -this.ball.velocity.dot(facing);
+    if (closing > 0) this.ball.velocity.addScaledVector(facing, closing);
+    const pop = Math.max(7, Math.min(16, speed * 0.28));
+    this.ball.velocity.addScaledVector(facing, pop);
+    this.ball.arc = null;
+    this.ball.claimLock = 0.22;
+    this.playPose(player, 'burst', 0.28);
+    this.match.statusMessage = 'Parry';
   }
 
   private resolveAiActions(player: PlayerState, intent: InputIntent): void {
@@ -1454,7 +1509,8 @@ export class Simulation {
       return;
     }
     for (const player of this.players) {
-      if (player.id === human.id || !this.canTake(player) || !this.sweptReach(player)) continue;
+      if (player.id === human.id || player.aiBehavior === 'goalie') continue;
+      if (!this.canTake(player) || !this.sweptReach(player)) continue;
       this.takeBall(player);
       return;
     }

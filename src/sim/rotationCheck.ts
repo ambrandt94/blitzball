@@ -4180,6 +4180,100 @@ function checkGoalies(): void {
   }
   if (!scored) fail('a low-skill goalie stopped a shot at the far side of the mouth');
   if (weak.hasBall) fail('a low-skill goalie caught the shot they should have missed');
+  checkGoalieSaves();
+}
+
+/** Arm's length only. Misses are not pulled. A slow shot sticks. A fast corner usually does not. */
+function checkGoalieSaves(): void {
+  const homeZ = (sim: Simulation): number => {
+    const keeper = sim.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+    if (!keeper) fail('goalie save check lost the keeper');
+    return keeper.position.z;
+  };
+
+  const rig = (goalie: boolean): Simulation => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.tunables.ballDrag = 0.2;
+    sim.tunables.goalieSkill = 80;
+    if (goalie) sim.applyRoster({ home: [], away: ['goalie'] });
+    else sim.applyRoster({ home: [], away: [] });
+    sim.getHuman().position.set(-20, 0, -24);
+    sim.getHuman().velocity.set(0, 0, 0);
+    return sim;
+  };
+
+  const launch = (sim: Simulation, x: number, z: number, vz: number): void => {
+    sim.ball.possession = 'free';
+    sim.ball.ownerId = null;
+    sim.ball.arc = null;
+    sim.ball.claimLock = 0;
+    sim.ball.velocity.set(0, 0, vz);
+    sim.ball.position.set(x, 0.4, z);
+  };
+
+  const miss = rig(true);
+  const ghost = rig(false);
+  miss.tunables.goalieReaction = 2;
+  const keeper = miss.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+  if (!keeper) fail('outside-reach check lost the goalie');
+  const reach = miss.tunables.goalieReach;
+  keeper.position.set(0, 0.4, homeZ(miss));
+  keeper.velocity.set(0, 0, 0);
+  const passX = reach + 0.35;
+  launch(miss, passX, homeZ(miss) - 18, 24);
+  launch(ghost, passX, homeZ(miss) - 18, 24);
+  const startVel = miss.ball.velocity.clone();
+  for (let i = 0; i < 80; i++) {
+    miss.step(1 / 60, blankIntent());
+    ghost.step(1 / 60, blankIntent());
+    if (miss.ball.possession !== 'free') fail('a ball outside reach was caught');
+    if (miss.ball.position.distanceTo(ghost.ball.position) > 0.05) {
+      fail(`outside reach the ball was pulled (${miss.ball.position.distanceTo(ghost.ball.position).toFixed(3)})`);
+    }
+  }
+  const lateral = miss.ball.velocity.clone().addScaledVector(startVel.clone().normalize(), -miss.ball.velocity.dot(startVel.clone().normalize()));
+  if (lateral.length() > 0.35) fail(`outside reach the trajectory bent (${lateral.length().toFixed(3)})`);
+
+  const slow = rig(true);
+  slow.tunables.goalieSkill = 100;
+  const stopper = slow.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+  if (!stopper) fail('slow-shot check lost the goalie');
+  launch(slow, 0.1, homeZ(slow) - 22, 14);
+  let caught = false;
+  for (let i = 0; i < 200 && !caught; i++) {
+    const before = slow.ball.position.clone();
+    const vel = slow.ball.velocity.clone();
+    slow.step(1 / 60, blankIntent());
+    if (slow.ball.possession === 'free') {
+      const step = slow.ball.position.clone().sub(before);
+      const along = vel.lengthSq() > 1 ? step.dot(vel.clone().normalize()) : step.length();
+      const off = step.clone().addScaledVector(vel.clone().normalize(), -along);
+      if (vel.length() > 2 && off.length() > 0.12) {
+        fail(`the ball drifted toward the goalie before contact (${off.length().toFixed(3)})`);
+      }
+    }
+    if (slow.match.score[0] > 0) fail('a slow central shot beat a set goalie');
+    caught = stopper.hasBall;
+  }
+  if (!caught) fail(`a slow central shot was not caught (${slow.match.statusMessage})`);
+
+  let beaten = 0;
+  const trials = 8;
+  for (let n = 0; n < trials; n++) {
+    const fast = rig(true);
+    fast.tunables.goalieSkill = 70;
+    const x = 4.4 + n * 0.45;
+    launch(fast, x, homeZ(fast) - 16, 40);
+    let clean = false;
+    for (let i = 0; i < 90; i++) {
+      fast.step(1 / 60, blankIntent());
+      const keeperHit = fast.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+      if (keeperHit?.hasBall) clean = true;
+    }
+    if (!clean) beaten++;
+  }
+  if (beaten < 5) fail(`fast corner shots were caught too often (${trials - beaten}/${trials} saves)`);
 }
 
 function checkCameraSettings(): void {

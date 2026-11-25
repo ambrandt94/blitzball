@@ -114,6 +114,20 @@ export const PLAYER = {
 };
 
 /**
+ * Crease saves. Reach is arm's length from the chest. A shot has to enter that
+ * volume; nothing pulls the ball in. Reaction is how long the read waits
+ * before he commits. Difficulty raises parries on stretches and hard shots.
+ */
+export const GOALIE = {
+  reach: 1.25,
+  reaction: 0.18,
+  /** 0 favors clean catches. 1 turns almost every touch into a parry. */
+  catchDifficulty: 0.35,
+  speedMin: 6,
+  speedMax: 13.2,
+};
+
+/**
  * Underwater shots are not gravity arcs. The ball stays in the hand while
  * aiming and flies a quadratic Bezier from that hand to the marker.
  * `height` is a small resting lob as a fraction of the chord, along camera up.
