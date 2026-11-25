@@ -1,0 +1,515 @@
+{
+ "name": "Blitzball arena materials palette (Trailbound v2)",
+ "texels_per_m": 32,
+ "source_palette": "/workspace/controller-assets/palette/trailbound_palette_v2.json",
+ "outline_sprites_only": "#4E2E34",
+ "rules": "ramps listed dark -> light; light from top-left; cool shadows, warm highlights; no #000000/#FFFFFF; nearest filtering",
+ "ramps": {
+  "stone_warm_sandstone": [
+   "#6E3A3E",
+   "#9A5E4A",
+   "#BE8A60",
+   "#DAB07C",
+   "#F2D9A6"
+  ],
+  "bone_antler": [
+   "#6A5050",
+   "#9C8470",
+   "#C9B48E",
+   "#E6D8B6",
+   "#FAF2DC"
+  ],
+  "stone_cool_cobble": [
+   "#3B3648",
+   "#5D5A66",
+   "#868480",
+   "#ACA89E",
+   "#D8D0BE"
+  ],
+  "metal_brass": [
+   "#5A3420",
+   "#8E5C22",
+   "#BC8A2C",
+   "#DEB44A",
+   "#F5DE8A"
+  ],
+  "metal_gold": [
+   "#6E3A1E",
+   "#B0701A",
+   "#E0A424",
+   "#F8D04A",
+   "#FFF2A0"
+  ],
+  "metal_iron": [
+   "#231F2E",
+   "#3B3B4C",
+   "#5C6070",
+   "#868C96",
+   "#B8BAB6"
+  ],
+  "wood_homestead_mid": [
+   "#3F2630",
+   "#5E3A31",
+   "#845437",
+   "#A87545",
+   "#CFA066"
+  ],
+  "wood_light_pine": [
+   "#6B3B3C",
+   "#9A5A3C",
+   "#C27C48",
+   "#DFA25E",
+   "#F4CF8A"
+  ],
+  "dye_teal_muted": [
+   "#243B45",
+   "#335E62",
+   "#458480",
+   "#69AD9F",
+   "#A8D5C3"
+  ],
+  "dye_red": [
+   "#4E1733",
+   "#8A293E",
+   "#C23A44",
+   "#E65A48",
+   "#F89A72"
+  ],
+  "dye_teal": [
+   "#163A48",
+   "#1F6066",
+   "#2E8A84",
+   "#52B4A0",
+   "#9CDEC4"
+  ],
+  "canvas_cream": [
+   "#8A6A5A",
+   "#B9937A",
+   "#DDBA92",
+   "#F1D7AE",
+   "#FFF1D2"
+  ],
+  "dye_navy": [
+   "#141A36",
+   "#1E2A52",
+   "#2C3E72",
+   "#425A94",
+   "#6A84B8"
+  ],
+  "sky_cloud": [
+   "#1E68D0",
+   "#2E88F4",
+   "#4AA8F8",
+   "#94ABD8",
+   "#D6EAF4",
+   "#F0F6FA"
+  ],
+  "crystal": [
+   "#163A48",
+   "#1F6066",
+   "#2E8A84",
+   "#52B4A0",
+   "#5ED2DC",
+   "#7FE6EE",
+   "#BDF6F0",
+   "#E8FFF6"
+  ],
+  "water": [
+   "#163A48",
+   "#1F6066",
+   "#2E8A84",
+   "#2A9EAE",
+   "#3EB8D8",
+   "#5ED2DC",
+   "#8CE6E8",
+   "#BDF6F0",
+   "#E8FFF6"
+  ],
+  "ball_white (canvas_sun_bleached)": [
+   "#857C94",
+   "#B0A8AE",
+   "#D6CEC2",
+   "#EEE8DA",
+   "#FFFCF0"
+  ],
+  "ball_lavender (dye_purple_muted)": [
+   "#2A203C",
+   "#463362",
+   "#684B8C",
+   "#8E6FB6",
+   "#B99FD9"
+  ],
+  "ball_blue (dye_blue)": [
+   "#1C2456",
+   "#293F88",
+   "#3A62B4",
+   "#5C8ED6",
+   "#9CC2EC"
+  ]
+ },
+ "materials": {
+  "sandstone_wall": {
+   "ramp": "stone_warm_sandstone",
+   "file": "materials/stone_sandstone_wall_128.png",
+   "tile_m": [
+    4,
+    4
+   ],
+   "use": "outer walls, arcades, colonnade piers (1 m x 0.5 m blocks, running bond)",
+   "hex": {
+    "stone_warm_sandstone": [
+     "#6E3A3E",
+     "#9A5E4A",
+     "#BE8A60",
+     "#DAB07C",
+     "#F2D9A6"
+    ]
+   },
+   "flat_base_hex": "#BE8A60"
+  },
+  "limestone_tier": {
+   "ramp": "bone_antler",
+   "file": "materials/stone_limestone_tier_128x32.png",
+   "tile_m": [
+    4,
+    1
+   ],
+   "use": "stand steps: rows 0-15 = tread (0.5 m, top face), rows 16-31 = riser (0.5 m, front face); stack vertically = consecutive tiers",
+   "hex": {
+    "bone_antler": [
+     "#6A5050",
+     "#9C8470",
+     "#C9B48E",
+     "#E6D8B6",
+     "#FAF2DC"
+    ]
+   },
+   "flat_base_hex": "#C9B48E"
+  },
+  "tower_stone": {
+   "ramp": "stone_warm_sandstone",
+   "file": "materials/stone_tower_128.png",
+   "tile_m": [
+    4,
+    4
+   ],
+   "use": "pylons + outer towers, bossed blocks, darker than walls",
+   "hex": {
+    "stone_warm_sandstone": [
+     "#6E3A3E",
+     "#9A5E4A",
+     "#BE8A60",
+     "#DAB07C",
+     "#F2D9A6"
+    ]
+   },
+   "flat_base_hex": "#BE8A60"
+  },
+  "tower_stone_brass_band": {
+   "ramp": "stone_warm_sandstone + metal_brass",
+   "file": "materials/stone_tower_brass_band_128.png",
+   "tile_m": [
+    4,
+    4
+   ],
+   "use": "same as tower_stone with a 0.5 m brass ring at rows 56-71",
+   "hex": {
+    "stone_warm_sandstone": [
+     "#6E3A3E",
+     "#9A5E4A",
+     "#BE8A60",
+     "#DAB07C",
+     "#F2D9A6"
+    ],
+    "metal_brass": [
+     "#5A3420",
+     "#8E5C22",
+     "#BC8A2C",
+     "#DEB44A",
+     "#F5DE8A"
+    ]
+   },
+   "flat_base_hex": "#BE8A60"
+  },
+  "brass_trim": {
+   "ramp": "metal_brass",
+   "file": "materials/trim_brass_band_128x16.png",
+   "tile_m": [
+    4,
+    0.5
+   ],
+   "use": "brass rings, parapet caps, box rails (rivets every 0.5 m)",
+   "hex": {
+    "metal_brass": [
+     "#5A3420",
+     "#8E5C22",
+     "#BC8A2C",
+     "#DEB44A",
+     "#F5DE8A"
+    ]
+   },
+   "flat_base_hex": "#BC8A2C"
+  },
+  "rune_inlay": {
+   "ramp": "stone_warm_sandstone + crystal",
+   "file": "materials/trim_rune_inlay_128x32.png",
+   "tile_m": [
+    4,
+    1
+   ],
+   "use": "pylon frieze with glowing aqua rune grooves (original glyphs); emissive mask = crystal-ramp pixels",
+   "hex": {
+    "stone_warm_sandstone": [
+     "#6E3A3E",
+     "#9A5E4A",
+     "#BE8A60",
+     "#DAB07C",
+     "#F2D9A6"
+    ],
+    "crystal": [
+     "#163A48",
+     "#1F6066",
+     "#2E8A84",
+     "#52B4A0",
+     "#5ED2DC",
+     "#7FE6EE",
+     "#BDF6F0",
+     "#E8FFF6"
+    ]
+   },
+   "flat_base_hex": "#BE8A60"
+  },
+  "flagstone_floor": {
+   "ramp": "stone_cool_cobble",
+   "file": "materials/stone_flagstone_floor_128.png",
+   "tile_m": [
+    4,
+    4
+   ],
+   "use": "arena floor, pool deck, stairs",
+   "hex": {
+    "stone_cool_cobble": [
+     "#3B3648",
+     "#5D5A66",
+     "#868480",
+     "#ACA89E",
+     "#D8D0BE"
+    ]
+   },
+   "flat_base_hex": "#868480"
+  },
+  "pool_basin": {
+   "ramp": "dye_teal_muted + metal_brass + canvas_cream",
+   "file": "materials/tile_pool_basin_128.png",
+   "tile_m": [
+    4,
+    4
+   ],
+   "use": "pool basin walls/floor under the sphere; 0.5 m glazed tiles, mosaic band every 2 m",
+   "hex": {
+    "dye_teal_muted": [
+     "#243B45",
+     "#335E62",
+     "#458480",
+     "#69AD9F",
+     "#A8D5C3"
+    ],
+    "metal_brass": [
+     "#5A3420",
+     "#8E5C22",
+     "#BC8A2C",
+     "#DEB44A",
+     "#F5DE8A"
+    ],
+    "canvas_cream": [
+     "#8A6A5A",
+     "#B9937A",
+     "#DDBA92",
+     "#F1D7AE",
+     "#FFF1D2"
+    ]
+   },
+   "flat_base_hex": "#458480"
+  },
+  "timber": {
+   "ramp": "wood_homestead_mid + metal_iron",
+   "file": "materials/wood_timber_planks_128.png",
+   "tile_m": [
+    4,
+    4
+   ],
+   "use": "royal box floors, awning frames, scaffolds; 0.25 m planks",
+   "hex": {
+    "wood_homestead_mid": [
+     "#3F2630",
+     "#5E3A31",
+     "#845437",
+     "#A87545",
+     "#CFA066"
+    ],
+    "metal_iron": [
+     "#231F2E",
+     "#3B3B4C",
+     "#5C6070",
+     "#868C96",
+     "#B8BAB6"
+    ]
+   },
+   "flat_base_hex": "#845437"
+  },
+  "banner_cloth_team_a": {
+   "ramp": "dye_red + metal_brass",
+   "file": "banners/banner_team_a_crest_64x128.png",
+   "tile_m": [
+    2,
+    4
+   ],
+   "use": "Team A crest banner (wagon wheel)",
+   "hex": {
+    "dye_red": [
+     "#4E1733",
+     "#8A293E",
+     "#C23A44",
+     "#E65A48",
+     "#F89A72"
+    ],
+    "metal_brass": [
+     "#5A3420",
+     "#8E5C22",
+     "#BC8A2C",
+     "#DEB44A",
+     "#F5DE8A"
+    ]
+   },
+   "flat_base_hex": "#C23A44"
+  },
+  "banner_cloth_team_b": {
+   "ramp": "dye_teal + canvas_cream",
+   "file": "banners/banner_team_b_crest_64x128.png",
+   "tile_m": [
+    2,
+    4
+   ],
+   "use": "Team B crest banner (crescent over waves)",
+   "hex": {
+    "dye_teal": [
+     "#163A48",
+     "#1F6066",
+     "#2E8A84",
+     "#52B4A0",
+     "#9CDEC4"
+    ],
+    "canvas_cream": [
+     "#8A6A5A",
+     "#B9937A",
+     "#DDBA92",
+     "#F1D7AE",
+     "#FFF1D2"
+    ]
+   },
+   "flat_base_hex": "#2E8A84"
+  },
+  "banner_cloth_neutral": {
+   "ramp": "canvas_cream / dye_navy / tricolour",
+   "file": "banners/",
+   "tile_m": [
+    2,
+    4
+   ],
+   "use": "arena-sphere, crystal-navy, tricolour-star banners",
+   "hex": {},
+   "flat_base_hex": null
+  },
+  "crystal": {
+   "ramp": "crystal (dye_teal + water + tier_sig_t7 + extras)",
+   "file": "crystal/crystal_facets_64.png",
+   "tile_m": [
+    2,
+    2
+   ],
+   "use": "pylon crystals (unlit/emissive), glow halo billboard",
+   "hex": {
+    "crystal": [
+     "#163A48",
+     "#1F6066",
+     "#2E8A84",
+     "#52B4A0",
+     "#5ED2DC",
+     "#7FE6EE",
+     "#BDF6F0",
+     "#E8FFF6"
+    ],
+    "dye_teal": [
+     "#163A48",
+     "#1F6066",
+     "#2E8A84",
+     "#52B4A0",
+     "#9CDEC4"
+    ],
+    "water": [
+     "#163A48",
+     "#1F6066",
+     "#2E8A84",
+     "#2A9EAE",
+     "#3EB8D8",
+     "#5ED2DC",
+     "#8CE6E8",
+     "#BDF6F0",
+     "#E8FFF6"
+    ]
+   },
+   "flat_base_hex": "#2E8A84"
+  },
+  "water": {
+   "ramp": "water (dye_teal + water + extras)",
+   "file": "water/water_caustics_256.png",
+   "tile_m": [
+    8,
+    8
+   ],
+   "use": "pool surface/basin water, sphere interior caustics",
+   "hex": {
+    "water": [
+     "#163A48",
+     "#1F6066",
+     "#2E8A84",
+     "#2A9EAE",
+     "#3EB8D8",
+     "#5ED2DC",
+     "#8CE6E8",
+     "#BDF6F0",
+     "#E8FFF6"
+    ],
+    "dye_teal": [
+     "#163A48",
+     "#1F6066",
+     "#2E8A84",
+     "#52B4A0",
+     "#9CDEC4"
+    ]
+   },
+   "flat_base_hex": "#2E8A84"
+  }
+ },
+ "extra_tones_not_in_v2": {
+  "#2A9EAE": "aqua_mid: teal-to-cyan step between water #2A8CC4/dye_teal #2E8A84 and #3EB8D8",
+  "#5ED2DC": "aqua_bright: crystal + caustic core step between #3EB8D8 and #8CE6E8",
+  "#BDF6F0": "rim_glow: sphere rim glow / crystal hot core, between #8CE6E8 and #E8FFF6"
+ },
+ "vertex_colour_fallbacks": {
+  "sandstone_wall": "#BE8A60",
+  "limestone_tier": "#C9B48E",
+  "tower_stone": "#BE8A60",
+  "tower_stone_brass_band": "#BE8A60",
+  "brass_trim": "#BC8A2C",
+  "rune_inlay": "#BE8A60",
+  "flagstone_floor": "#868480",
+  "pool_basin": "#458480",
+  "timber": "#845437",
+  "banner_cloth_team_a": "#C23A44",
+  "banner_cloth_team_b": "#2E8A84",
+  "banner_cloth_neutral": "#DDBA92",
+  "crystal": "#2E8A84",
+  "water": "#2E8A84"
+ }
+}

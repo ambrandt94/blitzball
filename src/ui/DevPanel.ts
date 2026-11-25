@@ -92,6 +92,10 @@ export function defaultTunables(): Tunables {
     catchStanceReach: PLAYER.catchStanceReach,
     catchStanceWidth: PLAYER.catchStanceWidth,
     catchPull: PLAYER.catchPull,
+    catchReadyRadius: 6.5,
+    catchReadyCone: 0.7,
+    fumbleSpeed: 48,
+    deflectStrength: 28,
     holdLag: BALL.holdLag,
     playerAccel: PLAYER.accel,
     playerMaxSpeed: PLAYER.maxSpeed,
@@ -137,6 +141,26 @@ export function defaultTunables(): Tunables {
     shotCarry: SHOT_ARC.carry,
     defenseActive: false,
     soloOpponent: true,
+    fieldSkillA: 70,
+    fieldSkillB: 70,
+    showAiIntent: false,
+    aimPostureBlend: 0.25,
+    blendStiffness: 8,
+    bankAmount: 0.42,
+    kickRange: 1.25,
+    kickSpeed: 1.25,
+    kickCurve: 0.5,
+    kickWindup: 0.15,
+    volleyCone: 0.6,
+    volleySpread: 0.38,
+    throwSpeedScale: 0.88,
+    waterStyle: 'trailbound',
+    waterPreset: 'Clearer',
+    waterRefraction: true,
+    waterQuality: 'high',
+    waterPixelScale: 1,
+    stadiumDetail: 'high',
+    crowdDensity: 'high',
     arenaRadius: ARENA_RADIUS,
     teammatePassDelay: PRACTICE.passDelay,
     showSunbeams: true,
@@ -232,6 +256,14 @@ export class DevPanel {
       this.range('Shot carry', 'shotCarry', 0, 60, 0.5);
       this.range('Teammate lock radius', 'teammateLockRadius', 0.3, 3, 0.05);
       this.range('Aim assist', 'aimAssist', 0, 1, 0.05);
+      this.range('Aim posture blend time', 'aimPostureBlend', 0.05, 0.8, 0.01);
+      this.range('Kick range', 'kickRange', 1, 1.8, 0.01);
+      this.range('Kick speed', 'kickSpeed', 1, 1.8, 0.01);
+      this.range('Kick curve', 'kickCurve', 0, 1, 0.01);
+      this.range('Kick windup', 'kickWindup', 0, 0.45, 0.01);
+      this.range('Volley cone', 'volleyCone', 0.15, 1.2, 0.01);
+      this.range('Volley spread', 'volleySpread', 0, 0.9, 0.01);
+      this.range('Throw speed scale', 'throwSpeedScale', 0.5, 1.2, 0.01);
     });
 
     this.section('Movement', 'movement', () => {
@@ -244,6 +276,8 @@ export class DevPanel {
       this.bool('Paddle anim', 'swimAnim');
       this.range('Paddle rate', 'swimAnimRate', 0.2, 4, 0.1);
       this.range('Paddle amount', 'swimAnimAmount', 0, 1.4, 0.05);
+      this.range('Blend stiffness', 'blendStiffness', 2, 22, 0.5);
+      this.range('Bank amount', 'bankAmount', 0, 0.9, 0.01);
     });
 
     this.section('Tackle / Checking', 'tackle', () => {
@@ -288,6 +322,32 @@ export class DevPanel {
     });
 
     this.section('Arena', 'arena', () => {
+      this.select('Water style', 'waterStyle', [
+        { value: 'trailbound', label: 'Trailbound v2' },
+        { value: 'classic', label: 'Classic' },
+      ], () => this.onChange('waterStyle'));
+      this.select('Water preset', 'waterPreset', [
+        { value: 'Mockup', label: 'Mockup' },
+        { value: 'Clearer', label: 'Clearer' },
+        { value: 'Deeper', label: 'Deeper' },
+      ], () => this.onChange('waterPreset'));
+      this.select('Water quality', 'waterQuality', [
+        { value: 'high', label: 'High' },
+        { value: 'low', label: 'Low' },
+        { value: 'basic', label: 'Basic' },
+      ], () => this.onChange('waterQuality'));
+      this.bool('Water refraction', 'waterRefraction');
+      this.range('Pixel scale', 'waterPixelScale', 1, 3, 1);
+      this.select('Stadium detail', 'stadiumDetail', [
+        { value: 'off', label: 'Off' },
+        { value: 'low', label: 'Low' },
+        { value: 'high', label: 'High' },
+      ], () => this.onChange('stadiumDetail'));
+      this.select('Crowd density', 'crowdDensity', [
+        { value: 'off', label: 'Off' },
+        { value: 'low', label: 'Low' },
+        { value: 'high', label: 'High' },
+      ], () => this.onChange('crowdDensity'));
       this.range('Arena radius', 'arenaRadius', 44, 96, 0.5);
       this.bool('Sunbeams', 'showSunbeams');
       this.range('Sunbeam strength', 'sunbeamIntensity', 0, 1.5, 0.05);
@@ -301,6 +361,10 @@ export class DevPanel {
       this.range('Catch stance reach', 'catchStanceReach', 1, 2.4, 0.05);
       this.range('Catch stance width', 'catchStanceWidth', 1, 2.4, 0.05);
       this.range('Catch pull', 'catchPull', 0, 60, 0.5);
+      this.range('Catch radius', 'catchReadyRadius', 2, 12, 0.1);
+      this.range('Catch cone', 'catchReadyCone', 0.2, 1.3, 0.01);
+      this.range('Fumble speed', 'fumbleSpeed', 16, 90, 1);
+      this.range('Deflect strength', 'deflectStrength', 6, 70, 1);
       this.range('Hold lag', 'holdLag', 2, 20, 0.1);
       this.range('Pass speed', 'passSpeed', 12, 80, 1);
       this.range('Ball drag', 'ballDrag', 0.2, 3, 0.05);
@@ -314,11 +378,14 @@ export class DevPanel {
       this.range('Home goalie skill', 'goalieSkillHome', 0, 100, 1);
       this.bool('Away skill override', 'goalieAwayOverride');
       this.range('Away goalie skill', 'goalieSkillAway', 0, 100, 1);
+      this.range('Blue field AI', 'fieldSkillA', 0, 100, 1);
+      this.range('Orange field AI', 'fieldSkillB', 0, 100, 1);
     });
 
     this.section('Visual / Debug', 'visual', () => {
       this.bool('Charge ghost', 'showChargeGhost');
       this.bool('Debug stats', 'showDebugStats');
+      this.bool('Show AI intent', 'showAiIntent');
     });
   }
 
@@ -707,8 +774,37 @@ export class DevPanel {
       (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
       // Only the up-axis change rebuilds the chase basis. Invert toggles and
       // other checkboxes must not snap yaw/pitch back to kickoff.
-      if (key === 'goalAxisUp') this.onChange(key);
+      if (key === 'goalAxisUp' || key === 'waterRefraction') this.onChange(key);
       if (key === 'goalieHomeOverride' || key === 'goalieAwayOverride') this.persistRoster();
+    });
+    row.append(lab, input);
+    this.mount.append(row);
+  }
+
+  private select<K extends keyof Tunables>(
+    label: string,
+    key: K,
+    options: { value: Tunables[K]; label: string }[],
+    onPick: () => void,
+  ): void {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('label');
+    lab.style.flex = '1';
+    lab.textContent = label;
+    const input = document.createElement('select');
+    for (const option of options) {
+      const item = document.createElement('option');
+      item.value = String(option.value);
+      item.textContent = option.label;
+      input.append(item);
+    }
+    input.value = String(this.tunables[key]);
+    input.addEventListener('change', () => {
+      const value = input.value as Tunables[K];
+      if (!options.some((option) => option.value === value)) return;
+      this.tunables[key] = value;
+      onPick();
     });
     row.append(lab, input);
     this.mount.append(row);
@@ -755,7 +851,7 @@ export class DevPanel {
       const n = parseFloat(input.value);
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
       value.textContent = n.toFixed(2);
-      if (key === 'arenaRadius') this.onChange(key);
+      if (key === 'arenaRadius' || key === 'waterPixelScale') this.onChange(key);
       if (key === 'goalieSkill' || key === 'goalieSkillHome' || key === 'goalieSkillAway') this.persistRoster();
     });
     wrap.append(name, input, value);

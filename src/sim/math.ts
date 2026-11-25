@@ -57,6 +57,7 @@ const _chase = new THREE.Vector3();
  * quaternions nearly 180° apart. A full yaw crosses that cut.
  */
 export function rotateToward(current: THREE.Vector3, target: THREE.Vector3, lambda: number, dt: number): void {
+  if (!Number.isFinite(target.x) || !Number.isFinite(target.y) || !Number.isFinite(target.z)) return;
   if (target.lengthSq() < 1e-8) return;
   _aimed.copy(target).normalize();
   if (current.lengthSq() < 1e-8) {
@@ -65,22 +66,26 @@ export function rotateToward(current: THREE.Vector3, target: THREE.Vector3, lamb
   }
   current.normalize();
   const dot = THREE.MathUtils.clamp(current.dot(_aimed), -1, 1);
-  const alpha = 1 - Math.exp(-lambda * dt);
+  const alpha = 1 - Math.exp(-Math.max(0, lambda) * dt);
   if (dot > 0.9995 || alpha <= 0) {
     if (dot > 0.9995) current.copy(_aimed);
     return;
   }
+  const theta = Math.acos(dot);
+  // Hard cap so a target that flips across the seam cannot spin the body in one frame.
+  const step = Math.min(theta * alpha, Math.max(0.35, lambda) * Math.max(0, dt));
+  const t = theta > 1e-6 ? step / theta : 0;
   if (dot < -0.9995) {
     // Opposite directions have no unique shortest arc. Spin on a stable axis.
     _axis.set(0, 1, 0);
     if (Math.abs(current.dot(_axis)) > 0.9) _axis.set(1, 0, 0);
     _axis.cross(current).normalize();
-    _q.setFromAxisAngle(_axis, Math.PI * alpha);
+    _q.setFromAxisAngle(_axis, Math.PI * t);
     current.applyQuaternion(_q).normalize();
     return;
   }
   _q.setFromUnitVectors(current, _aimed);
-  _qFrom.identity().slerp(_q, alpha);
+  _qFrom.identity().slerp(_q, t);
   current.applyQuaternion(_qFrom).normalize();
 }
 

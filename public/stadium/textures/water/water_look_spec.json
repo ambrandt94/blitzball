@@ -1,0 +1,288 @@
+{
+ "name": "Blitzball water sphere look v2 (definitive)",
+ "version": 2,
+ "supersedes": "sphere_palette_v1.json",
+ "spec_image": "previews/mock_water_outside_4x.png (1x: previews/mock_water_outside_1x.png)",
+ "measured_from": "_mock_measurements.json (colour coverage, radial profile, dither hit-rates)",
+ "coordinate_notes": "r = distance from sphere centre in screen space / screen radius. f = 1 - dot(N, V) (fresnel). For an orthographic-ish view r = sqrt(1 - (1-f)^2).",
+ "ramp": {
+  "water_0_deep": "#163A48",
+  "water_1_mid": "#1F6066",
+  "water_2_base": "#2E8A84",
+  "water_3_teal_cyan": "#2A9EAE",
+  "water_4_cyan": "#3EB8D8",
+  "water_5_aqua_bright": "#5ED2DC",
+  "water_6_foam": "#8CE6E8",
+  "water_7_rim_glow": "#BDF6F0",
+  "water_8_highlight": "#E8FFF6"
+ },
+ "body": {
+  "mode": "background seen through the sphere, inverted and minified like a lens, then posterized to the body LUT",
+  "lens_scale": -0.55,
+  "lens_note": "sample background at centre + (p - centre) * lens_scale (negative = inverted). Use +0.85 for gameplay so swimmers are not upside down.",
+  "step_formula": "k = 1 + floor(luma(bg) * 3.4); if (screen_ny > 0.35) k -= 1; k = clamp(k, 0, 4); colour = body_lut[k]",
+  "luma": [
+   0.3,
+   0.59,
+   0.11
+  ],
+  "steps": 5,
+  "lower_darken_ny": 0.35,
+  "lut": "lut_body_5x1.png",
+  "colours": [
+   "#163A48",
+   "#1F6066",
+   "#2E8A84",
+   "#2A9EAE",
+   "#3EB8D8"
+  ],
+  "coverage_in_mock": {
+   "#2E8A84": 0.2798,
+   "#1F6066": 0.2318,
+   "#2A9EAE": 0.1625,
+   "#163A48": 0.0576,
+   "#3EB8D8": 0.0455
+  },
+  "fallback_no_refraction": "k = 2 (base) + 1 above ny<-0.3, -1 below ny>0.35; one constant alpha quantized to 0.25 steps (uFallbackBlend=1, default) or a Bayer screen-door at body_opacity (uFallbackBlend=0); rim, web and highlight stay solid"
+ },
+ "caustic_web": {
+  "colour": "#5ED2DC",
+  "mask_texture": "water_web_256.png",
+  "anim": "water_web_anim_4f_1024x256.png",
+  "fps": 6,
+  "only_where_f_below": 0.55,
+  "line_weight_px": 1,
+  "node_rings": "rings of 1 px around each 3-cell junction (the bright knot cores are left empty, so they read as rings)",
+  "screen_scale_in_mock": "1 tile texel = 1 mock pixel; tile = 2.56 sphere radii",
+  "object_space_default_tile_radii": 2.56
+ },
+ "rim": {
+  "lut": "lut_rim_4x1.png (rgb = colour, alpha = Bayer coverage)",
+  "bands": [
+   {
+    "f_ge": 0.5,
+    "r_ge": 0.866,
+    "colour": "#3EB8D8",
+    "bayer_cover": 0.25
+   },
+   {
+    "f_ge": 0.58,
+    "r_ge": 0.908,
+    "colour": "#5ED2DC",
+    "bayer_cover": 0.5
+   },
+   {
+    "f_ge": 0.68,
+    "r_ge": 0.947,
+    "colour": "#8CE6E8",
+    "bayer_cover": 1.0
+   },
+   {
+    "f_ge": 0.8,
+    "r_ge": 0.98,
+    "colour": "#BDF6F0",
+    "bayer_cover": 1.0
+   }
+  ],
+  "measured_radial_profile": "r 0.87-0.90 ~25% #3EB8D8, 0.91-0.94 ~50% #5ED2DC, 0.95-0.97 solid #8CE6E8, 0.98-1.00 solid #BDF6F0",
+  "rim_width_ratio": {
+   "dithered_zone": 0.081,
+   "solid_bright_rim": 0.053,
+   "total_from_r": 0.866,
+   "note": "fractions of the sphere radius"
+  }
+ },
+ "halo": {
+  "geometry": "expanded shell, radius x 1.07; analytic ring outside the true radius",
+  "lut": "lut_halo_2x1.png",
+  "bands": [
+   {
+    "r_from": 1.0,
+    "r_to": 1.03,
+    "colour": "#5ED2DC",
+    "bayer_cover": 0.5
+   },
+   {
+    "r_from": 1.03,
+    "r_to": 1.06,
+    "colour": "#3EB8D8",
+    "bayer_cover": 0.25
+   }
+  ],
+  "measured_hit_rate_4x4": [
+   [
+    1.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   [
+    0.0,
+    1.0,
+    0.0,
+    1.0
+   ],
+   [
+    1.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   [
+    0.0,
+    1.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "pattern": "checkerboard at 50% (Bayer cells < 0.5)"
+ },
+ "dither": {
+  "matrix_4x4": [
+   [
+    0,
+    8,
+    2,
+    10
+   ],
+   [
+    12,
+    4,
+    14,
+    6
+   ],
+   [
+    3,
+    11,
+    1,
+    9
+   ],
+   [
+    15,
+    7,
+    13,
+    5
+   ]
+  ],
+  "rule": "pixel on if (bayer[y%4][x%4] + 0.5) / 16 < coverage  (texture: bayer4_4x4.png, value/255)",
+  "texture": "bayer4_4x4.png",
+  "screen_space": true,
+  "scale_px": 1,
+  "note": "aligned to the virtual pixel grid, not world space"
+ },
+ "highlight": {
+  "space": "view (fixed to the camera, top-left)",
+  "light_dir_view": [
+   -0.5503,
+   0.6003,
+   0.5803
+  ],
+  "steps": [
+   {
+    "dot_ge": 0.975,
+    "colour": "#BDF6F0"
+   },
+   {
+    "dot_ge": 0.993,
+    "colour": "#E8FFF6"
+   }
+  ],
+  "angular_radius_deg": {
+   "outer": 12.8,
+   "core": 6.8
+  },
+  "measured_outer": {
+   "bbox_norm": [
+    -0.715,
+    -0.755,
+    -0.355,
+    -0.415
+   ],
+   "centroid_norm": [
+    -0.536,
+    -0.585
+   ],
+   "pixels_at_r100": 898
+  },
+  "measured_core": {
+   "bbox_norm": [
+    -0.635,
+    -0.685,
+    -0.455,
+    -0.505
+   ],
+   "centroid_norm": [
+    -0.546,
+    -0.596
+   ],
+   "pixels_at_r100": 253
+  },
+  "reflection_arc": {
+   "colour": "#E8FFF6",
+   "f_range": [
+    0.7,
+    0.8
+   ],
+   "quadrant": "lower-right (screen nx > 0.35 and ny > 0.35)"
+  },
+  "decal": "highlight_decal_128.png (whole-disc decal, cutout, for sprite fallbacks)"
+ },
+ "bubbles": {
+  "sheet": "bubbles_64.png (the exact sprites pasted into the mock)",
+  "mock_sizes_px": [
+   6,
+   10,
+   14
+  ],
+  "count_in_mock": 6,
+  "colours": {
+   "rim_lit": "#E8FFF6",
+   "rim": "#BDF6F0",
+   "side": "#8CE6E8",
+   "shade": "#3EB8D8",
+   "inner_reflect": "#5ED2DC"
+  }
+ },
+ "inside_view": {
+  "fog_steps_m": "radius x [0.9, 1.5, 2.0] (13.5 / 22.5 / 30 m at R=15; v1 used 6/14/26 for a much smaller sphere)",
+  "fog_colours": [
+   "#2E8A84",
+   "#1F6066",
+   "#163A48"
+  ],
+  "lut": "lut_inner_fog_3x1.png",
+  "rim": false,
+  "caustic_light": {
+   "colour": "#8CE6E8",
+   "secondary": "#5ED2DC",
+   "cover": 0.75
+  },
+  "god_rays": {
+   "period_px": 70,
+   "width_px": 11,
+   "slope": 0.6,
+   "tone_up": 1
+  },
+  "background": "posterized toward water_3..water_6 by luma when refraction is on"
+ },
+ "transparency": {
+  "rule": "no smooth alpha anywhere. Outside: opaque refracted body. Fallback: Bayer screen-door at body_opacity. Halo: Bayer cutout.",
+  "opacity_steps": [
+   0.25,
+   0.5,
+   0.75,
+   1.0
+  ],
+  "body_opacity_fallback": 0.75
+ },
+ "pixel_grid": {
+  "mock_virtual_px_per_radius": 100,
+  "game_default": "render the whole scene at 1/3 resolution with nearest upscale, or set uPixel = 3 (shader snaps to a 3 px virtual grid)",
+  "world_texel_option": "32 px/m snap for the caustic web (uWebTexelsPerM)"
+ },
+ "extra_tones_not_in_v2": {
+  "#2A9EAE": "aqua_mid: teal-to-cyan step between water #2A8CC4/dye_teal #2E8A84 and #3EB8D8",
+  "#5ED2DC": "aqua_bright: crystal + caustic core step between #3EB8D8 and #8CE6E8",
+  "#BDF6F0": "rim_glow: sphere rim glow / crystal hot core, between #8CE6E8 and #E8FFF6"
+ }
+}

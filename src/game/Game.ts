@@ -13,6 +13,8 @@ function orEdges(pending: InputIntent, fresh: InputIntent): InputIntent {
     drop: pending.drop || fresh.drop,
     pass: pending.pass || fresh.pass,
     shoot: pending.shoot || fresh.shoot,
+    kick: pending.kick || fresh.kick,
+    burstPower: pending.burstPower || fresh.burstPower,
     aimCancel: pending.aimCancel || fresh.aimCancel,
     burst: pending.burst || fresh.burst,
     resetBall: pending.resetBall || fresh.resetBall,
@@ -29,6 +31,8 @@ function withoutEdges(intent: InputIntent): InputIntent {
     drop: false,
     pass: false,
     shoot: false,
+    kick: false,
+    burstPower: false,
     aimCancel: false,
     burst: false,
     resetBall: false,
@@ -67,6 +71,7 @@ export class Game {
   private goalBanner: HTMLElement | null;
   private lastThrowFeedback = 0;
   private audioCtx: AudioContext | null = null;
+  private shotMode: 'wide' | 'inside' | 'ball' | 'windup' | 'bank' | 'play' | null = null;
 
   constructor(app: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -84,6 +89,17 @@ export class Game {
           this.sim.resizeArena(this.tunables.arenaRadius);
           this.view.rebuildArena();
         }
+        if (
+          key === 'waterStyle' ||
+          key === 'waterPreset' ||
+          key === 'waterRefraction' ||
+          key === 'waterQuality' ||
+          key === 'waterPixelScale' ||
+          key === 'stadiumDetail' ||
+          key === 'crowdDensity'
+        ) {
+          this.view.applyVisuals(this.visuals());
+        }
       },
       {
         listBots: () => this.sim.listBots(),
@@ -96,6 +112,16 @@ export class Game {
         exportRoster: () => this.sim.exportRoster(),
       },
     );
+    const shot = new URLSearchParams(location.search).get('shot');
+    if (shot === 'wide' || shot === 'inside' || shot === 'ball' || shot === 'windup' || shot === 'bank' || shot === 'play') {
+      this.shotMode = shot;
+      this.tunables.showDebugStats = false;
+      const hud = document.getElementById('hud');
+      if (hud) hud.style.display = 'none';
+      const dev = document.getElementById('dev-panel');
+      if (dev) dev.style.display = 'none';
+      if (shot === 'windup' || shot === 'bank') this.poseStill();
+    }
 
     this.scoreA = document.getElementById('score-a')!;
     this.scoreB = document.getElementById('score-b')!;
@@ -112,6 +138,50 @@ export class Game {
 
     this.onResize();
     window.addEventListener('resize', this.onResize);
+  }
+
+  private visuals() {
+    return {
+      waterStyle: this.tunables.waterStyle,
+      waterPreset: this.tunables.waterPreset,
+      waterRefraction: this.tunables.waterRefraction,
+      waterQuality: this.tunables.waterQuality,
+      waterPixelScale: this.tunables.waterPixelScale,
+      stadiumDetail: this.tunables.stadiumDetail,
+      crowdDensity: this.tunables.crowdDensity,
+    };
+  }
+
+  /** Park the human in frame for the windup and bank stills. Physics does not step. */
+  private poseStill(): void {
+    const human = this.sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.actionPose = this.shotMode === 'windup' ? 'hold' : 'none';
+    human.actionPoseTime = 0.2;
+    this.sim.kickoffLock = 0;
+    this.sim.strafing = this.shotMode === 'windup';
+    if (this.shotMode === 'windup') {
+      human.hasBall = true;
+      this.sim.ball.possession = 'held';
+      this.sim.ball.ownerId = human.id;
+      this.sim.ball.position.set(0, 0.2, 0.7);
+      this.sim.charge.active = true;
+      this.sim.charge.kind = 'shoot';
+      this.sim.charge.amount = 0.85;
+      this.sim.shotAim.active = true;
+    } else {
+      human.hasBall = false;
+      human.velocity.set(16, 2, 5);
+      this.sim.ball.possession = 'free';
+      this.sim.ball.ownerId = null;
+      this.sim.ball.position.set(0, -6, 18);
+    }
+    for (const p of this.sim.players) {
+      if (p.id !== human.id) p.active = false;
+    }
   }
 
   start(): void {
@@ -135,6 +205,13 @@ export class Game {
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     this.accum += dt;
+
+    if (this.shotMode) {
+      this.view.sync(this.sim, false, dt);
+      this.view.render();
+      requestAnimationFrame(this.frame);
+      return;
+    }
 
     const fresh = this.input.sample(dt);
     if (fresh.toggleDev) this.dev.toggle();
@@ -203,22 +280,23 @@ export class Game {
       this.chargeEl.classList.add('visible');
       const pct = Math.round(this.sim.charge.amount * 100);
       this.chargeFill.style.width = `${pct}%`;
-      const shooting = this.sim.charge.kind === 'shoot';
+      const shooting = this.sim.charge.kind === 'shoot' || this.sim.charge.kind === 'kick';
+      const kicking = this.sim.charge.kind === 'kick';
       const dist =
         shooting && this.sim.landingMarker.visible ? Math.round(this.sim.landingMarker.distance) : 0;
       const tapMode = shooting && this.tunables.powerMode === 'tap';
       const mode = this.tunables.powerMode;
       this.syncPips(tapMode ? Math.max(1, readout.tapMax) : 0, readout.taps);
       if (tapMode) {
-        this.chargeLabel.textContent = dist > 0 ? `Tap ${readout.taps}/${readout.tapMax} · ${dist}u` : `Tap ${readout.taps}/${readout.tapMax}`;
+        this.chargeLabel.textContent = dist > 0 ? `${kicking ? 'Kick tap' : 'Tap'} ${readout.taps}/${readout.tapMax} · ${dist}u` : `${kicking ? 'Kick tap' : 'Tap'} ${readout.taps}/${readout.tapMax}`;
       } else if (shooting && mode === 'target') {
         this.chargeLabel.textContent = this.sim.landingMarker.outOfReach ? `Out of reach · ${dist}u` : `Target ${dist}u`;
       } else if (shooting && mode === 'pull') {
         this.chargeLabel.textContent = dist > 0 ? `Pull ${pct} · ${dist}u` : `Pull ${pct}`;
       } else if (shooting && dist > 0) {
-        this.chargeLabel.textContent = `Power ${pct} · ${dist}u`;
+        this.chargeLabel.textContent = `${kicking ? 'Kick' : 'Power'} ${pct} · ${dist}u`;
       } else {
-        this.chargeLabel.textContent = shooting ? `Power ${pct}` : `Pass ${pct}`;
+        this.chargeLabel.textContent = kicking ? `Kick ${pct}` : shooting ? `Power ${pct}` : `Pass ${pct}`;
       }
       this.chargeEl.classList.toggle('shot', shooting);
     } else {
@@ -251,8 +329,11 @@ export class Game {
         this.sim.landingMarker.visible
           ? `landing ${this.sim.landingMarker.lockId !== null ? 'mate' : 'free'}`
           : 'landing off',
-        this.sim.catchStance ? 'catch reach' : 'catch off',
+        this.sim.getHuman().catchReady ? 'catch ready' : this.sim.catchStance ? 'squared up' : 'catch off',
         this.rosterLine(),
+        this.tunables.showAiIntent
+          ? this.sim.aiIntents.map((mark) => `ai${mark.id} ${mark.kind}`).join(' ') || 'ai idle'
+          : 'ai intent hidden',
       ].join('\n');
     }
   }

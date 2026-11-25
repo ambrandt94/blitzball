@@ -1,0 +1,136 @@
+{
+ "name": "Blitzball water sphere palette (Trailbound)",
+ "all_steps_dark_to_light": [
+  "#163A48",
+  "#1F6066",
+  "#2E8A84",
+  "#2A9EAE",
+  "#3EB8D8",
+  "#5ED2DC",
+  "#8CE6E8",
+  "#BDF6F0",
+  "#E8FFF6"
+ ],
+ "body": {
+  "deep": "#163A48",
+  "mid": "#1F6066",
+  "base": "#2E8A84",
+  "teal_cyan": "#2A9EAE",
+  "cyan": "#3EB8D8",
+  "note": "deep teal at depth / far side -> cyan near the lit top-left. Posterize to these steps; never blend smoothly."
+ },
+ "inner_fog": {
+  "near": "#2E8A84",
+  "mid": "#1F6066",
+  "far": "#163A48",
+  "band_edges_m": [
+   6,
+   14,
+   26
+  ],
+  "note": "from inside: fog in 3 hard steps by view distance; 4x4 Bayer allowed only on the 2-px seam between steps"
+ },
+ "rim_glow": {
+  "steps": [
+   {
+    "fresnel_ge": 0.5,
+    "hex": "#3EB8D8",
+    "bayer_cover": 0.25
+   },
+   {
+    "fresnel_ge": 0.58,
+    "hex": "#5ED2DC",
+    "bayer_cover": 0.5
+   },
+   {
+    "fresnel_ge": 0.68,
+    "hex": "#8CE6E8",
+    "bayer_cover": 1.0
+   },
+   {
+    "fresnel_ge": 0.8,
+    "hex": "#BDF6F0",
+    "bayer_cover": 1.0
+   }
+  ],
+  "outer_halo": {
+   "hex": "#5ED2DC",
+   "width_pct_radius": 3,
+   "bayer_cover": 0.5,
+   "second_ring": {
+    "hex": "#3EB8D8",
+    "width_pct_radius": 3,
+    "bayer_cover": 0.25
+   }
+  },
+  "fresnel": "f = 1 - dot(N, V)"
+ },
+ "highlight": {
+  "primary": "#E8FFF6",
+  "secondary": "#BDF6F0",
+  "spec_thresholds": {
+   "secondary": 0.975,
+   "primary": 0.993
+  },
+  "light_dir_view_space": [
+   -0.55,
+   0.6,
+   0.58
+  ],
+  "reflection_arc": {
+   "hex": "#E8FFF6",
+   "fresnel_range": [
+    0.7,
+    0.8
+   ],
+   "quadrant": "lower-right"
+  }
+ },
+ "surface_band": {
+  "base": "#2E8A84",
+  "band": "#3EB8D8",
+  "crest": "#8CE6E8",
+  "texture": "water/water_shell_bands_256.png",
+  "scroll_m_per_s": [
+   0.15,
+   0.05
+  ]
+ },
+ "caustics": {
+  "lines": [
+   "#3EB8D8",
+   "#5ED2DC",
+   "#8CE6E8"
+  ],
+  "knots": [
+   "#BDF6F0",
+   "#E8FFF6"
+  ],
+  "texture": "water/water_caustics_anim_4f_1024x256.png",
+  "additive_overlay": "water/caustics_light_overlay_4f_1024x256.png",
+  "fps": 6,
+  "world_tile_m": 8
+ },
+ "bubble": {
+  "rim": "#8CE6E8",
+  "rim_lit": "#E8FFF6",
+  "rim_shade": "#3EB8D8",
+  "inner_reflect": "#5ED2DC",
+  "sheet": "water/bubbles_64.png"
+ },
+ "opacity": {
+  "shell_centre_outside": 0.55,
+  "shell_rim_outside": 0.95,
+  "rim_glow_additive": 0.8,
+  "caustics_additive_on_stone": 0.45,
+  "caustics_on_sphere_interior": 0.35,
+  "inside_fog_max": 0.85,
+  "bubbles": 1.0,
+  "note": "quantize final alpha to 4 steps (0.25/0.5/0.75/1) or use Bayer cut-out, so it never reads as a smooth gradient"
+ },
+ "extra_tones_not_in_v2": {
+  "#2A9EAE": "aqua_mid: teal-to-cyan step between water #2A8CC4/dye_teal #2E8A84 and #3EB8D8",
+  "#5ED2DC": "aqua_bright: crystal + caustic core step between #3EB8D8 and #8CE6E8",
+  "#BDF6F0": "rim_glow: sphere rim glow / crystal hot core, between #8CE6E8 and #E8FFF6"
+ }
+}

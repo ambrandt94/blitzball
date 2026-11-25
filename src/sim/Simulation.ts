@@ -24,6 +24,7 @@ import type {
 } from '../game/types';
 import { createPowerStrategy, type PowerStrategy, type PowerTuning } from './shotPower';
 import { DummyAI } from '../ai/DummyAI';
+import type { AiDelivery, AiMark } from '../ai/FieldAI';
 import { GoalieAI, goalieCatchSpeed, goalieSkill01 } from '../ai/GoalieAI';
 import { TeammateAI } from '../ai/TeammateAI';
 import {
@@ -36,7 +37,7 @@ import {
   rotateToward,
   stabilizeUp,
 } from './math';
-import { inCatchVolume, segmentHitsCatch } from './catch';
+import { fumbleChance, inCatchCone, inCatchVolume, segmentHitsCatch, segmentHitsCone } from './catch';
 import {
   containInNet,
   inGoalPocket,
@@ -79,6 +80,7 @@ function makePlayer(
     selfCatchLock: false,
     selfCatchTime: 0,
     burstTime: 0,
+    burstStrong: false,
     burstCooldown: 0,
     burstPuff: 0,
     burstDir: new THREE.Vector3(0, 0, 1),
@@ -92,6 +94,8 @@ function makePlayer(
     hitFlash: 0,
     hitBurst: 0,
     catchStance: false,
+    catchReady: false,
+    deflectTime: 0,
     active,
     actionPose: 'none',
     actionPoseTime: 0,
@@ -99,6 +103,8 @@ function makePlayer(
     throwPosePower: 0,
     throwCurveRight: 0,
     throwCurveUp: 0,
+    windup: 0,
+    windupKind: 'none',
   };
 }
 
@@ -107,6 +113,24 @@ export class Simulation {
   ball: BallState;
   match: MatchState;
   charge: ChargeState = { active: false, kind: null, amount: 0 };
+  /** What each field player is trying to do, for the debug overlay. */
+  aiIntents: AiMark[] = [];
+  /** Ball has left the hand and is waiting on the foot. */
+  private aiKick: { active: boolean; time: number; playerId: number; spec: AiDelivery | null } = {
+    active: false,
+    time: 0,
+    playerId: -1,
+    spec: null,
+  };
+  private kickSwing = {
+    active: false,
+    time: 0,
+    power: 0,
+    playerId: -1,
+    aim: new THREE.Vector3(),
+    bendRight: 0,
+    bendUp: 0,
+  };
   /** Ghost trail samples while charging (beginner aid) or aiming an arc. */
   chargeGhost: THREE.Vector3[] = [];
   /**
@@ -187,7 +211,8 @@ export class Simulation {
     from: new THREE.Vector3(),
     to: new THREE.Vector3(),
   };
-  private strafing = false;
+  /** Right-click aim is held. The view reads this; movement already slowed in the step. */
+  strafing = false;
   /** Seconds of extra reach left after a claim press. */
   private claimLatch = 0;
   /** Ball position at the start of this step's integration, for sweep catches and goal crossings. */
@@ -310,6 +335,7 @@ export class Simulation {
         p.selfCatchLock = false;
         p.selfCatchTime = 0;
         p.burstTime = 0;
+        p.burstStrong = false;
         p.burstCooldown = 0;
         p.burstPuff = 0;
         p.burstSpeedCap = 0;
@@ -322,12 +348,16 @@ export class Simulation {
         p.hitFlash = 0;
         p.hitBurst = 0;
         p.catchStance = false;
+        p.catchReady = false;
+        p.deflectTime = 0;
         p.actionPose = 'none';
         p.actionPoseTime = 0;
         p.actionPoseDuration = 0;
         p.throwPosePower = 0;
         p.throwCurveRight = 0;
         p.throwCurveUp = 0;
+        p.windup = 0;
+        p.windupKind = 'none';
       }
     }
 
@@ -728,9 +758,9 @@ export class Simulation {
         continue;
       }
       if (onDefense) {
-        const aiIntent = this.ai.think(p, this.ball, this.players, this.tunables);
+        const aiIntent = this.ai.think(p, this.ball, this.players, this.tunables, motion);
         this.movePlayer(p, aiIntent, motion, false);
-        this.resolveAiActions(p, aiIntent, dt);
+        this.resolveAiActions(p, aiIntent);
       } else {
         const mateIntent = this.teammate.think(
           p,
@@ -739,14 +769,19 @@ export class Simulation {
           this.tunables,
           human,
           intent.callForPass,
-          dt,
+          motion,
         );
         this.movePlayer(p, mateIntent, motion, false);
         this.resolveTeammate(p, mateIntent);
       }
     }
+    if (live) {
+      this.aiIntents = [...this.ai.marks(), ...this.teammate.marks()];
+    }
 
     if (live) this.updatePossession(human, intent, motion);
+    this.tickKickSwing(motion);
+    this.tickAiKick(motion);
     this.updateBall(motion);
     if (live) {
       this.resolveCatches();
@@ -766,6 +801,7 @@ export class Simulation {
       if (p.burstCooldown > 0) p.burstCooldown = Math.max(0, p.burstCooldown - dt);
       if (p.burstTime > 0) p.burstTime = Math.max(0, p.burstTime - dt);
       if (p.burstPuff > 0) p.burstPuff = Math.max(0, p.burstPuff - dt * 3.2);
+      if (p.deflectTime > 0) p.deflectTime = Math.max(0, p.deflectTime - dt);
       if (p.actionPoseTime > 0) {
         p.actionPoseTime -= dt;
         if (p.actionPoseTime <= 0) {
@@ -812,9 +848,14 @@ export class Simulation {
     if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
     if (this.shotBlocked) return;
     if (intent.aimCancel) return;
+    if (this.kickSwing.active) return;
     const human = this.getHuman();
-    if (!human.hasBall || !intent.shootHeld) return;
+    if (!human.hasBall) return;
+    const kick = intent.strafe && intent.kickHeld;
+    const shoot = intent.shootHeld && !kick;
+    if (!kick && !shoot) return;
     if (!this.shotAim.active) this.beginShotAim();
+    this.charge.kind = kick ? 'kick' : 'shoot';
   }
 
   applyFrameLook(intent: InputIntent): void {
@@ -837,7 +878,7 @@ export class Simulation {
         this.shotAim.bendUp += -intent.lookDelta.y * sy * this.tunables.arcBendSpeed;
       }
       this.clampStoredBend();
-      if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
+      if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(this.getHuman());
       return;
     }
     this.yaw += intent.lookDelta.x * sx;
@@ -918,8 +959,24 @@ export class Simulation {
 
     // The throw hold keeps the camera locked. WASD still swims, just slowly.
     // shotAim stays active through the release frame.
-    const aimingShot = isHuman && player.hasBall && (intent.shootHeld || this.shotAim.active);
-    if (isHuman) this.updateTackle(player, intent, wish, dt, aimingShot);
+    const aimingShot =
+      isHuman && player.hasBall && (intent.shootHeld || (this.shotAim.active && this.charge.kind !== 'kick'));
+    const tackle = intent.burst || intent.burstPower;
+    if (isHuman && player.catchReady && tackle && !player.hasBall && !aimingShot) {
+      this.tryDeflect(player);
+    } else if (isHuman) {
+      this.updateTackle(player, intent, wish, dt, aimingShot);
+    } else if (
+      player.role === 'ai' &&
+      tackle &&
+      !player.hasBall &&
+      !player.catchReady &&
+      player.burstCooldown <= 0 &&
+      this.kickoffLock <= 0 &&
+      this.match.resetTimer <= 0
+    ) {
+      this.fireTackle(player, wish, intent.burstPower ? 'power' : 'light', intent.burstPower ? 1 : 0);
+    }
 
     const bursting = player.burstTime > 0 && player.burstDir.lengthSq() > 1e-6;
     if (bursting) wish.copy(player.burstDir).normalize();
@@ -929,6 +986,12 @@ export class Simulation {
     // A lunge ignores that tax so the catch or tackle still closes.
     const aimLocked = isHuman && intent.strafe;
     player.catchStance = aimLocked && !player.hasBall && !bursting && !aimingShot;
+    if (!player.catchStance || player.hasBall) player.catchReady = false;
+    else if (intent.claim) {
+      player.catchReady = !player.catchReady;
+      this.match.statusMessage = player.catchReady ? 'Catch ready' : 'Squared up';
+    }
+    if (!isHuman) this.trackIncomingPass(player, dt);
     player.sprinting = intent.sprint && !player.hasBall && !bursting;
     let maxSpeed = Math.max(4, this.tunables.playerMaxSpeed);
     let accel = bursting ? this.tunables.playerAccel * 1.65 : this.tunables.playerAccel;
@@ -1070,7 +1133,10 @@ export class Simulation {
     const speed = player.velocity.length();
     const target = this.tmp.aim;
     target.copy(aim);
-    if (target.lengthSq() < 1e-8) target.copy(player.facing);
+    if (target.lengthSq() < 1e-8 || !Number.isFinite(target.x) || !Number.isFinite(target.y) || !Number.isFinite(target.z)) {
+      target.copy(player.facing);
+    }
+    if (target.lengthSq() < 1e-8) target.set(0, 0, 1);
     else target.normalize();
 
     if (!aimLocked && speed > 1e-4) {
@@ -1111,7 +1177,8 @@ export class Simulation {
 
   private resolveTeammate(player: PlayerState, intent: InputIntent): void {
     if (intent.claim) this.tryClaim(player);
-    if (intent.pass && player.hasBall) this.passToHuman(player);
+    const spec = this.teammate.takeDelivery(player.id);
+    if (spec && player.hasBall) this.releaseAiDelivery(player, spec);
   }
 
   private resolveGoalie(player: PlayerState, intent: InputIntent): void {
@@ -1181,41 +1248,22 @@ export class Simulation {
     }
   }
 
-  /** Lead the human a little so the return pass is catchable. */
-  private passToHuman(player: PlayerState): void {
-    const human = this.getHuman();
-    const aim = human.position.clone().addScaledVector(human.velocity, 0.28).sub(player.position);
-    if (aim.lengthSq() < 0.25) aim.copy(player.facing);
-    else aim.normalize();
-    this.releaseAtHand(player, aim);
-    const dist = Math.max(3, player.position.distanceTo(human.position));
-    const passSpeed = Math.max(4, this.tunables.passSpeed);
-    const speed = Math.min(passSpeed, Math.max(passSpeed * 0.45, dist * this.tunables.ballDrag * 1.25));
-    this.noteThrow(player);
-    this.releaseBall(aim.multiplyScalar(speed).addScaledVector(player.velocity, 0.15));
-    this.rememberThrow(player, 0.4);
-    this.playPose(player, 'pass', throwPoseSeconds(0.4, true));
-    this.match.statusMessage = 'Pass back';
-  }
-
-  private resolveAiActions(player: PlayerState, intent: InputIntent, _dt: number): void {
+  private resolveAiActions(player: PlayerState, intent: InputIntent): void {
     if (intent.claim) this.tryClaim(player);
-    if (!player.hasBall) return;
-    // Dummy AI fires a medium shot without sharing the human charge meter.
-    if (intent.shoot || (!intent.shootHeld && Math.random() < 0.0)) {
-      this.releaseShot(player, 0.55 + Math.random() * 0.35);
-    } else if (intent.pass) {
-      this.releasePass(player, 0.55);
-    }
+    const spec = this.ai.takeDelivery(player.id);
+    if (spec && player.hasBall) this.releaseAiDelivery(player, spec);
   }
 
   private updatePossession(human: PlayerState, intent: InputIntent, dt: number): void {
     // Charge shoot / pass for human
     if (human.hasBall) {
-      if (intent.aimCancel && this.throwInProgress()) {
-        this.cancelAimedThrow(human, intent.shootHeld);
+      const kickCharge = this.charge.kind === 'kick' && this.throwInProgress() && !this.kickSwing.active;
+      if (kickCharge && !intent.strafe) {
+        this.cancelAimedThrow(human, intent.kickHeld);
+      } else if (intent.aimCancel && this.throwInProgress()) {
+        this.cancelAimedThrow(human, this.charge.kind === 'kick' ? intent.kickHeld : intent.shootHeld);
       } else if (this.shotBlocked) {
-        if (!intent.shootHeld) this.shotBlocked = false;
+        if (!intent.shootHeld && !intent.kickHeld) this.shotBlocked = false;
       } else if (intent.drop) {
         this.clearShotAim();
         const toss = this.lookForward(human);
@@ -1223,11 +1271,21 @@ export class Simulation {
         this.releaseBall(toss.multiplyScalar(4).add(human.velocity));
         human.reclaimGrace = PLAYER.reclaimCoyote;
         this.match.statusMessage = 'Ball dropped';
+      } else if (
+        !this.shotBlocked &&
+        intent.strafe &&
+        (intent.kickHeld || (this.charge.kind === 'kick' && this.power.capturing()))
+      ) {
+        if (!this.shotAim.active) this.beginShotAim();
+        this.charge.kind = 'kick';
+        this.sustainThrow(human, intent, dt);
+      } else if (this.charge.active && this.charge.kind === 'kick') {
+        this.finishThrowHold(human);
       } else if (intent.shootHeld || this.power.capturing()) {
         this.sustainThrow(human, intent, dt);
       } else if (this.charge.active && this.charge.kind === 'shoot') {
         this.finishThrowHold(human);
-      } else if (intent.passHeld && !intent.shootHeld) {
+      } else if (intent.passHeld && !intent.shootHeld && !intent.strafe) {
         this.charge.active = true;
         this.charge.kind = 'pass';
         this.charge.amount = Math.min(1, this.charge.amount + dt / (BALL.chargeTime * 0.7));
@@ -1241,8 +1299,10 @@ export class Simulation {
         this.releasePass(human, 0.45);
       }
     } else {
-      if (this.shotAim.active || this.charge.active) this.clearShotAim();
-      if (intent.claim) this.tryClaim(human);
+      if (!this.kickSwing.active && (this.shotAim.active || this.charge.active)) this.clearShotAim();
+      if (intent.kickHeld) this.tryVolley(human);
+      // While squared up, E toggles catch-ready instead of grabbing.
+      if (intent.claim && !(intent.strafe && !human.hasBall)) this.tryClaim(human);
     }
 
     // Tackle / strip when AI has ball
@@ -1275,18 +1335,13 @@ export class Simulation {
     return true;
   }
 
-  /** Mitt size. The human's catch stance, then a fresh claim press, widen it. */
+  /** Mitt size. A fresh claim press widens it. Catch-ready uses the cone instead. */
   private catchScales(player: PlayerState): { reach: number; radius: number } {
     let reach = Math.max(0.2, this.tunables.catchReach);
     let radius = Math.max(0.2, this.tunables.claimRadius);
-    if (player.id === this.humanId) {
-      if (this.catchStance) {
-        reach *= Math.max(1, this.tunables.catchStanceReach);
-        radius *= Math.max(1, this.tunables.catchStanceWidth);
-      } else if (this.claimLatch > 0) {
-        reach *= PLAYER.claimPressReach;
-        radius *= PLAYER.claimPressWidth;
-      }
+    if (player.id === this.humanId && this.claimLatch > 0 && !player.catchReady) {
+      reach *= PLAYER.claimPressReach;
+      radius *= PLAYER.claimPressWidth;
     }
     return { reach, radius };
   }
@@ -1297,8 +1352,16 @@ export class Simulation {
   }
 
   private sweptReach(player: PlayerState): boolean {
-    const { reach, radius } = this.catchScales(player);
     const forward = this.lookForward(player);
+    if (player.catchReady) {
+      const radius = Math.max(0.4, this.tunables.catchReadyRadius);
+      const cone = Math.max(0.05, this.tunables.catchReadyCone);
+      return (
+        inCatchCone(player.position, forward, this.ball.position, radius, cone) ||
+        segmentHitsCone(player.position, forward, this.ballFrom, this.ball.position, radius, cone)
+      );
+    }
+    const { reach, radius } = this.catchScales(player);
     return (
       inCatchVolume(player.position, forward, this.ball.position, reach, radius) ||
       segmentHitsCatch(player.position, forward, this.ballFrom, this.ball.position, reach, radius)
@@ -1314,6 +1377,39 @@ export class Simulation {
   private tryClaim(player: PlayerState): void {
     if (this.ball.possession === 'held' && this.ball.ownerId !== player.id) return;
     if (!this.canTake(player) || !this.pointInReach(player, this.ball.position)) return;
+    this.takeBall(player);
+  }
+
+  /**
+   * Loose-ball pickup after the ball has moved. The mitt is a forward capsule, and the
+   * segment from the previous position is tested so a pass cannot step through it.
+   * Human wins a tie. Catch stance uses the wider mitt.
+   */
+  private resolveCatches(): void {
+    if (this.ball.possession !== 'free' || this.ball.claimLock > 0) return;
+    const ready = this.players.some((player) => player.catchReady);
+    if (this.ball.arc && !ready) return;
+    const human = this.getHuman();
+    if (this.canTake(human) && this.sweptReach(human)) {
+      this.takeBall(human);
+      return;
+    }
+    for (const player of this.players) {
+      if (player.id === human.id || !this.canTake(player) || !this.sweptReach(player)) continue;
+      this.takeBall(player);
+      return;
+    }
+  }
+
+  /** Catch-ready keeps a soft pass and can pop a ball that arrives too hard. */
+  private takeBall(player: PlayerState): void {
+    if (player.catchReady) {
+      const chance = fumbleChance(this.ball.velocity.length(), this.tunables.fumbleSpeed);
+      if (chance > 0 && Math.random() < chance) {
+        this.popFumble(player);
+        return;
+      }
+    }
     this.giveBall(player);
     this.match.statusMessage =
       player.role === 'human'
@@ -1323,25 +1419,71 @@ export class Simulation {
           : 'AI claimed the ball';
   }
 
+  /** The hands met the ball and lost it. It stays free. */
+  private popFumble(player: PlayerState): void {
+    const away = this.tmp.side.copy(this.ball.position).sub(player.position);
+    if (away.lengthSq() < 1e-6) away.copy(this.lookForward(player));
+    else away.normalize();
+    const speed = this.ball.velocity.length();
+    this.ball.arc = null;
+    this.ball.velocity.copy(away).multiplyScalar(Math.max(8, speed * 0.55));
+    this.ball.claimLock = 0.28;
+    player.hitFlash = 0.7;
+    player.deflectTime = 0.12;
+    this.match.statusMessage = 'Fumble!';
+  }
+
   /**
-   * Loose-ball pickup after the ball has moved. The mitt is a forward capsule, and the
-   * segment from the previous position is tested so a pass cannot step through it.
-   * Human wins a tie. Catch stance uses the wider mitt.
+   * Catch-ready slap. The ball leaves along the aim and nobody claims it.
+   * A miss still plays the hand so the click reads.
    */
-  private resolveCatches(): void {
-    if (this.ball.possession !== 'free' || this.ball.arc || this.ball.claimLock > 0) return;
-    const human = this.getHuman();
-    if (this.canTake(human) && this.sweptReach(human)) {
-      this.giveBall(human);
-      this.match.statusMessage = 'You have the ball';
+  private tryDeflect(player: PlayerState): void {
+    player.deflectTime = 0.18;
+    const dist = player.position.distanceTo(this.ball.position);
+    const reach = Math.max(1.2, this.tunables.catchReadyRadius);
+    if (dist > reach) return;
+    if (this.ball.possession === 'held' && this.ball.ownerId !== null && this.ball.ownerId !== player.id) {
+      const owner = this.players[this.ball.ownerId];
+      if (owner) {
+        owner.hasBall = false;
+        if (owner.actionPose === 'hold') owner.actionPose = 'none';
+      }
+    }
+    const aim = this.lookForward(player);
+    if (aim.lengthSq() < 1e-8) aim.copy(player.facing);
+    else aim.normalize();
+    this.ball.possession = 'free';
+    this.ball.ownerId = null;
+    this.ball.arc = null;
+    this.ball.velocity.copy(aim).multiplyScalar(Math.max(4, this.tunables.deflectStrength));
+    this.ball.claimLock = 0.35;
+    this.ball.position.copy(player.position).addScaledVector(aim, Math.min(Math.max(dist, 0.4), 1.15));
+    this.match.statusMessage = 'Deflect!';
+  }
+
+  /** An AI receiver squares up when a pass is closing on them. */
+  private trackIncomingPass(player: PlayerState, dt: number): void {
+    if (!player.active || player.role === 'stub' || player.hasBall) {
+      player.catchReady = false;
       return;
     }
-    for (const player of this.players) {
-      if (player.id === human.id || !this.canTake(player) || !this.sweptReach(player)) continue;
-      this.giveBall(player);
-      this.match.statusMessage = player.team === human.team ? 'Teammate has the ball' : 'AI claimed the ball';
+    if (this.ball.possession !== 'free' || this.ball.lastOwnerId === player.id) {
+      player.catchReady = false;
       return;
     }
+    const to = this.tmp.side.copy(player.position).sub(this.ball.position);
+    const dist = to.length();
+    const window = Math.max(14, this.tunables.catchReadyRadius * 2.4);
+    const speed = this.ball.velocity.length();
+    const closing = dist > 1e-4 ? this.ball.velocity.dot(to) / dist : 0;
+    if (dist > window || speed < 3 || closing < 3) {
+      player.catchReady = false;
+      return;
+    }
+    player.catchReady = true;
+    player.catchStance = true;
+    to.multiplyScalar(1 / dist);
+    rotateToward(player.facing, to, Math.max(2, this.tunables.bodyTurnRate), dt);
   }
 
   /** Don't launch the ball off a chest that was about to catch it. */
@@ -1373,26 +1515,26 @@ export class Simulation {
 
   /** Drift a near miss into the outstretched hands. Only while the catch stance is held. */
   private pullCatch(human: PlayerState, dt: number): void {
-    if (!this.catchStance || this.ball.possession !== 'free' || this.ball.arc) return;
+    if (!human.catchReady || this.ball.possession !== 'free' || this.ball.arc) return;
     if (this.ball.claimLock > 0) return;
     if (human.reclaimGrace > 0 && this.ball.lastOwnerId === human.id) return;
     if (human.selfCatchLock && this.ball.lastOwnerId === human.id) return;
     if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
     const pull = Math.max(0, this.tunables.catchPull);
     if (pull <= 0) return;
-    const reach = Math.max(0.2, this.tunables.catchReach) * Math.max(1, this.tunables.catchStanceReach) * 1.22;
-    const radius = Math.max(0.2, this.tunables.claimRadius) * Math.max(1, this.tunables.catchStanceWidth) * 1.3;
+    const reach = Math.max(0.4, this.tunables.catchReadyRadius) * 1.15;
+    const cone = Math.max(0.05, this.tunables.catchReadyCone);
     const forward = this.lookForward(human);
-    if (!inCatchVolume(human.position, forward, this.ball.position, reach, radius)) return;
+    if (!inCatchCone(human.position, forward, this.ball.position, reach, cone)) return;
     const hands = this.tmp.holdTarget
       .copy(human.position)
-      .addScaledVector(forward, Math.max(0.2, this.tunables.catchReach) * Math.max(1, this.tunables.catchStanceReach) * 0.62)
+      .addScaledVector(forward, Math.min(1.1, Math.max(0.4, this.tunables.catchReadyRadius) * 0.35))
       .addScaledVector(human.up, 0.18);
     const toHands = this.tmp.side.copy(hands).sub(this.ball.position);
     const dist = toHands.length();
     if (dist < 0.08) return;
     toHands.multiplyScalar(1 / dist);
-    const falloff = 1 - THREE.MathUtils.smoothstep(dist, radius * 0.35, reach);
+    const falloff = 1 - THREE.MathUtils.smoothstep(dist, reach * 0.35, reach);
     this.ball.velocity.addScaledVector(toHands, pull * Math.max(0.25, falloff) * dt);
     const closing = this.ball.velocity.dot(toHands);
     if (closing < 0) this.ball.velocity.addScaledVector(toHands, -closing * 0.45);
@@ -1405,9 +1547,11 @@ export class Simulation {
       if (p.actionPose === 'hold') p.actionPose = 'none';
     }
     player.hasBall = true;
+    player.catchReady = false;
     this.ball.possession = 'held';
     this.ball.ownerId = player.id;
     this.ball.lastOwnerId = player.id;
+    this.ball.arc = null;
     this.ball.velocity.set(0, 0, 0);
     this.carryFrom.copy(this.ball.position);
     this.carryBlend = 0;
@@ -1487,7 +1631,11 @@ export class Simulation {
 
   /** A held throw or an open tap window. Right-click drops it without releasing. */
   private throwInProgress(): boolean {
-    return this.shotAim.active || this.power.capturing() || (this.charge.active && this.charge.kind === 'shoot');
+    return (
+      this.shotAim.active ||
+      this.power.capturing() ||
+      (this.charge.active && (this.charge.kind === 'shoot' || this.charge.kind === 'kick'))
+    );
   }
 
   private cancelAimedThrow(human: PlayerState, buttonStillDown: boolean): void {
@@ -1538,27 +1686,31 @@ export class Simulation {
    * Clicks in that window add power. They do not start a check or a new aim.
    */
   private sustainThrow(human: PlayerState, intent: InputIntent, dt: number): void {
+    const kick = this.charge.kind === 'kick';
     if (!this.shotAim.active) this.beginShotAim();
     this.stickBallToHand(human);
     this.acquireTeammate();
     this.charge.active = true;
-    this.charge.kind = 'shoot';
+    this.charge.kind = kick ? 'kick' : 'shoot';
     const tuning = this.powerTuning();
     let fired = false;
+    const edge = kick ? intent.kick : intent.shoot;
+    const held = kick ? intent.kickHeld : intent.shootHeld;
     if (this.power.capturing()) {
-      if (intent.shoot) {
+      if (edge) {
         fired = this.power.tap(tuning);
         this.landingMarker.pulse = 1;
         this.throwReadout.feedback += 1;
       }
       if (!fired) fired = this.power.tick(dt, tuning);
-    } else if (intent.shootHeld) {
+    } else if (held) {
       this.power.hold(dt, tuning);
     }
     this.charge.amount = this.power.amount();
     this.syncThrowReadout();
     if (fired) {
-      this.fireAimedShot(human);
+      if (this.charge.kind === 'kick') this.startKickSwing(human);
+      else this.fireAimedShot(human);
       return;
     }
     // Stay in the hold pose so the ball remains in the palm. The view cocks
@@ -1575,12 +1727,14 @@ export class Simulation {
     const fireNow = this.power.release(this.powerTuning());
     this.charge.amount = this.power.amount();
     this.syncThrowReadout();
+    const kick = this.charge.kind === 'kick';
     if (fireNow) {
-      this.fireAimedShot(human);
+      if (kick) this.startKickSwing(human);
+      else this.fireAimedShot(human);
       return;
     }
     this.charge.active = true;
-    this.charge.kind = 'shoot';
+    this.charge.kind = kick ? 'kick' : 'shoot';
     human.actionPose = 'hold';
     human.actionPoseTime = 0;
     this.refreshShotTarget();
@@ -1694,9 +1848,14 @@ export class Simulation {
   }
 
   /** Landing distance for a power in 0..1, from a short lob out to the aim range. */
+  private kickingDelivery(): boolean {
+    return this.charge.kind === 'kick' || this.kickSwing.active;
+  }
+
   private shotReach(power: number): number {
     const minD = SHOT_ARC.minRange;
-    const maxD = Math.max(minD, this.aimDistance());
+    const range = this.kickingDelivery() ? Math.max(1, this.tunables.kickRange) : 1;
+    const maxD = Math.max(minD, this.aimDistance() * range);
     return THREE.MathUtils.lerp(minD, maxD, THREE.MathUtils.clamp(power, 0, 1));
   }
 
@@ -1715,7 +1874,8 @@ export class Simulation {
   private refreshShotTarget(): void {
     const power = THREE.MathUtils.clamp(this.charge.amount, 0, 1);
     const minD = SHOT_ARC.minRange;
-    const maxD = Math.max(minD, this.aimDistance());
+    const range = this.kickingDelivery() ? Math.max(1, this.tunables.kickRange) : 1;
+    const maxD = Math.max(minD, this.aimDistance() * range);
     this.pointAlongAim(this.landingMarker.minPosition, minD);
     this.pointAlongAim(this.landingMarker.maxPosition, maxD);
     const aimingTarget = this.tunables.powerMode === 'target' && this.shotAim.active;
@@ -1733,7 +1893,10 @@ export class Simulation {
 
   /** A short band from the hand back along the aim. Length follows the pull. */
   private syncPullBand(): void {
-    const show = this.shotAim.active && this.tunables.powerMode === 'pull' && this.charge.kind === 'shoot';
+    const show =
+      this.shotAim.active &&
+      this.tunables.powerMode === 'pull' &&
+      (this.charge.kind === 'shoot' || this.charge.kind === 'kick');
     this.pullBand.visible = show;
     if (!show) return;
     const len = 0.4 + THREE.MathUtils.clamp(this.charge.amount, 0, 1) * 2.2;
@@ -1841,6 +2004,7 @@ export class Simulation {
     // Hand curve and resting height are full on the first frame. Power only
     // adds a small loft on top, so the preview does not ease in from a tall lob.
     const height = Math.max(0, this.tunables.arcHeight + this.tunables.shotPowerAngle * power);
+    const curve = this.kickingDelivery() ? Math.max(0, this.tunables.kickCurve) : 1;
     const basis = this.cameraBasis();
     const p1 = shapedControl(
       new THREE.Vector3(),
@@ -1849,8 +2013,8 @@ export class Simulation {
       basis.right,
       basis.up,
       height,
-      this.shotAim.bendRight,
-      this.shotAim.bendUp,
+      this.shotAim.bendRight * curve,
+      this.shotAim.bendUp * curve,
       this.tunables.arcBendLimit,
       limit,
       this.tunables.arcHandCurve,
@@ -1858,7 +2022,8 @@ export class Simulation {
     const straight = Math.max(0.5, p0.distanceTo(p2));
     const via = p0.distanceTo(p1) + p1.distanceTo(p2);
     const length = Math.max(straight, (straight + via) * 0.5);
-    const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), power);
+    const kickBoost = this.kickingDelivery() ? Math.max(1, this.tunables.kickSpeed) : 1;
+    const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), power) * kickBoost;
     const duration = Math.max(SHOT_ARC.minDuration, length / speed);
 
     let carryLeft = 0;
@@ -1899,6 +2064,220 @@ export class Simulation {
       }
     }
     return aim;
+  }
+
+  /** Drop the ball onto the foot, then launch. The extra beat is the windup. */
+  private startKickSwing(human: PlayerState): void {
+    const power = this.power.amount();
+    this.kickSwing.active = true;
+    this.kickSwing.time = Math.max(0.05, this.tunables.kickWindup);
+    this.kickSwing.power = power;
+    this.kickSwing.playerId = human.id;
+    this.kickSwing.aim.copy(this.lockedAim);
+    this.kickSwing.bendRight = this.shotAim.bendRight;
+    this.kickSwing.bendUp = this.shotAim.bendUp;
+    const drop = human.up.clone().multiplyScalar(-2.4).addScaledVector(human.velocity, 0.15);
+    this.releaseAtHand(human, this.lockedAim);
+    this.noteThrow(human);
+    this.releaseBall(drop);
+    this.ball.claimLock = Math.max(this.ball.claimLock, this.kickSwing.time + 0.25);
+    this.rememberThrow(human, power);
+    this.playPose(human, 'kick', this.kickSwing.time + 0.36);
+    this.clearShotAim();
+    this.match.statusMessage = 'Kick!';
+  }
+
+  private footPoint(player: PlayerState, out: THREE.Vector3): THREE.Vector3 {
+    const forward = player.facing.clone();
+    if (forward.lengthSq() < 1e-8) forward.set(0, 0, 1);
+    else forward.normalize();
+    return out.copy(player.position).addScaledVector(forward, 0.62).addScaledVector(player.up, -0.1);
+  }
+
+  private tickKickSwing(dt: number): void {
+    if (!this.kickSwing.active) return;
+    const player = this.players[this.kickSwing.playerId];
+    if (!player) {
+      this.kickSwing.active = false;
+      return;
+    }
+    const foot = this.footPoint(player, this.tmp.predictPos);
+    const pull = foot.sub(this.ball.position);
+    this.ball.velocity.copy(pull).multiplyScalar(10);
+    this.kickSwing.time -= dt;
+    if (this.kickSwing.time > 0) return;
+    this.launchKick(player);
+  }
+
+  private launchKick(player: PlayerState): void {
+    const power = THREE.MathUtils.clamp(this.kickSwing.power, 0, 1);
+    this.kickSwing.active = false;
+    const foot = this.footPoint(player, this.tmp.predictPos);
+    this.ball.position.copy(foot);
+    this.lockedAim.copy(this.kickSwing.aim);
+    if (this.lockedAim.lengthSq() < 1e-8) this.lockedAim.copy(player.facing);
+    if (this.lockedAim.lengthSq() < 1e-8) this.lockedAim.set(0, 0, 1);
+    this.lockedAim.normalize();
+    this.shotAim.active = true;
+    this.shotAim.lockId = null;
+    this.shotAim.bendRight = this.kickSwing.bendRight;
+    this.shotAim.bendUp = this.kickSwing.bendUp;
+    this.charge.kind = 'kick';
+    this.charge.amount = power;
+    this.pointAlongAim(this.shotAim.target, this.shotReach(power));
+    const arc = this.plannedArc(power);
+    this.ball.arc = {
+      p0: arc.p0,
+      p1: arc.p1,
+      p2: arc.p2,
+      elapsed: 0,
+      duration: arc.duration,
+      receiverId: null,
+      carryLeft: arc.carryLeft,
+      carryDir: arc.carryDir,
+      carrySpeed: arc.carrySpeed,
+    };
+    quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 0, arc.duration);
+    this.ball.claimLock = BALL.claimCooldown;
+    this.shotAim.active = false;
+    this.shotAim.bendRight = 0;
+    this.shotAim.bendUp = 0;
+    this.charge.kind = null;
+    this.charge.amount = 0;
+    this.match.statusMessage = power > 0.7 ? 'Big kick!' : 'Kick!';
+  }
+
+  /** First-time kick. The ball never becomes yours. Spread grows with how fast you arrive. */
+  private tryVolley(player: PlayerState): void {
+    if (this.ball.possession !== 'free' || this.ball.claimLock > 0 || this.kickSwing.active) return;
+    if (player.selfCatchLock && this.ball.lastOwnerId === player.id) return;
+    const forward = this.lookForward(player);
+    const reach = PLAYER.radius + BALL.radius + 1.35;
+    const cone = Math.max(0.05, this.tunables.volleyCone);
+    if (!inCatchCone(player.position, forward, this.ball.position, reach, cone)) return;
+    const aim = forward.clone();
+    if (aim.lengthSq() < 1e-8) aim.copy(player.facing);
+    if (aim.lengthSq() < 1e-8) aim.set(0, 0, 1);
+    aim.normalize();
+    const approach = player.velocity.length();
+    const spread =
+      Math.max(0, this.tunables.volleySpread) * Math.min(1.4, approach / Math.max(6, this.tunables.playerMaxSpeed));
+    const side = this.tmp.side.copy(player.up).cross(aim);
+    if (side.lengthSq() < 1e-8) side.set(1, 0, 0);
+    else side.normalize();
+    const lift = this.tmp.upHint.copy(aim).cross(side).normalize();
+    aim.addScaledVector(side, Math.sin((Math.random() * 2 - 1) * spread));
+    aim.addScaledVector(lift, Math.sin((Math.random() * 2 - 1) * spread * 0.65));
+    aim.normalize();
+    const speed = Math.max(this.shotSpeedMin() * Math.max(1, this.tunables.kickSpeed) * 0.8, 14);
+    this.ball.arc = null;
+    this.ball.velocity.copy(aim).multiplyScalar(speed).addScaledVector(player.velocity, 0.2);
+    this.ball.claimLock = 0.4;
+    this.playPose(player, 'kick', 0.32);
+    this.match.statusMessage = 'Volley!';
+  }
+
+  /** Field AI shot or pass. Same Bezier as a human throw, with a kick dropping to the foot first. */
+  private releaseAiDelivery(player: PlayerState, spec: AiDelivery): void {
+    player.windup = 0;
+    player.windupKind = 'none';
+    if (spec.kick && !this.kickSwing.active && !this.aiKick.active) {
+      this.armAiKick(player, spec);
+      return;
+    }
+    this.scriptArc(player, spec, spec.kick);
+  }
+
+  private armAiKick(player: PlayerState, spec: AiDelivery): void {
+    const aim = spec.point.clone().sub(player.position);
+    if (aim.lengthSq() < 1e-8) aim.copy(player.facing);
+    else aim.normalize();
+    this.releaseAtHand(player, aim);
+    this.noteThrow(player);
+    this.releaseBall(player.up.clone().multiplyScalar(-2.2));
+    this.ball.claimLock = Math.max(this.ball.claimLock, this.tunables.kickWindup + 0.3);
+    this.rememberThrow(player, spec.power);
+    this.playPose(player, 'kick', this.tunables.kickWindup + 0.36);
+    this.aiKick = { active: true, time: Math.max(0.05, this.tunables.kickWindup), playerId: player.id, spec };
+    this.match.statusMessage = 'Kick!';
+  }
+
+  private tickAiKick(dt: number): void {
+    if (!this.aiKick.active || !this.aiKick.spec) return;
+    const player = this.players[this.aiKick.playerId];
+    if (!player) {
+      this.aiKick.active = false;
+      return;
+    }
+    const foot = this.footPoint(player, this.tmp.predictPos);
+    this.ball.velocity.copy(foot.sub(this.ball.position)).multiplyScalar(8);
+    this.aiKick.time -= dt;
+    if (this.aiKick.time > 0) return;
+    const spec = this.aiKick.spec;
+    this.aiKick.active = false;
+    this.aiKick.spec = null;
+    this.ball.position.copy(this.footPoint(player, this.tmp.predictPos));
+    this.scriptArc(player, spec, true);
+  }
+
+  private scriptArc(player: PlayerState, spec: AiDelivery, fromFoot: boolean): void {
+    const limit = ARENA_RADIUS - BALL.radius - 0.35;
+    const aim = spec.point.clone().sub(fromFoot ? this.ball.position : player.position);
+    if (aim.lengthSq() < 1e-8) aim.copy(player.facing);
+    else aim.normalize();
+    if (!fromFoot) this.releaseAtHand(player, aim);
+    const p0 = fromFoot ? this.ball.position.clone() : this.carriedPoint(player, new THREE.Vector3());
+    const p2 = spec.point.clone();
+    if (p2.length() > limit) p2.setLength(limit);
+    const forward = player.facing.clone();
+    if (forward.lengthSq() < 1e-8) forward.set(0, 0, 1);
+    else forward.normalize();
+    const right = new THREE.Vector3().crossVectors(player.up, forward);
+    if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
+    else right.normalize();
+    const height = spec.kind === 'pass' ? 0.02 : Math.max(0, this.tunables.arcHeight);
+    const p1 = shapedControl(
+      new THREE.Vector3(),
+      p0,
+      p2,
+      right,
+      player.up,
+      height,
+      spec.bendRight,
+      spec.bendUp,
+      this.tunables.arcBendLimit,
+      limit,
+      0,
+    );
+    const power = THREE.MathUtils.clamp(spec.power, 0, 1);
+    const kickBoost = spec.kick ? Math.max(1, this.tunables.kickSpeed) : 1;
+    const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), power) * kickBoost;
+    const length = Math.max(0.5, p0.distanceTo(p2));
+    const duration = Math.max(SHOT_ARC.minDuration, length / Math.max(4, speed));
+    if (!fromFoot) {
+      this.noteThrow(player);
+      this.releaseBall();
+    }
+    this.ball.position.copy(p0);
+    this.ball.arc = {
+      p0,
+      p1,
+      p2,
+      elapsed: 0,
+      duration,
+      receiverId: spec.receiverId,
+      carryLeft: 0,
+      carryDir: null,
+      carrySpeed: speed,
+    };
+    quadraticVelocity(this.ball.velocity, p0, p1, p2, 0, duration);
+    this.ball.claimLock = BALL.claimCooldown;
+    this.rememberThrow(player, power);
+    const pose = spec.kick ? 'kick' : spec.kind === 'pass' ? 'pass' : 'shoot';
+    this.playPose(player, pose, throwPoseSeconds(power, spec.kind === 'pass'));
+    player.throwCurveRight = THREE.MathUtils.clamp(spec.bendRight / 22, -1, 1);
+    player.throwCurveUp = THREE.MathUtils.clamp(spec.bendUp / 22, -1, 1);
+    this.match.statusMessage = spec.kind === 'pass' ? 'Pass' : spec.kick ? 'Kick!' : 'Shot';
   }
 
   private releaseShot(player: PlayerState, charge: number): void {
@@ -2303,7 +2682,7 @@ export class Simulation {
       return false;
     }
     const pos = quadraticPoint(this.tmp.holdTarget, arc.p0, arc.p1, arc.p2, t);
-    const vel = quadraticVelocity(this.tmp.aim, arc.p0, arc.p1, arc.p2, t, arc.duration);
+    quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, t, arc.duration);
     if (receiver?.active && pos.distanceTo(receiver.position) < PLAYER.radius + BALL.radius + 0.55) {
       this.ball.position.copy(pos);
       this.deliverToTeammate(receiver);
@@ -2320,7 +2699,6 @@ export class Simulation {
         return p.position.distanceTo(pos) < PLAYER.radius + BALL.radius;
       });
     this.ball.position.copy(pos);
-    this.ball.velocity.copy(vel);
     if (blocked) {
       this.ball.arc = null;
       return false;
@@ -2431,12 +2809,13 @@ export class Simulation {
     checker.checkMask |= 1 << target.id;
     const knock = checker.burstKnock > 0 ? checker.burstKnock : Math.max(4, this.tunables.checkKnock);
     const popSpeed = checker.burstPop > 0 ? checker.burstPop : PLAYER.checkPop;
-    target.velocity.copy(dir).multiplyScalar(knock);
+    target.velocity.copy(dir).multiplyScalar(knock * (checker.burstStrong ? 1.15 : 1));
     target.knockTime = PLAYER.checkKnockTime;
     target.staggerTime = PLAYER.checkStagger;
     target.hitFlash = 1;
     target.hitBurst = 16;
     target.catchStance = false;
+    target.catchReady = false;
     checker.hitFlash = 1;
     checker.hitBurst = 12;
     checker.velocity.addScaledVector(dir, -3.2);
@@ -2565,11 +2944,13 @@ export class Simulation {
   }
 
   private shotSpeedMin(): number {
-    return Math.max(4, Math.min(this.tunables.shootSpeedMin, this.tunables.shootSpeedMax));
+    const scale = Math.max(0.2, this.tunables.throwSpeedScale);
+    return Math.max(4, Math.min(this.tunables.shootSpeedMin, this.tunables.shootSpeedMax)) * scale;
   }
 
   private shotSpeedMax(): number {
-    return Math.max(this.shotSpeedMin(), this.tunables.shootSpeedMax);
+    const scale = Math.max(0.2, this.tunables.throwSpeedScale);
+    return Math.max(this.shotSpeedMin(), this.tunables.shootSpeedMax * scale);
   }
 
   /** Loose ball: hide while held. Arc flights point at the end of the curve. */

@@ -43,6 +43,9 @@ export class InputManager {
   /** Set when pointerrawupdate already recorded this frame's motion. */
   private sawPointerDelta = false;
   private canvas: HTMLElement;
+  private padButtons = { a: false, b: false, x: false, y: false, rb: false, rt: false, rs: false };
+  private rbPending = false;
+  private rbTime = 0;
 
   constructor(canvas: HTMLElement) {
     this.canvas = canvas;
@@ -219,7 +222,7 @@ export class InputManager {
     return codes.some((c) => this.justPressed.has(c));
   }
 
-  private readGamepad(): Partial<InputIntent> | null {
+  private readGamepad(frameDt: number): Partial<InputIntent> | null {
     const pads = navigator.getGamepads?.() ?? [];
     const pad = pads.find((p) => p && p.connected);
     if (!pad) return null;
@@ -230,36 +233,65 @@ export class InputManager {
     const ry = deadzone(pad.axes[3] ?? 0);
 
     const buttons = pad.buttons;
-    const a = buttons[0]?.pressed ?? false;
-    const x = buttons[2]?.pressed ?? false;
-    const b = buttons[1]?.pressed ?? false;
-    const lb = buttons[4]?.pressed ?? false;
-    const lt = (buttons[6]?.value ?? 0) > 0.4;
-    const rt = (buttons[7]?.value ?? 0) > 0.15;
-    const rtPressed = buttons[7]?.pressed && (buttons[7].value ?? 0) > 0.5;
-    const rs = buttons[11]?.pressed ?? false;
+    const down = (index: number) => buttons[index]?.pressed ?? false;
+    const a = down(0);
+    const b = down(1);
+    const x = down(2);
+    const lb = down(4);
+    const rb = down(5);
+    const lt = (buttons[6]?.value ?? 0) > 0.45;
+    const rt = (buttons[7]?.value ?? 0) > 0.45;
+    const y = down(3);
+    const rs = down(11);
+    const dUp = down(12);
+    const dDown = down(13);
 
-    // Edge detect for gamepad face buttons via previous frame would be better;
-    // for greybox treat held as intent edge each frame when just crossing — simplified: use pressed each frame for claim via A edge via value.
+    const aEdge = a && !this.padButtons.a;
+    const bEdge = b && !this.padButtons.b;
+    const xEdge = x && !this.padButtons.x;
+    const yEdge = y && !this.padButtons.y;
+    const rtEdge = rt && !this.padButtons.rt;
+    const rsEdge = rs && !this.padButtons.rs;
+    let burst = false;
+    let burstPower = false;
+    if (rb && !this.padButtons.rb) {
+      this.rbPending = true;
+      this.rbTime = 0;
+    }
+    if (rb && this.rbPending) {
+      this.rbTime += frameDt;
+      if (this.rbTime >= 0.28) {
+        burstPower = true;
+        this.rbPending = false;
+      }
+    }
+    if (!rb && this.padButtons.rb && this.rbPending) {
+      burst = true;
+      this.rbPending = false;
+    }
+    this.padButtons = { a, b, x, y, rb, rt, rs };
+
     return {
       move: new THREE.Vector3(lx, 0, -ly),
       lookDelta: {
         x: rx * INPUT.gamepadLookSens,
         y: ry * INPUT.gamepadLookSens,
       },
-      up: (buttons[5]?.pressed ? 1 : 0) - (lt ? 1 : 0),
-      sprint: buttons[10]?.pressed ?? false,
-      strafe: buttons[3]?.pressed ?? false,
-      claim: a,
-      drop: b,
-      pass: x,
-      shoot: Boolean(rtPressed),
+      up: (dUp ? 1 : 0) - (dDown ? 1 : 0),
+      sprint: down(10),
+      strafe: lt,
+      claim: aEdge || xEdge,
+      drop: yEdge,
+      kick: bEdge,
+      kickHeld: b,
+      shoot: rtEdge,
       shootHeld: rt,
-      burst: false,
-      passHeld: x,
+      burst,
+      burstPower,
+      passHeld: false,
       zoomOut: lb,
-      zoomTogglePressed: rs,
-      resetBall: buttons[8]?.pressed ?? false,
+      zoomTogglePressed: rsEdge,
+      resetBall: down(8),
     };
   }
 
@@ -298,6 +330,9 @@ export class InputManager {
       pass: this.anyJust(KEYS.pass),
       shoot: this.lmbPressed,
       shootHeld: this.lmbDown,
+      kick: this.anyJust(KEYS.pass),
+      kickHeld: this.anyDown(KEYS.pass),
+      burstPower: false,
       aimCancel: this.rmbPressed,
       burst: this.lmbPressed,
       passHeld: this.anyDown(KEYS.pass),
@@ -312,7 +347,7 @@ export class InputManager {
     };
     this.wheel = 0;
 
-    const pad = this.readGamepad();
+    const pad = this.readGamepad(frameDt);
     if (pad) {
       if (pad.move && pad.move.lengthSq() > intent.move.lengthSq()) intent.move.copy(pad.move);
       if (pad.lookDelta) {
@@ -327,6 +362,10 @@ export class InputManager {
       intent.pass = intent.pass || Boolean(pad.pass);
       intent.shoot = intent.shoot || Boolean(pad.shoot);
       intent.shootHeld = intent.shootHeld || Boolean(pad.shootHeld);
+      intent.kick = intent.kick || Boolean(pad.kick);
+      intent.kickHeld = intent.kickHeld || Boolean(pad.kickHeld);
+      intent.burst = intent.burst || Boolean(pad.burst);
+      intent.burstPower = intent.burstPower || Boolean(pad.burstPower);
       intent.passHeld = intent.passHeld || Boolean(pad.passHeld);
       intent.zoomOut = intent.zoomOut || Boolean(pad.zoomOut);
       intent.zoomTogglePressed = intent.zoomTogglePressed || Boolean(pad.zoomTogglePressed);

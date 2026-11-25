@@ -7,6 +7,7 @@ import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, ROSTER, SHOT_ARC, setArenaRad
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
+import { aimPosturePitch, spring1, stepAimPosture, updateSwimmerRig, wantsAimPosture, type SwimmerRig } from '../render/swimmerModel';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
 import { defaultTunables } from '../ui/DevPanel';
@@ -14,7 +15,7 @@ import { applyCameraPreset, cameraSettingsBlob, noteCameraEdit, parseCameraSetti
 import { parseRoster } from '../ui/rosterStorage';
 import { matchRoster } from '../ui/matchPresets';
 import { Simulation } from './Simulation';
-import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
+import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalMouthZ, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
 import { lookBasis, rotateToward, stabilizeUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
@@ -43,6 +44,9 @@ function blankIntent(zoom = false): InputIntent {
     pass: false,
     shoot: false,
     shootHeld: false,
+    kick: false,
+    kickHeld: false,
+    burstPower: false,
     aimCancel: false,
     burst: false,
     passHeld: false,
@@ -427,29 +431,47 @@ function checkPractice(): void {
   sim.ball.velocity.set(0, 0, 0);
   sim.ball.position.copy(mate.position).add(new THREE.Vector3(1.1, 0, 0.4));
   const intent = blankIntent();
-  for (let i = 0; i < 100; i++) sim.step(1 / 60, intent);
+  let received = false;
+  for (let i = 0; i < 100; i++) {
+    sim.step(1 / 60, intent);
+    if (mate.hasBall) received = true;
+  }
   if (defense.position.distanceTo(held) > 0.15) fail('frozen defense left its spot');
-  if (!mate.hasBall && mate.position.distanceTo(sim.ball.position) > 2.5) {
+  if (!received && mate.position.distanceTo(sim.ball.position) > 2.5) {
     fail('teammate did not come receive the pass');
   }
 
-  for (const p of sim.players) p.hasBall = false;
-  mate.hasBall = true;
-  mate.position.set(-4, 1, -2);
-  sim.getHuman().position.set(0, 0, -8);
-  sim.getHuman().velocity.set(0, 0, 0);
-  sim.ball.possession = 'held';
-  sim.ball.ownerId = mate.id;
-  sim.ball.lastOwnerId = mate.id;
-  sim.ball.arc = null;
+  const passSim = new Simulation(defaultTunables());
+  passSim.setSoloOpponent(false);
+  passSim.kickoffLock = 0;
+  passSim.tunables.fieldSkillA = 100;
+  const passer = passSim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const marker = passSim.players.find((p) => p.team === 1 && p.active);
+  if (!passer || !marker) fail('practice roster is missing the teammate or the defender');
+  passer.hasBall = true;
+  passer.position.set(0, 0, -16);
+  passer.velocity.set(0, 0, 0);
+  passer.facing.set(0, 0, 1);
+  passer.up.set(0, 1, 0);
+  marker.position.set(-5.2, 0, -16);
+  marker.velocity.set(0, 0, 0);
+  passSim.getHuman().position.set(4, 0, 14);
+  passSim.getHuman().velocity.set(0, 0, 0);
+  passSim.getHuman().up.set(0, 1, 0);
+  passSim.ball.possession = 'held';
+  passSim.ball.ownerId = passer.id;
+  passSim.ball.lastOwnerId = passer.id;
+  passSim.ball.arc = null;
+  passSim.ball.velocity.set(0, 0, 0);
+  passSim.ball.position.copy(passer.position).add(new THREE.Vector3(0, 0.15, 0.6));
   let passed = false;
   for (let i = 0; i < 140; i++) {
-    const before: string = sim.ball.possession;
-    sim.step(1 / 60, intent);
-    const now: string = sim.ball.possession;
-    if (before === 'held' && now === 'free' && sim.ball.lastOwnerId === mate.id) {
-      const toHuman = sim.getHuman().position.clone().sub(mate.position);
-      if (toHuman.lengthSq() > 0.01 && sim.ball.velocity.dot(toHuman.normalize()) < 2) {
+    const before: string = passSim.ball.possession;
+    passSim.step(1 / 60, intent);
+    const now: string = passSim.ball.possession;
+    if (before === 'held' && now === 'free' && passSim.ball.lastOwnerId === passer.id) {
+      const toHuman = passSim.getHuman().position.clone().sub(passer.position);
+      if (toHuman.lengthSq() > 0.01 && passSim.ball.velocity.dot(toHuman.normalize()) < 2) {
         fail('pass back was not aimed at the human');
       }
       passed = true;
@@ -769,11 +791,16 @@ function checkCatch(): void {
   for (let i = 0; i < 6; i++) wide.step(1 / 60, blankIntent());
   if (swimmer.hasBall) fail('normal mitt reached a ball that belongs to the catch stance');
 
+  const squared = blankIntent();
+  squared.strafe = true;
+  wide.ball.claimLock = 0;
+  wide.step(1 / 60, squared);
+  if (swimmer.hasBall) fail('square up caught a ball without catch-ready');
   const stance = blankIntent();
   stance.strafe = true;
-  wide.ball.claimLock = 0;
+  stance.claim = true;
   wide.step(1 / 60, stance);
-  if (!swimmer.hasBall) fail('catch stance did not take the ball in front of the hands');
+  if (!swimmer.hasBall) fail('catch-ready did not take the ball in front of the hands');
 
   const pull = new Simulation(defaultTunables());
   pull.kickoffLock = 0;
@@ -794,6 +821,10 @@ function checkCatch(): void {
   const still = blankIntent();
   for (let i = 0; i < 20; i++) pull.step(1 / 60, still);
   if (reacher.hasBall || pull.ball.position.x < 1.9) fail('the ball drifted in without the catch stance');
+  const armCatch = blankIntent();
+  armCatch.strafe = true;
+  armCatch.claim = true;
+  pull.step(1 / 60, armCatch);
   const reaching = blankIntent();
   reaching.strafe = true;
   for (let i = 0; i < 45; i++) pull.step(1 / 60, reaching);
@@ -806,27 +837,208 @@ function checkCatch(): void {
  * A return pass has to reach the player. The passer used to turn back into
  * the enlarged mitt and take the ball before it arrived.
  */
+/** A slow pass into a squared-up catch-ready mitt is caught. */
+function checkKick(): void {
+  const setup = () => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.setSoloOpponent(false);
+    quietRoster(sim);
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = 40;
+    sim.tunables.arcHandCurve = 0;
+    sim.tunables.shotPowerAngle = 0;
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(-1, 0, 0);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    // Along -X so the chord is not swallowed by a goal-pocket retarget.
+    sim.yaw = Math.PI / 2;
+    sim.pitch = 0;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.lastOwnerId = human.id;
+    sim.ball.claimLock = 0;
+    sim.ball.arc = null;
+    sim.ball.velocity.set(0, 0, 0);
+    sim.ball.position.set(0, 0.2, 0.8);
+    return sim;
+  };
+
+  const throwSim = setup();
+  const throwing = blankIntent();
+  throwing.shootHeld = true;
+  for (let i = 0; i < 8; i++) {
+    throwSim.armShotAim(throwing);
+    throwSim.step(1 / 60, throwing);
+  }
+  const releaseThrow = blankIntent();
+  throwSim.step(1 / 60, releaseThrow);
+  const thrown = throwSim.ball.arc;
+  if (!thrown) fail('equal-power throw did not launch');
+  const throwTravel = thrown.p0.distanceTo(thrown.p2);
+
+  const kickSim = setup();
+  const charging = blankIntent();
+  charging.strafe = true;
+  charging.kickHeld = true;
+  for (let i = 0; i < 8; i++) {
+    kickSim.armShotAim(charging);
+    kickSim.step(1 / 60, charging);
+  }
+  const releaseKick = blankIntent();
+  releaseKick.strafe = true;
+  kickSim.step(1 / 60, releaseKick);
+  if (kickSim.getHuman().hasBall) fail('kick release kept the ball in the hand');
+  let kicked = kickSim.ball.arc;
+  for (let i = 0; i < 20 && !kicked; i++) {
+    kickSim.step(1 / 60, releaseKick);
+    kicked = kickSim.ball.arc;
+  }
+  if (!kicked) fail('kick did not launch from the foot');
+  const kickTravel = kicked.p0.distanceTo(kicked.p2);
+  if (kickTravel < throwTravel * 1.12) {
+    fail(`kick range ${kickTravel.toFixed(1)} was not past the throw ${throwTravel.toFixed(1)}`);
+  }
+  if (kicked.carrySpeed < thrown.carrySpeed * 1.12) {
+    fail(`kick speed ${kicked.carrySpeed.toFixed(1)} was not past the throw ${thrown.carrySpeed.toFixed(1)}`);
+  }
+
+  const cancel = setup();
+  for (let i = 0; i < 4; i++) {
+    cancel.armShotAim(charging);
+    cancel.step(1 / 60, charging);
+  }
+  const stop = blankIntent();
+  stop.strafe = false;
+  stop.kickHeld = true;
+  stop.aimCancel = true;
+  cancel.step(1 / 60, stop);
+  if (!cancel.getHuman().hasBall) fail('cancelling a kick dropped the ball');
+  if (cancel.ball.arc) fail('cancelled kick still launched');
+  if (cancel.ball.velocity.length() > 8) fail('cancelled kick launched the ball');
+
+  const volley = setup();
+  volley.yaw = 0;
+  const human = volley.getHuman();
+  human.facing.set(0, 0, 1);
+  human.hasBall = false;
+  volley.ball.possession = 'free';
+  volley.ball.ownerId = null;
+  volley.ball.lastOwnerId = null;
+  volley.ball.claimLock = 0;
+  volley.ball.arc = null;
+  volley.ball.position.set(0, 0.1, 1.15);
+  volley.ball.velocity.set(0, 0, -2);
+  const flick = blankIntent();
+  flick.kickHeld = true;
+  volley.step(1 / 60, flick);
+  if (human.hasBall || volley.ball.possession !== 'free') fail('volley took possession');
+  if (volley.ball.velocity.z < 8) fail(`volley did not send the ball along the aim (${volley.ball.velocity.z.toFixed(1)})`);
+}
+
+function checkCatchReadyPass(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  quietRoster(sim);
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.lastOwnerId = 3;
+  sim.ball.claimLock = 0;
+  sim.ball.arc = null;
+  sim.ball.position.set(0, 0.15, 9);
+  sim.ball.velocity.set(0, 0, -16);
+  const arm = blankIntent();
+  arm.strafe = true;
+  arm.claim = true;
+  sim.step(1 / 60, arm);
+  if (!human.catchReady) fail('E while squared up did not enter catch-ready');
+  if (human.hasBall) fail('catch-ready grabbed a pass that was still out of the cone');
+  const hold = blankIntent();
+  hold.strafe = true;
+  let caught = false;
+  for (let i = 0; i < 80; i++) {
+    sim.step(1 / 60, hold);
+    if (human.hasBall) {
+      caught = true;
+      break;
+    }
+  }
+  if (!caught || sim.ball.ownerId !== human.id) fail('catch-ready missed a slow pass');
+}
+
+/** A slap in catch-ready sends the ball along the aim and does not take it. */
+function checkDeflect(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  quietRoster(sim);
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.lastOwnerId = null;
+  sim.ball.claimLock = 0;
+  sim.ball.arc = null;
+  sim.ball.position.set(0, 0.2, 20);
+  sim.ball.velocity.set(0, 0, 0);
+  const arm = blankIntent();
+  arm.strafe = true;
+  arm.claim = true;
+  sim.step(1 / 60, arm);
+  if (!human.catchReady) fail('deflect setup did not enter catch-ready');
+  sim.ball.position.set(0, 0.15, 2.1);
+  sim.ball.velocity.set(1, 0, -6);
+  sim.ball.claimLock = 0;
+  sim.ball.possession = 'free';
+  const slap = blankIntent();
+  slap.strafe = true;
+  slap.burst = true;
+  sim.step(1 / 60, slap);
+  if (human.hasBall || sim.ball.possession !== 'free' || sim.ball.ownerId !== null) {
+    fail('deflect claimed the ball');
+  }
+  if (sim.ball.velocity.z < sim.tunables.deflectStrength * 0.8) {
+    fail(`deflect did not send the ball along the aim (${sim.ball.velocity.z.toFixed(1)})`);
+  }
+  if (human.velocity.z > sim.tunables.burstSpeed * 0.4) fail('deflect lunged like a shoulder check');
+}
+
 function checkTeammatePassReachesPlayer(): void {
   const sim = new Simulation(defaultTunables());
   sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
   sim.tunables.defenseActive = false;
   sim.tunables.teammatePassDelay = 0.05;
+  sim.tunables.fieldSkillA = 100;
   const human = sim.getHuman();
   const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
   const defense = sim.players.find((p) => p.team === 1 && p.active);
   if (!mate || !defense) fail('practice roster is missing the teammate or the defender');
 
-  human.position.set(0, 0, -4);
+  human.position.set(4, 0, 18);
   human.velocity.set(0, 0, 0);
   human.facing.set(0, 0, 1);
   human.up.set(0, 1, 0);
   sim.yaw = 0;
   sim.pitch = 0;
 
-  mate.position.set(0, 0.2, 12);
+  mate.position.set(0, 0.2, -14);
   mate.velocity.set(0, 0, 0);
-  mate.facing.set(0, 0, -1);
+  mate.facing.set(0, 0, 1);
   mate.up.set(0, 1, 0);
   mate.hasBall = true;
   sim.ball.possession = 'held';
@@ -837,7 +1049,7 @@ function checkTeammatePassReachesPlayer(): void {
   sim.ball.velocity.set(0, 0, 0);
   sim.ball.position.copy(mate.position).add(new THREE.Vector3(0, 0.15, -0.85));
 
-  defense.position.set(40, 20, 0);
+  defense.position.set(40, 20, -40);
   defense.velocity.set(0, 0, 0);
 
   const intent = blankIntent();
@@ -873,6 +1085,7 @@ function checkOpponentInterceptsPass(): void {
   sim.kickoffLock = 0;
   sim.tunables.defenseActive = false;
   sim.tunables.teammatePassDelay = 0.05;
+  sim.tunables.fieldSkillA = 100;
   const human = sim.getHuman();
   const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
   const defense = sim.players.find((p) => p.team === 1 && p.active);
@@ -898,12 +1111,13 @@ function checkOpponentInterceptsPass(): void {
   sim.ball.velocity.set(0, 0, 0);
   sim.ball.position.copy(mate.position).add(new THREE.Vector3(0, 0.15, -0.85));
 
-  defense.position.set(0, 0, 1);
+  defense.position.set(0, 0.4, -1.2);
   defense.velocity.set(0, 0, 0);
   defense.facing.set(0, 0, 1);
   defense.up.set(0, 1, 0);
 
   const intent = blankIntent();
+  intent.callForPass = true;
   let released = false;
   for (let i = 0; i < 240; i++) {
     const held = mate.hasBall;
@@ -2355,7 +2569,9 @@ function checkThrowPower(): void {
     }
   }
   if (tapFire !== 5) fail(`5 taps fired at click ${tapFire}`);
-  if (tapSpeed < taps.sim.tunables.shootSpeedMax - 1) fail(`5 taps was not full power (${tapSpeed.toFixed(1)})`);
+  const fullThrow =
+    taps.sim.tunables.shootSpeedMax * Math.max(0.2, taps.sim.tunables.throwSpeedScale);
+  if (tapSpeed < fullThrow - 1) fail(`5 taps was not full power (${tapSpeed.toFixed(1)})`);
   if (taps.human.burstTime > 0 || taps.human.burstCooldown > 0) fail('power taps triggered a check');
   if (pulse < 0.5) fail('tap did not pulse the marker');
   if (Math.abs(shotSide(taps.sim)) < 0.4) fail('taps re-aimed and cleared the curve');
@@ -2653,6 +2869,250 @@ function checkAimPowerModes(): void {
   if (taps.sim.shotAim.active || taps.sim.charge.active) fail('the tap window stayed open after cancel');
   for (let i = 0; i < 40; i++) taps.sim.step(1 / 60, blankIntent());
   if (!taps.human.hasBall) fail('a cancelled tap window threw when it would have closed');
+}
+
+function quatDelta(a: THREE.Quaternion, b: THREE.Quaternion): number {
+  return 2 * Math.acos(Math.min(1, Math.abs(a.dot(b))));
+}
+
+/** A throw rig whose tread clip does not key the chest, which is how the windup used to spin. */
+function windupRig(): { group: THREE.Group; rig: SwimmerRig } {
+  const group = new THREE.Group();
+  const model = new THREE.Group();
+  const root = new THREE.Bone();
+  root.name = 'Root';
+  const at = (name: string, y: number, x = 0): THREE.Bone => {
+    const bone = new THREE.Bone();
+    bone.name = name;
+    bone.position.set(x, y, 0);
+    return bone;
+  };
+  const trans = at('Trans', 0);
+  const spine = at('Spine', 0.15);
+  const chest = at('Chest', 0.16);
+  const neck = at('Neck', 0.1);
+  const head = at('Head', 0.1);
+  const upperL = at('UpperArm_L', 0.08, 0.18);
+  const lowerL = at('LowerArm_L', -0.26);
+  const handL = at('Hand_L', -0.22);
+  const upperR = at('UpperArm_R', 0.08, -0.18);
+  const lowerR = at('LowerArm_R', -0.26);
+  const handR = at('Hand_R', -0.22);
+  const hips = at('Hips', -0.08);
+  const thighL = at('Thigh_L', -0.16, 0.08);
+  const thighR = at('Thigh_R', -0.16, -0.08);
+  root.add(trans);
+  trans.add(spine, hips);
+  spine.add(chest);
+  chest.add(neck, upperL, upperR);
+  neck.add(head);
+  upperL.add(lowerL);
+  lowerL.add(handL);
+  upperR.add(lowerR);
+  lowerR.add(handR);
+  hips.add(thighL, thighR);
+  model.add(root);
+  group.add(model);
+
+  const ident = [0, 0, 0, 1, 0, 0, 0, 1];
+  const track = (name: string) => new THREE.QuaternionKeyframeTrack(`${name}.quaternion`, [0, 1], ident);
+  const mixer = new THREE.AnimationMixer(root);
+  const swim = mixer.clipAction(
+    new THREE.AnimationClip('Swim', 1, ['Chest', 'Spine', 'Head', 'UpperArm_L', 'UpperArm_R', 'Thigh_L', 'Thigh_R'].map(track)),
+  );
+  const tread = mixer.clipAction(
+    new THREE.AnimationClip('Tread', 1, ['Spine', 'Head', 'UpperArm_L', 'UpperArm_R', 'Thigh_L', 'Thigh_R'].map(track)),
+  );
+  swim.setLoop(THREE.LoopRepeat, Infinity);
+  tread.setLoop(THREE.LoopRepeat, Infinity);
+  swim.play();
+  tread.play();
+  tread.setEffectiveWeight(1);
+  swim.setEffectiveWeight(0);
+  mixer.update(0);
+
+  const rig: SwimmerRig = {
+    model,
+    mixer,
+    swim,
+    tread,
+    idle: null,
+    spine,
+    chest,
+    upperL,
+    lowerL,
+    handL,
+    upperR,
+    lowerR,
+    handR,
+    hips,
+    thighL,
+    thighR,
+    head,
+    neck,
+    lenUpperL: lowerL.position.length(),
+    lenLowerL: handL.position.length(),
+    lenUpperR: lowerR.position.length(),
+    lenLowerR: handR.position.length(),
+    swimWeight: 0,
+    catchBlend: 0,
+    holdBlend: 0,
+    throwShown: 0,
+    curveRightShown: 0,
+    curveUpShown: 0,
+    speedSwim: 0,
+    aimPosture: 0,
+    posed: [],
+    hasClip: false,
+    aimSpring: spring1(),
+    wIdle: spring1(),
+    wTread: spring1(1),
+    wSwim: spring1(),
+    stroke: spring1(),
+    catchSpring: spring1(),
+    holdSpring: spring1(),
+    throwSpring: spring1(),
+    curveRightSpring: spring1(),
+    curveUpSpring: spring1(),
+    kickSpring: spring1(),
+    burstSpring: spring1(),
+    bankSpring: spring1(),
+    pitchSpring: spring1(),
+    headYaw: spring1(),
+    headPitch: spring1(),
+    armLag: spring1(),
+    legLag: spring1(),
+    prevFacing: new THREE.Vector3(),
+  };
+  return { group, rig };
+}
+
+function checkWindupSpin(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.setSoloOpponent(false);
+  quietRoster(sim);
+  sim.tunables.powerMode = 'hold';
+  sim.tunables.shotPowerRate = 8;
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.position.set(0, 0.2, 0.7);
+  const charging = blankIntent();
+  charging.shootHeld = true;
+
+  sim.yaw = 0;
+  sim.armShotAim(charging);
+  sim.step(1 / 60, charging);
+  let maxFacing = 0;
+  let maxUp = 0;
+  for (let i = 0; i < 240; i++) {
+    // Sweep the aim through the direction behind the swimmer, across the ±180° seam.
+    sim.yaw = -Math.PI * 0.95 + (i / 239) * Math.PI * 1.9;
+    const before = human.facing.clone();
+    const beforeUp = human.up.clone();
+    sim.armShotAim(charging);
+    sim.step(1 / 60, charging);
+    if (human.facing.lengthSq() < 0.9 || !Number.isFinite(human.facing.x)) fail('facing collapsed during the windup');
+    if (human.up.lengthSq() < 0.9 || !Number.isFinite(human.up.x)) fail('body up collapsed during the windup');
+    const step = angle(before, human.facing);
+    const upStep = angle(beforeUp, human.up);
+    if (step > (25 * Math.PI) / 180) fail(`body spun ${deg(step).toFixed(1)}° in one windup frame`);
+    if (upStep > (20 * Math.PI) / 180) fail(`body up spun ${deg(upStep).toFixed(1)}° in one windup frame`);
+    maxFacing = Math.max(maxFacing, step);
+    maxUp = Math.max(maxUp, upStep);
+  }
+  const aim = lookBasis(sim.yaw, sim.pitch, sim.tunables.goalAxisUp).forward;
+  for (let i = 0; i < 50; i++) {
+    sim.armShotAim(charging);
+    sim.step(1 / 60, charging);
+  }
+  if (human.facing.dot(aim) < 0.95) {
+    fail(`facing did not settle on the aim (${human.facing.dot(aim).toFixed(2)})`);
+  }
+
+  const { group, rig } = windupRig();
+  let maxChest = 0;
+  let prevUpper = rig.upperR.quaternion.clone();
+  let settledChest = 0;
+  let settledArm = 0;
+  sim.yaw = 0.4;
+  for (let i = 0; i < 150; i++) {
+    sim.armShotAim(charging);
+    sim.step(1 / 60, charging);
+    updateSwimmerRig(rig, group, human, sim, 1 / 60);
+    const clip = rig.posed.find((entry) => entry.bone === rig.chest);
+    if (!clip) fail('chest pose was not sampled');
+    const chest = quatDelta(rig.chest.quaternion, clip.clip);
+    if (!Number.isFinite(chest)) fail('chest rotation became non-finite');
+    if (chest > 1.2) fail(`chest offset ran away (${chest.toFixed(2)} rad)`);
+    const armStep = quatDelta(rig.upperR.quaternion, prevUpper);
+    if (i > 40 && armStep > 0.75) fail(`throw arm spun ${deg(armStep).toFixed(1)}° in one frame`);
+    maxChest = Math.max(maxChest, chest);
+    prevUpper.copy(rig.upperR.quaternion);
+    if (i === 90) settledChest = chest;
+    if (i === 149) {
+      settledArm = armStep;
+      if (Math.abs(chest - settledChest) > 0.08) fail(`chest offset did not settle (${chest.toFixed(2)} vs ${settledChest.toFixed(2)})`);
+    }
+  }
+  if (settledArm > 0.12) fail(`throw arm kept moving after the windup settled (${deg(settledArm).toFixed(1)}°)`);
+  if (maxChest < 0.05) fail('windup did not pose the chest at all');
+  if (maxFacing > (25 * Math.PI) / 180) fail('recorded facing step exceeded the cap');
+  if (maxUp > (20 * Math.PI) / 180) fail('recorded up step exceeded the cap');
+}
+
+function checkAimPosture(): void {
+  const base = {
+    human: true,
+    strafing: false,
+    hasBall: false,
+    catchReady: false,
+    throwing: false,
+    burst: false,
+    pose: 'none' as const,
+  };
+  if (!wantsAimPosture({ ...base, strafing: true, hasBall: true, pose: 'hold' })) {
+    fail('right-click aim should stand up into the tread');
+  }
+  if (!wantsAimPosture({ ...base, strafing: true, catchReady: false })) {
+    fail('square up without the ball should tread');
+  }
+  if (wantsAimPosture({ ...base, hasBall: true, pose: 'hold' })) {
+    fail('carrying without aim should stay on the speed swim');
+  }
+  if (!wantsAimPosture({ ...base, throwing: true, pose: 'shoot' })) {
+    fail('a throw should keep the tread until it ends');
+  }
+  if (wantsAimPosture({ ...base, strafing: true, hasBall: true, burst: true, pose: 'burst' })) {
+    fail('a shoulder check should not tread');
+  }
+  if (!wantsAimPosture({ ...base, human: false, hasBall: true, pose: 'hold' })) {
+    fail('an AI carrier should tread');
+  }
+  if (!wantsAimPosture({ ...base, human: false, hasBall: true, throwing: true, pose: 'pass' })) {
+    fail('an AI pass should tread');
+  }
+  if (!wantsAimPosture({ ...base, human: false, catchReady: true })) {
+    fail('a receiver in catch-ready should tread');
+  }
+
+  const posture = { value: 0, vel: 0 };
+  for (let i = 0; i < 15; i++) stepAimPosture(posture, true, 0.25, 1 / 60);
+  if (posture.value < 0.9) fail(`aim posture did not settle in 0.25s (${posture.value.toFixed(2)})`);
+  for (let i = 0; i < 15; i++) stepAimPosture(posture, false, 0.25, 1 / 60);
+  if (posture.value > 0.1) fail(`aim posture did not release in 0.25s (${posture.value.toFixed(2)})`);
+
+  const level = aimPosturePitch(0, 1);
+  if (level < 0.12 || level > 0.35) fail(`level aim should lean slightly (${level.toFixed(2)})`);
+  const raised = aimPosturePitch(Math.sin(0.8), 1);
+  if (raised < level + 0.5) fail('an upward aim should pitch the visual body back toward vertical');
+  if (aimPosturePitch(0.4, 0) !== 0) fail('the swim posture should not take the aim pitch');
 }
 
 function checkRosterEdit(): void {
@@ -2989,6 +3449,9 @@ export function runRotationChecks(): void {
   checkShoulder();
   checkStraightAimMarker();
   checkCatch();
+  checkCatchReadyPass();
+  checkDeflect();
+  checkKick();
   checkTeammatePassReachesPlayer();
   checkOpponentInterceptsPass();
   checkTackleStillStrips();
@@ -3015,6 +3478,11 @@ export function runRotationChecks(): void {
   checkCarryPalm();
   checkThrowPoses();
   checkAimPowerModes();
+  checkAimPosture();
+  checkWindupSpin();
+  checkAiShootsOpenLane();
+  checkAiPassesWhenPressured();
+  checkAiPassReachesReceiver();
   checkCameraSettings();
   checkWideCamera();
   checkBallFit();
@@ -3030,4 +3498,113 @@ export function runRotationChecks(): void {
 }
 
 runRotationChecks();
+function giveBallTo(sim: Simulation, player: ReturnType<Simulation['getHuman']>, offset: THREE.Vector3): void {
+  for (const other of sim.players) other.hasBall = false;
+  player.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = player.id;
+  sim.ball.lastOwnerId = player.id;
+  sim.ball.arc = null;
+  sim.ball.claimLock = 0;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(player.position).add(offset);
+}
+
+/** In range of the goal, with nobody in the lane, a carrier shoots. */
+function checkAiShootsOpenLane(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.setSoloOpponent(false);
+  sim.tunables.defenseActive = false;
+  sim.tunables.fieldSkillA = 100;
+  sim.tunables.fieldSkillB = 100;
+  const human = sim.getHuman();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('roster missing');
+  human.position.set(0, 0, -36);
+  human.velocity.set(0, 0, 0);
+  defense.position.set(-28, 16, -24);
+  defense.velocity.set(0, 0, 0);
+  mate.position.set(0, 0, goalMouthZ() - 18);
+  mate.velocity.set(0, 0, 0);
+  mate.facing.set(0, 0, 1);
+  mate.up.set(0, 1, 0);
+  giveBallTo(sim, mate, new THREE.Vector3(0, 0.15, 0.7));
+  const intent = blankIntent();
+  for (let i = 0; i < 90; i++) {
+    sim.step(1 / 60, intent);
+    if (!mate.hasBall && sim.ball.lastOwnerId === mate.id) {
+      const travel = sim.ball.arc ? sim.ball.arc.p2.clone().sub(sim.ball.arc.p0) : sim.ball.velocity.clone();
+      if (travel.z <= 4) fail(`open shot did not go toward the goal (${travel.z.toFixed(1)})`);
+      if (sim.ball.arc?.receiverId !== null && sim.ball.arc) fail('open shot was aimed at a teammate');
+      return;
+    }
+  }
+  fail('carrier in range with an open lane did not shoot');
+}
+
+/** A nearby defender and a better-placed teammate produce a pass, not a carry. */
+function checkAiPassesWhenPressured(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.setSoloOpponent(false);
+  sim.tunables.defenseActive = false;
+  sim.tunables.fieldSkillA = 100;
+  const human = sim.getHuman();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('roster missing');
+  mate.position.set(0, 0, -20);
+  mate.velocity.set(0, 0, 0);
+  mate.facing.set(0, 0, 1);
+  mate.up.set(0, 1, 0);
+  human.position.set(6, 0, 16);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  defense.position.set(-5, 0, -20);
+  defense.velocity.set(0, 0, 0);
+  giveBallTo(sim, mate, new THREE.Vector3(0, 0.15, 0.6));
+  const intent = blankIntent();
+  for (let i = 0; i < 80; i++) {
+    sim.step(1 / 60, intent);
+    if (!mate.hasBall && sim.ball.lastOwnerId === mate.id) {
+      if (sim.ball.arc?.receiverId !== human.id) fail(`pressured carrier did not pass to the open teammate`);
+      return;
+    }
+  }
+  fail('pressured carrier with an open teammate did not pass');
+}
+
+/** Nobody in the lane: the pass arrives and the receiver ends up with the ball. */
+function checkAiPassReachesReceiver(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.setSoloOpponent(false);
+  sim.tunables.defenseActive = false;
+  sim.tunables.fieldSkillA = 100;
+  const human = sim.getHuman();
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  const defense = sim.players.find((p) => p.team === 1 && p.active);
+  if (!mate || !defense) fail('roster missing');
+  mate.position.set(0, 0, -22);
+  mate.velocity.set(0, 0, 0);
+  mate.facing.set(0, 0, 1);
+  mate.up.set(0, 1, 0);
+  human.position.set(2, 0, 12);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, -1);
+  human.up.set(0, 1, 0);
+  defense.position.set(30, 18, 30);
+  defense.velocity.set(0, 0, 0);
+  giveBallTo(sim, mate, new THREE.Vector3(0, 0.15, 0.6));
+  const intent = blankIntent();
+  for (let i = 0; i < 240; i++) {
+    sim.step(1 / 60, intent);
+    if (human.hasBall && sim.ball.ownerId === human.id) return;
+  }
+  fail(`pass did not reach the receiver (owner ${sim.ball.ownerId})`);
+}
+
 console.log('rotation checks passed');

@@ -1,72 +1,34 @@
 import * as THREE from 'three';
 import type { BallState, InputIntent, PlayerState, Tunables } from '../game/types';
-import { goalMouthZ } from '../sim/goal';
-import { goalCenter } from '../sim/math';
+import { FieldAI, type AiDelivery, type AiMark } from './FieldAI';
 
 /**
- * Minimal Phase 0 opponent: seek ball when free, drive to goal when carrying,
- * chase carrier when opponent has possession. Reaction delay + aim noise keep it dummy-level.
+ * Opponents when defense is allowed to play. The test-chaser drill stays a
+ * slow ball-follower that never passes or shoots.
  */
 const DRILL_CHASE = 0.38;
 const DRILL_WANDER = 0.3;
 
 export class DummyAI {
-  private reaction = new Map<number, number>();
-  private cached = new Map<number, InputIntent>();
+  private field = new FieldAI();
   private wander = new Map<number, { dir: THREE.Vector3; time: number }>();
 
   think(
     self: PlayerState,
     ball: BallState,
-    _players: PlayerState[],
+    players: PlayerState[],
     tunables: Tunables,
+    dt: number,
   ): InputIntent {
-    const left = (this.reaction.get(self.id) ?? 0) - 1 / 60;
-    const cached = this.cached.get(self.id);
-    if (cached && left > 0) {
-      this.reaction.set(self.id, left);
-      return cached;
-    }
+    return this.field.think(self, ball, players, tunables, dt);
+  }
 
-    this.reaction.set(self.id, 0.35 + Math.random() * 0.4);
-    const intent = emptyIntent();
+  marks(): readonly AiMark[] {
+    return this.field.marks();
+  }
 
-    if (self.hasBall) {
-      const goal = goalCenter(self.team);
-      const toGoal = goal.clone().sub(self.position);
-      const dist = toGoal.length();
-      toGoal.normalize();
-      toGoal.x += (Math.random() - 0.5) * 0.2;
-      toGoal.y += (Math.random() - 0.5) * 0.2;
-      toGoal.normalize();
-      intent.move.copy(toGoal);
-      intent.up = toGoal.y;
-      // Hesitate before shooting so human can contest
-      if (dist < goalMouthZ() * 0.55 && self.facing.dot(toGoal) > 0.55 && Math.random() < 0.025) {
-        intent.shoot = true;
-      }
-    } else if (ball.possession === 'free') {
-      const toBall = ball.position.clone().sub(self.position);
-      const dist = toBall.length();
-      if (dist > 0.01) toBall.normalize();
-      // Approach at partial speed so human can win the race
-      intent.move.copy(toBall).multiplyScalar(0.72);
-      intent.up = toBall.y * 0.72;
-      intent.sprint = false;
-      if (dist < tunables.catchReach + tunables.claimRadius) intent.claim = true;
-    } else if (ball.ownerId !== null && ball.ownerId !== self.id) {
-      const toBall = ball.position.clone().sub(self.position);
-      const dist = toBall.length();
-      if (dist > 0.01) toBall.normalize();
-      intent.move.copy(toBall).multiplyScalar(0.65);
-      intent.up = toBall.y * 0.65;
-      intent.sprint = false;
-      // Rare strip attempts — dummy, not a pest
-      if (dist < 1.8) intent.claim = Math.random() < 0.02;
-    }
-
-    this.cached.set(self.id, intent);
-    return intent;
+  takeDelivery(id: number): AiDelivery | null {
+    return this.field.takeDelivery(id);
   }
 
   /**
@@ -120,6 +82,9 @@ function emptyIntent(): InputIntent {
     pass: false,
     shoot: false,
     shootHeld: false,
+    kick: false,
+    kickHeld: false,
+    burstPower: false,
     aimCancel: false,
     burst: false,
     passHeld: false,

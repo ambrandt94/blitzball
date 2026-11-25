@@ -5,6 +5,12 @@ export type TeamId = 0 | 1;
 /** How a held throw turns into shot power. `meter` is the default. */
 export type PowerMode = 'meter' | 'tap' | 'hold' | 'target' | 'pull';
 
+export type WaterStyle = 'trailbound' | 'classic';
+export type WaterPreset = 'Mockup' | 'Clearer' | 'Deeper';
+export type WaterQuality = 'high' | 'low' | 'basic';
+export type StadiumDetail = 'off' | 'low' | 'high';
+export type CrowdDensity = 'off' | 'low' | 'high';
+
 /** Chase look-ahead when ball cam is off. `aim` looks down the camera. */
 export type LookAheadMode = 'aim' | 'move' | 'ball';
 
@@ -36,7 +42,7 @@ export interface RosterSpec {
 export type PossessionState = 'free' | 'held';
 
 /** Short pose. `hold` lasts while carrying; the others are timed. */
-export type ActionPose = 'none' | 'claim' | 'hold' | 'pass' | 'shoot' | 'burst';
+export type ActionPose = 'none' | 'claim' | 'hold' | 'pass' | 'shoot' | 'kick' | 'burst';
 
 export interface Tunables {
   goalAxisUp: boolean;
@@ -57,6 +63,14 @@ export interface Tunables {
   catchStanceWidth: number;
   /** Pull toward the hands for a ball just outside the stance mitt. */
   catchPull: number;
+  /** How far catch-ready reaches, in world units. */
+  catchReadyRadius: number;
+  /** Half-angle of the catch-ready cone, in radians off the aim. */
+  catchReadyCone: number;
+  /** Ball speed where a catch-ready reception starts to fumble. */
+  fumbleSpeed: number;
+  /** Speed a deflect slap gives the ball along the aim. */
+  deflectStrength: number;
   holdLag: number;
   playerAccel: number;
   /** Cruise top speed. Sprint and the carrier tax scale this. */
@@ -149,6 +163,12 @@ export interface Tunables {
    * They never pass or shoot. Other AI is parked.
    */
   soloOpponent: boolean;
+  /** 0–100. Team 0 (blue) field players: aim, timing, and lane judgment. */
+  fieldSkillA: number;
+  /** 0–100. Team 1 (orange) field players. */
+  fieldSkillB: number;
+  /** Draw each field player's intent and the line to its target. */
+  showAiIntent: boolean;
   /** Shell radius. Changing it rebuilds the sphere, goals, and dressing. */
   arenaRadius: number;
   /** Seconds the teammate holds the ball before passing it back. */
@@ -157,6 +177,26 @@ export interface Tunables {
   shoulderOffset: number;
   /** Ease rate for that shift (1/seconds). Higher is snappier. */
   shoulderTransition: number;
+  /** Seconds to settle into the upright aim tread, and back to the swim. */
+  aimPostureBlend: number;
+  /** Critically damped rate for clip weights and pose layers. Higher is snappier. */
+  blendStiffness: number;
+  /** Radians of body roll at full lateral speed. */
+  bankAmount: number;
+  /** Kick landing distance relative to a throw of the same power. */
+  kickRange: number;
+  /** Kick flight speed relative to a throw of the same power. */
+  kickSpeed: number;
+  /** How much of the throw's curve a kick keeps. */
+  kickCurve: number;
+  /** Extra seconds after release before the foot meets the ball. */
+  kickWindup: number;
+  /** Half-angle of the first-time volley, in radians off the aim. */
+  volleyCone: number;
+  /** Radians of aim error at full approach speed. */
+  volleySpread: number;
+  /** Scales throw speed. Kicks are measured against this. */
+  throwSpeedScale: number;
   /** Chase camera distance behind the swimmer. */
   camDistance: number;
   /** Camera height above the chase line, in world units. */
@@ -185,6 +225,20 @@ export interface Tunables {
   showSunbeams: boolean;
   /** 0 hides the shafts. 1 is the tuned rim brightness. */
   sunbeamIntensity: number;
+  /** Trailbound v2 shell, or the earlier smooth shader. */
+  waterStyle: WaterStyle;
+  /** v2 look. Clearer keeps swimmers upright through the lens. */
+  waterPreset: WaterPreset;
+  /** Off uses the shader's flat tint instead of a background render. */
+  waterRefraction: boolean;
+  /** High is a full refraction target. Low is half res. Basic skips the shader. */
+  waterQuality: WaterQuality;
+  /** 1 is native. 2 and 3 render smaller and upscale with hard pixels. */
+  waterPixelScale: number;
+  /** Instanced colosseum. Off hides it. Low drops towers, banners, and halos. */
+  stadiumDetail: StadiumDetail;
+  /** Instanced spectator billboards. */
+  crowdDensity: CrowdDensity;
   /** 0–100. Reaction, prediction, speed, and catch chance for both goalies. */
   goalieSkill: number;
   /** Used when the home override is on. */
@@ -240,6 +294,8 @@ export interface PlayerState {
   selfCatchTime: number;
   /** Seconds left in the shoulder-check hit window. */
   burstTime: number;
+  /** Hold-tackle. A harder knock than a tap. */
+  burstStrong: boolean;
   /** Seconds before another check can start. */
   burstCooldown: number;
   /** 1 when a check just started, decays for the extra bubble puff. */
@@ -264,8 +320,12 @@ export interface PlayerState {
   hitFlash: number;
   /** Bubbles the view still owes this swimmer for a hit. */
   hitBurst: number;
-  /** Right-click held with empty hands: arms reach to catch. */
+  /** Right-click held with empty hands: squared up, not yet reaching. */
   catchStance: boolean;
+  /** Squared up and reaching. Passes in the cone stick; a click deflects. */
+  catchReady: boolean;
+  /** Seconds left on the deflect slap. The view pushes the hands out. */
+  deflectTime: number;
   /** Stub slots reserved for future 3v3 AI. */
   active: boolean;
   actionPose: ActionPose;
@@ -278,6 +338,9 @@ export interface PlayerState {
   /** Curve captured at release, about -1..1, so the follow-through can keep the wrist twist. */
   throwCurveRight: number;
   throwCurveUp: number;
+  /** 0..1 while this player is winding up a pass, throw, or kick. */
+  windup: number;
+  windupKind: 'none' | 'shoot' | 'pass' | 'kick';
 }
 
 export interface BallState {
@@ -317,7 +380,7 @@ export interface MatchState {
 
 export interface ChargeState {
   active: boolean;
-  kind: 'shoot' | 'pass' | null;
+  kind: 'shoot' | 'pass' | 'kick' | null;
   amount: number; // 0..1
 }
 
@@ -333,6 +396,11 @@ export interface InputIntent {
   pass: boolean;
   shoot: boolean;
   shootHeld: boolean;
+  /** F pressed, or gamepad B. A kick while squared up with the ball, otherwise a volley. */
+  kick: boolean;
+  kickHeld: boolean;
+  /** Gamepad RB held long enough for a power tackle. */
+  burstPower: boolean;
   /** Right-click press. Cancels a held throw, including the tap window. */
   aimCancel: boolean;
   /**

@@ -4,8 +4,8 @@ import { ARENA_RADIUS, ARENA_REFERENCE, BALL, CAMERA } from '../game/constants';
 import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
 import { authoritativeUp, rotateToward, stabilizeUp } from '../sim/math';
-import { buildArenaDressing, type WaterRig } from './arenaDressing';
-import { createBlitzball, fitBallModel, tuneUnderwaterBallMaterials } from './blitzball';
+import { buildArenaDressing, type ArenaVisuals, type WaterRig } from './arenaDressing';
+import { createBlitzball, fitBallModel, mountStadiumBall, tuneUnderwaterBallMaterials } from './blitzball';
 import { BubblePool } from './bubbles';
 import { createCatchBeacon } from './catchBeacon';
 import { blendLimbPose, swimLimbPose } from './limbs';
@@ -71,7 +71,7 @@ function makePipTexture(fill: string, stroke: string, mark?: string): THREE.Canv
 
 export class SceneView {
   scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(62, 1, 0.1, ARENA_RADIUS * 8);
+  camera = new THREE.PerspectiveCamera(62, 1, 0.08, 1600);
   renderer: THREE.WebGLRenderer;
 
   private playerMeshes = new Map<number, THREE.Group>();
@@ -134,6 +134,21 @@ export class SceneView {
   private splashMat!: THREE.MeshBasicMaterial;
   private nearBubbleAcc = 0;
   private swimmerTemplate: SwimmerTemplate | null = null;
+  private visuals: ArenaVisuals = {
+    waterStyle: 'trailbound',
+    waterPreset: 'Clearer',
+    waterRefraction: true,
+    waterQuality: 'high',
+    waterPixelScale: 1,
+    stadiumDetail: 'high',
+    crowdDensity: 'high',
+  };
+  private cssWidth = 1;
+  private cssHeight = 1;
+  private fogTick = 0;
+  private shot: 'wide' | 'inside' | 'ball' | 'windup' | 'bank' | 'play' | null = null;
+  private aiIntentLine!: THREE.LineSegments;
+  private aiIntentPositions = new Float32Array(8 * 2 * 3);
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -143,7 +158,9 @@ export class SceneView {
       powerPreference: 'high-performance',
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setClearColor(0x042433, 1);
+    this.renderer.setClearColor(0x1e68d0, 1);
+    this.camera.layers.enable(1);
+    this.camera.layers.enable(2);
     this.scene.fog = new THREE.FogExp2(0x0a4d66, 0.0065 * (ARENA_REFERENCE / ARENA_RADIUS));
 
     this.trailPositions = new Float32Array(TRAIL_MAX * 3);
@@ -154,8 +171,12 @@ export class SceneView {
     this.pipOrange = makePipTexture('#ff6a3d', '#1a1010', 'O');
     this.pipBlue = makePipTexture('#2b9fff', '#0a2030', 'B');
 
+    const shot = new URLSearchParams(location.search).get('shot');
+    if (shot === 'wide' || shot === 'inside' || shot === 'ball' || shot === 'windup' || shot === 'bank' || shot === 'play') {
+      this.shot = shot;
+    }
     this.buildLights();
-    this.water = buildArenaDressing(this.scene);
+    this.water = buildArenaDressing(this.scene, this.visuals);
     this.buildGoals();
     this.buildSplashRing();
     this.buildBall();
@@ -165,6 +186,20 @@ export class SceneView {
     this.trails = new BubblePool(this.scene, 420, 0xd7f6ff, 0.42);
     this.motes = new BubblePool(this.scene, 160, 0xc5f4ff, 0.28);
     this.motes.seedMotes(160, ARENA_RADIUS * 0.86);
+    this.markGameplay(this.ballPivot);
+    this.markGameplay(this.ballHalo);
+    this.markGameplay(this.ballRing);
+    this.markGameplay(this.ballTrail);
+    this.markGameplay(this.pip);
+    this.markGameplay(this.chargeGhost);
+    this.markGameplay(this.aiIntentLine);
+    this.markGameplay(this.pullLine);
+    this.markGameplay(this.shotMarker);
+    this.markGameplay(this.reachMin);
+    this.markGameplay(this.reachMax);
+    this.markGameplay(this.distanceSprite);
+    this.markGameplay(this.catchBeacon);
+    this.markGameplay(this.splashRing);
     void this.tryLoadCustomBall();
     void this.tryLoadSwimmerModel();
   }
@@ -176,18 +211,30 @@ export class SceneView {
    * leaves the built-in mesh in place.
    */
   private async tryLoadCustomBall(): Promise<void> {
-    const url = `${import.meta.env.BASE_URL}models/blitzball.glb`;
+    const hero = `${import.meta.env.BASE_URL}stadium/models/ball.glb`;
+    const legacy = `${import.meta.env.BASE_URL}models/blitzball.glb`;
+    if (await this.tryMountBall(hero, true)) return;
+    const mounted = await this.tryMountBall(legacy, false);
+    if (!mounted && typeof document !== 'undefined') document.body.dataset.ball = 'procedural';
+  }
+
+  /** Hero ball keeps its centre pivot. The older atlas ball is recentered. */
+  private async tryMountBall(url: string, hero: boolean): Promise<boolean> {
     try {
       const response = await fetch(url);
-      if (!response.ok) return;
+      if (!response.ok) return false;
       const gltf = await new GLTFLoader().parseAsync(await response.arrayBuffer(), '');
       const model = gltf.scene;
-      if (!fitBallModel(model, BALL.radius)) return;
-      tuneUnderwaterBallMaterials(model);
+      const fitted = hero ? mountStadiumBall(model, BALL.radius) : fitBallModel(model, BALL.radius);
+      if (!fitted) return false;
+      if (!hero) tuneUnderwaterBallMaterials(model);
       for (const child of [...this.ballPivot.children]) this.ballPivot.remove(child);
       this.ballPivot.add(model);
+      this.markGameplay(model);
+      if (typeof document !== 'undefined') document.body.dataset.ball = hero ? 'hero' : 'legacy';
+      return true;
     } catch {
-      // Procedural ball stays.
+      return false;
     }
   }
 
@@ -208,6 +255,7 @@ export class SceneView {
         const team = group.userData.team === 1 ? 1 : 0;
         const playerId = typeof group.userData.playerId === 'number' ? group.userData.playerId : 0;
         attachSwimmerModel(group, template, team, playerId);
+        this.markGameplay(group);
       }
     } catch {
       // Procedural swimmers stay.
@@ -227,6 +275,11 @@ export class SceneView {
     warm.position.set(-24, 28, -12);
     this.scene.add(warm);
     this.scene.add(new THREE.AmbientLight(0x1a4e68, 0.38));
+    this.scene.traverse((obj) => {
+      const light = obj as THREE.Light;
+      if (!light.isLight) return;
+      light.layers.enable(1);
+    });
   }
 
   /** Triangular frames on the shell. Rebuilt when the arena radius changes. */
@@ -235,6 +288,7 @@ export class SceneView {
     root.name = 'goals';
     for (const team of [0, 1] as const) root.add(buildGoalFrame(team));
     this.scene.add(root);
+    this.markGameplay(root);
   }
 
   /** Ring that sits on the glass where the ball meets it. */
@@ -253,18 +307,20 @@ export class SceneView {
     this.scene.add(this.splashRing);
   }
 
-  /** Drop the shell, bowl, sunbeams, and goals, then build them at the current radius. */
+  /** Rescale the shell and the stadium, and rebuild the goals, at the current radius. */
   rebuildArena(): void {
-    this.disposeNamed('arena-dressing');
     this.disposeNamed('goals');
-    this.water = buildArenaDressing(this.scene);
+    this.water.resize();
     this.buildGoals();
-    this.camera.far = ARENA_RADIUS * 8;
+    this.camera.far = Math.max(1600, ARENA_RADIUS * 16);
     this.camera.updateProjectionMatrix();
-    if (this.scene.fog instanceof THREE.FogExp2) {
-      this.scene.fog.density = 0.0065 * (ARENA_REFERENCE / ARENA_RADIUS);
-    }
     this.motes.seedMotes(160, ARENA_RADIUS * 0.86);
+  }
+
+  applyVisuals(visuals: ArenaVisuals): void {
+    this.visuals = visuals;
+    this.water.applyVisuals(visuals);
+    this.applyPixelScale();
   }
 
   private disposeNamed(name: string): void {
@@ -343,6 +399,16 @@ export class SceneView {
       }),
     );
     this.scene.add(this.chargeGhost);
+
+    const aiGeo = new THREE.BufferGeometry();
+    aiGeo.setAttribute('position', new THREE.BufferAttribute(this.aiIntentPositions, 3));
+    aiGeo.setDrawRange(0, 0);
+    this.aiIntentLine = new THREE.LineSegments(
+      aiGeo,
+      new THREE.LineBasicMaterial({ color: 0xffe28a, transparent: true, opacity: 0.9 }),
+    );
+    this.aiIntentLine.frustumCulled = false;
+    this.scene.add(this.aiIntentLine);
 
     const pullGeo = new THREE.BufferGeometry();
     pullGeo.setAttribute('position', new THREE.BufferAttribute(this.pullPositions, 3));
@@ -483,6 +549,7 @@ export class SceneView {
       group.userData.marker = marker;
       if (this.swimmerTemplate) attachSwimmerModel(group, this.swimmerTemplate, p.team, p.id);
       group.visible = p.active && p.role !== 'stub';
+      this.markGameplay(group);
       this.scene.add(group);
       this.playerMeshes.set(p.id, group);
     }
@@ -495,9 +562,39 @@ export class SceneView {
   }
 
   setSize(w: number, h: number): void {
-    this.camera.aspect = w / h;
+    this.cssWidth = Math.max(1, w);
+    this.cssHeight = Math.max(1, h);
+    this.camera.aspect = this.cssWidth / this.cssHeight;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h, false);
+    this.applyPixelScale();
+  }
+
+  /** Swimmers, the ball, and bubbles draw after the water shell so they stay crisp. */
+  private markGameplay(root: THREE.Object3D): void {
+    root.traverse((obj) => {
+      obj.layers.set(1);
+      if (obj.renderOrder < 12) obj.renderOrder = 12;
+    });
+  }
+
+  private applyPixelScale(): void {
+    const scale = Math.max(1, Math.round(this.visuals.waterPixelScale));
+    const canvas = this.renderer.domElement;
+    if (scale <= 1) {
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      this.renderer.setSize(this.cssWidth, this.cssHeight, false);
+      canvas.style.imageRendering = 'auto';
+    } else {
+      this.renderer.setPixelRatio(1);
+      this.renderer.setSize(
+        Math.max(1, Math.floor(this.cssWidth / scale)),
+        Math.max(1, Math.floor(this.cssHeight / scale)),
+        false,
+      );
+      canvas.style.imageRendering = 'pixelated';
+    }
+    canvas.style.width = `${this.cssWidth}px`;
+    canvas.style.height = `${this.cssHeight}px`;
   }
 
   private writeLine(
@@ -536,6 +633,9 @@ export class SceneView {
       pass: false,
       shoot: false,
       shootHeld: false,
+      kick: false,
+      kickHeld: false,
+      burstPower: false,
       aimCancel: false,
       burst: false,
       passHeld: false,
@@ -604,11 +704,11 @@ export class SceneView {
       // Basis, not Object3D.lookAt. lookAt nudges the aim axis when up is
       // parallel to facing, and that nudge flips the roll by a half turn.
       this.faceBody(mesh, p.facing, p.up);
-      if (p.actionPose === 'burst') {
+      const rig = swimmerRig(mesh);
+      if (!rig && p.actionPose === 'burst') {
         const follow = THREE.MathUtils.clamp(p.actionPoseTime / 0.14, 0, 1);
         mesh.rotateZ(-0.55 * follow);
       }
-      const rig = swimmerRig(mesh);
       if (rig) {
         updateSwimmerRig(rig, mesh, p, sim, dt);
         // After the mixer and the pose offsets, so the ball sits in the palm
@@ -638,11 +738,15 @@ export class SceneView {
       }
       const badge = mesh.getObjectByName('teamBadge');
       if (badge) badge.lookAt(this.camera.position);
+      this.syncCatchReadyMark(mesh, p.catchReady);
     }
 
     this.ballPivot.position.copy(sim.ball.position);
     this.bubbleUp.copy(authoritativeUp(sim.tunables.goalAxisUp));
     this.spinBall(sim, dt);
+    if (this.shot === 'ball' && sim.ball.velocity.length() < 0.2) {
+      this.ballPivot.rotation.set(0.22, 0.62, 0.05);
+    }
     this.ballHalo.position.copy(sim.ball.position);
     this.ballRing.position.copy(sim.ball.position);
     this.ballRing.lookAt(this.camera.position);
@@ -695,12 +799,16 @@ export class SceneView {
     this.pip.scale.set(pipPulse, pipPulse, pipPulse);
 
     this.writeLine(this.chargeGhost, this.ghostPositions, sim.chargeGhost, GHOST_MAX);
+    this.syncAiIntents(sim);
     this.syncLandingMarker(sim);
     this.syncPullBand(sim);
     this.syncCatchBeacon(sim);
     this.syncBubbles(sim, dt);
     this.syncGoalFlash(sim);
     this.syncSplash(sim);
+    this.water.setCheer(sim.goalCelebrate > 0.12 ? 1 : 0);
+    if (this.fogTick++ % 45 === 0) this.water.patchFog(this.scene);
+    if (this.shot) this.frameShot();
     this.water.update(
       this.pulse,
       this.camera.position,
@@ -710,6 +818,65 @@ export class SceneView {
       sim.nearShell,
       Math.max(sim.impactPulse, sim.breachTime > 0 ? 1 : 0),
     );
+  }
+
+  /** Fixed cameras for the art-pass stills. Normal play never sets `shot`. */
+  private frameShot(): void {
+    this.camera.up.set(0, 1, 0);
+    if (this.shot === 'wide') {
+      // Above the wall walk, still inside the sky cylinder.
+      this.camera.position.set(210, 125, 168);
+      this.camera.lookAt(0, -8, 0);
+      this.camera.fov = 48;
+    } else if (this.shot === 'ball') {
+      this.camera.position.set(0.72, 0.08, 1.28);
+      this.camera.lookAt(0, -0.04, 0);
+      this.camera.fov = 26;
+      this.ballHalo.visible = false;
+      this.ballRing.visible = false;
+      this.pip.visible = false;
+    } else if (this.shot === 'play') {
+      // In the upper seats, looking across the bowl: near crowd, the pool, and the far wall.
+      this.camera.position.set(132, 10, 30);
+      this.camera.lookAt(0, -10, -6);
+      this.camera.fov = 64;
+    } else if (this.shot === 'windup' || this.shot === 'bank') {
+      this.camera.position.set(2.15, 1.05, 3.15);
+      this.camera.lookAt(0, 0.28, 0.05);
+      this.camera.fov = 32;
+      this.shotMarker.visible = false;
+      this.catchBeacon.visible = false;
+      this.pip.visible = false;
+      this.ballRing.visible = false;
+      this.scene.traverse((obj) => {
+        if (obj.name === 'youRing' || obj.name === 'carrierRing' || obj.name === 'catchReadyMark') obj.visible = false;
+      });
+    } else {
+      this.camera.position.set(-2.2, 2.6, -18.5);
+      this.camera.lookAt(0.4, 0.5, 14);
+      this.camera.fov = 64;
+    }
+    this.camera.updateProjectionMatrix();
+  }
+
+  private syncAiIntents(sim: Simulation): void {
+    const marks = sim.tunables.showAiIntent ? sim.aiIntents : [];
+    const attr = this.aiIntentLine.geometry.getAttribute('position') as THREE.BufferAttribute;
+    let count = 0;
+    for (const mark of marks) {
+      if (count >= 8) break;
+      const i = count * 6;
+      this.aiIntentPositions[i] = mark.from.x;
+      this.aiIntentPositions[i + 1] = mark.from.y;
+      this.aiIntentPositions[i + 2] = mark.from.z;
+      this.aiIntentPositions[i + 3] = mark.to.x;
+      this.aiIntentPositions[i + 4] = mark.to.y;
+      this.aiIntentPositions[i + 5] = mark.to.z;
+      count += 1;
+    }
+    this.aiIntentLine.visible = count > 0;
+    attr.needsUpdate = true;
+    this.aiIntentLine.geometry.setDrawRange(0, count * 2);
   }
 
   private syncGoalFlash(sim: Simulation): void {
@@ -968,6 +1135,52 @@ export class SceneView {
     mesh.lookAt(this.camera.position);
   }
 
+  /** Small ring and hand glows while catch-ready is on. Hidden the rest of the time. */
+  private syncCatchReadyMark(group: THREE.Group, ready: boolean): void {
+    let mark = group.getObjectByName('catchReadyMark');
+    if (!ready) {
+      if (mark) mark.visible = false;
+      return;
+    }
+    if (!mark) {
+      mark = new THREE.Group();
+      mark.name = 'catchReadyMark';
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.38, 0.03, 6, 22),
+        new THREE.MeshBasicMaterial({
+          color: 0xbdf6f0,
+          transparent: true,
+          opacity: 0.7,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      );
+      ring.name = 'catchReadyRing';
+      ring.position.set(0, 0.28, 1.05);
+      const glowMat = new THREE.MeshBasicMaterial({
+        color: 0x8ce6e8,
+        transparent: true,
+        opacity: 0.45,
+        depthWrite: false,
+        toneMapped: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const left = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), glowMat);
+      const right = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), glowMat);
+      left.position.set(0.22, 0.32, 0.78);
+      right.position.set(-0.22, 0.32, 0.78);
+      mark.add(ring, left, right);
+      group.add(mark);
+    }
+    mark.visible = true;
+    const pulse = 0.45 + Math.sin(this.pulse * 6) * 0.15;
+    mark.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      const mat = child.material;
+      if (mat instanceof THREE.MeshBasicMaterial) mat.opacity = child.name === 'catchReadyRing' ? 0.4 + pulse * 0.35 : pulse;
+    });
+  }
+
   /** Point local +Z along facing and local +Y along up, with no lookAt branch. */
   private faceBody(mesh: THREE.Object3D, facing: THREE.Vector3, up: THREE.Vector3): void {
     const z = this.bodyZ.copy(facing);
@@ -1007,14 +1220,7 @@ export class SceneView {
     // Aiming keeps the carry pose. The shoot charge would pull both arms back
     // and leave the ball floating in front of an empty chest.
     const aimingShot = sim.shotAim.active && player.id === sim.humanId;
-    const ready =
-      pose === 'claim' ||
-      (player.id === sim.humanId &&
-        sim.catchStance &&
-        !player.hasBall &&
-        pose !== 'pass' &&
-        pose !== 'shoot' &&
-        pose !== 'burst');
+    const ready = pose === 'claim' || player.catchReady;
     const catchTarget = ready ? 1 : 0;
     const holdTarget = pose === 'hold' || aimingShot ? 1 : 0;
     const ease = (current: number, target: number, rate: number) =>
@@ -1068,11 +1274,22 @@ export class SceneView {
 
     armL.rotation.set(0, yL, zL);
     armR.rotation.set(0, yR, zR);
-    legL.rotation.set(xLegL, 0, 0);
-    legR.rotation.set(xLegR, 0, 0);
+    let kick = 0;
+    if (pose === 'kick') {
+      const duration = Math.max(0.05, player.actionPoseDuration);
+      const t = 1 - THREE.MathUtils.clamp(player.actionPoseTime / duration, 0, 1);
+      kick = t < 0.45 ? THREE.MathUtils.lerp(-1.1, 1.2, t / 0.45) : THREE.MathUtils.lerp(1.2, 0.15, (t - 0.45) / 0.55);
+    } else if (sim.charge.kind === 'kick') {
+      kick = -0.9 * sim.charge.amount;
+    }
+    const kickLeg = player.throwArm === 'left' ? legL : legR;
+    const plant = player.throwArm === 'left' ? legR : legL;
+    kickLeg.rotation.set(xLegR + kick, 0, 0);
+    plant.rotation.set((player.throwArm === 'left' ? xLegL : xLegR) - kick * 0.25, 0, 0);
   }
 
   render(): void {
+    this.water.beforeRender(this.renderer, this.scene, this.camera, this.pulse);
     this.renderer.render(this.scene, this.camera);
   }
 }
