@@ -1,6 +1,7 @@
 import { ARENA_RADIUS, BALL, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
-import type { BotBehavior, CameraPresetId, PowerMode, RosterSpec, Tunables } from '../game/types';
+import type { BotBehavior, CameraPresetId, MatchPresetId, PowerMode, RosterSpec, Tunables } from '../game/types';
 import { loadRoster, saveRoster } from './rosterStorage';
+import { matchRoster, presetAllowsGoalieToggle } from './matchPresets';
 import {
   applyCameraPreset,
   applyCameraSave,
@@ -140,6 +141,11 @@ export function defaultTunables(): Tunables {
     teammatePassDelay: PRACTICE.passDelay,
     showSunbeams: true,
     sunbeamIntensity: 0.7,
+    goalieSkill: 70,
+    goalieSkillHome: 70,
+    goalieSkillAway: 70,
+    goalieHomeOverride: false,
+    goalieAwayOverride: false,
     ...defaultCameraFields(),
   };
 }
@@ -152,6 +158,8 @@ export class DevPanel {
   private collapsed: Record<string, boolean>;
   private mount: HTMLElement;
   private rosterBody: HTMLElement | null = null;
+  private matchPreset: MatchPresetId = 'custom';
+  private withGoalies = true;
   visible = true;
 
   constructor(
@@ -168,7 +176,16 @@ export class DevPanel {
     const saved = loadPowerMode();
     if (saved) this.tunables.powerMode = saved;
     const savedRoster = loadRoster();
-    if (savedRoster) this.roster.applyRoster(savedRoster);
+    if (savedRoster) {
+      this.matchPreset = savedRoster.preset ?? 'custom';
+      this.withGoalies = savedRoster.withGoalies ?? true;
+      if (savedRoster.goalieSkill !== undefined) this.tunables.goalieSkill = savedRoster.goalieSkill;
+      if (savedRoster.goalieSkillHome !== undefined) this.tunables.goalieSkillHome = savedRoster.goalieSkillHome;
+      if (savedRoster.goalieSkillAway !== undefined) this.tunables.goalieSkillAway = savedRoster.goalieSkillAway;
+      this.tunables.goalieHomeOverride = savedRoster.goalieHomeOverride === true;
+      this.tunables.goalieAwayOverride = savedRoster.goalieAwayOverride === true;
+      this.roster.applyRoster(savedRoster);
+    }
     const savedCamera = loadCameraSettings();
     if (savedCamera) applyCameraSave(this.tunables, savedCamera);
     this.collapsed = loadCollapsed();
@@ -292,6 +309,11 @@ export class DevPanel {
     this.section('Teams', 'teams', () => {
       this.bool('Normal defense chases', 'defenseActive');
       this.range('Teammate pass delay', 'teammatePassDelay', 0.3, 3, 0.05);
+      this.range('Goalie skill', 'goalieSkill', 0, 100, 1);
+      this.bool('Home skill override', 'goalieHomeOverride');
+      this.range('Home goalie skill', 'goalieSkillHome', 0, 100, 1);
+      this.bool('Away skill override', 'goalieAwayOverride');
+      this.range('Away goalie skill', 'goalieSkillAway', 0, 100, 1);
     });
 
     this.section('Visual / Debug', 'visual', () => {
@@ -312,9 +334,36 @@ export class DevPanel {
     const note = document.createElement('p');
     note.className = 'roster-note';
     note.textContent =
-      'Test chasers chase slowly and hold the ball. Normal teammates pass back. Normal defense holds unless it is set to chase.';
+      'Field bots play the match. Goalies guard their own goal. Test chasers just hold the ball. Add, remove, or change a role and the match becomes Custom.';
     card.appendChild(note);
     this.root.appendChild(card);
+    this.refreshRoster();
+  }
+
+  private persistRoster(): void {
+    const spec = this.roster.exportRoster();
+    saveRoster({
+      ...spec,
+      preset: this.matchPreset,
+      withGoalies: this.withGoalies,
+      goalieSkill: this.tunables.goalieSkill,
+      goalieSkillHome: this.tunables.goalieSkillHome,
+      goalieSkillAway: this.tunables.goalieSkillAway,
+      goalieHomeOverride: this.tunables.goalieHomeOverride,
+      goalieAwayOverride: this.tunables.goalieAwayOverride,
+    });
+  }
+
+  private applyMatch(preset: Exclude<MatchPresetId, 'custom'>): void {
+    if (presetAllowsGoalieToggle(preset)) this.withGoalies = true;
+    const spec = matchRoster(preset, this.withGoalies);
+    this.matchPreset = preset;
+    this.withGoalies = spec.withGoalies === true;
+    this.tunables.defenseActive = true;
+    const chase = this.root.querySelector<HTMLInputElement>('input[data-key="defenseActive"]');
+    if (chase) chase.checked = true;
+    this.roster.applyRoster(spec);
+    this.persistRoster();
     this.refreshRoster();
   }
 
@@ -322,9 +371,72 @@ export class DevPanel {
     const body = this.rosterBody;
     if (!body) return;
     body.innerHTML = '';
+    this.rosterPresetRow(body);
     const bots = this.roster.listBots();
     this.teamBlock(body, 0, 'Home (Blue)', bots);
     this.teamBlock(body, 1, 'Away (Orange)', bots);
+  }
+
+  private rosterPresetRow(body: HTMLElement): void {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('label');
+    lab.textContent = 'Match';
+    lab.style.flex = '1';
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', 'Match preset');
+    const options: { value: MatchPresetId; label: string }[] = [
+      { value: '1v1', label: '1v1' },
+      { value: '1v1-goalies', label: '1v1 + goalies' },
+      { value: '3v3', label: '3v3' },
+      { value: '4v4', label: '4v4' },
+      { value: '5v5', label: '5v5' },
+      { value: 'custom', label: 'Custom' },
+    ];
+    for (const option of options) {
+      const item = document.createElement('option');
+      item.value = option.value;
+      item.textContent = option.label;
+      select.append(item);
+    }
+    select.value = this.matchPreset;
+    select.addEventListener('change', () => {
+      const value = select.value as MatchPresetId;
+      if (value === 'custom') {
+        this.matchPreset = 'custom';
+        this.persistRoster();
+        this.refreshRoster();
+        return;
+      }
+      this.applyMatch(value);
+    });
+    row.append(lab, select);
+    body.append(row);
+    if (!presetAllowsGoalieToggle(this.matchPreset)) return;
+    const toggle = document.createElement('div');
+    toggle.className = 'row';
+    const name = document.createElement('label');
+    name.textContent = 'With goalies';
+    name.style.flex = '1';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = this.withGoalies;
+    input.addEventListener('change', () => {
+      const preset = this.matchPreset;
+      if (preset !== '3v3' && preset !== '4v4' && preset !== '5v5') return;
+      this.withGoalies = input.checked;
+      const spec = matchRoster(preset, this.withGoalies);
+      this.withGoalies = spec.withGoalies === true;
+      this.roster.applyRoster(spec);
+      this.persistRoster();
+      this.refreshRoster();
+    });
+    toggle.append(name, input);
+    body.append(toggle);
+  }
+
+  private markRosterCustom(): void {
+    this.matchPreset = 'custom';
   }
 
   private teamBlock(body: HTMLElement, team: 0 | 1, title: string, bots: RosterBotView[]): void {
@@ -357,7 +469,8 @@ export class DevPanel {
       const select = document.createElement('select');
       select.setAttribute('aria-label', `${title} ${bot.name} behavior`);
       for (const option of [
-        { value: 'normal', label: 'Normal AI' },
+        { value: 'normal', label: 'Field' },
+        { value: 'goalie', label: 'Goalie' },
         { value: 'chaser', label: 'Test chaser' },
       ]) {
         const item = document.createElement('option');
@@ -367,9 +480,12 @@ export class DevPanel {
       }
       select.value = bot.behavior;
       select.addEventListener('change', () => {
-        const value: BotBehavior = select.value === 'chaser' ? 'chaser' : 'normal';
+        const value: BotBehavior =
+          select.value === 'chaser' ? 'chaser' : select.value === 'goalie' ? 'goalie' : 'normal';
         this.roster.setBotBehavior(bot.id, value);
-        saveRoster(this.roster.exportRoster());
+        this.markRosterCustom();
+        this.persistRoster();
+        this.refreshRoster();
       });
       const remove = document.createElement('button');
       remove.type = 'button';
@@ -378,7 +494,8 @@ export class DevPanel {
       remove.title = 'Despawn this bot. A held ball drops loose.';
       remove.addEventListener('click', () => {
         this.roster.removeBot(bot.id);
-        saveRoster(this.roster.exportRoster());
+        this.markRosterCustom();
+        this.persistRoster();
         this.refreshRoster();
       });
       row.append(label, select, remove);
@@ -394,7 +511,8 @@ export class DevPanel {
     add.title = full ? 'This side is full (6 swimmers).' : 'Add a normal AI bot.';
     add.addEventListener('click', () => {
       if (!this.roster.addBot(team, 'normal')) return;
-      saveRoster(this.roster.exportRoster());
+      this.markRosterCustom();
+      this.persistRoster();
       this.refreshRoster();
     });
     wrap.append(add);
@@ -583,12 +701,14 @@ export class DevPanel {
     lab.textContent = label;
     const input = document.createElement('input');
     input.type = 'checkbox';
+    input.dataset.key = key;
     input.checked = Boolean(this.tunables[key]);
     input.addEventListener('change', () => {
       (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
       // Only the up-axis change rebuilds the chase basis. Invert toggles and
       // other checkboxes must not snap yaw/pitch back to kickoff.
       if (key === 'goalAxisUp') this.onChange(key);
+      if (key === 'goalieHomeOverride' || key === 'goalieAwayOverride') this.persistRoster();
     });
     row.append(lab, input);
     this.mount.append(row);
@@ -636,6 +756,7 @@ export class DevPanel {
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
       value.textContent = n.toFixed(2);
       if (key === 'arenaRadius') this.onChange(key);
+      if (key === 'goalieSkill' || key === 'goalieSkillHome' || key === 'goalieSkillAway') this.persistRoster();
     });
     wrap.append(name, input, value);
     this.mount.append(wrap);

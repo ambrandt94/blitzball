@@ -13,13 +13,24 @@ export type CameraPresetId = 'close' | 'default' | 'broadcast' | 'ball' | 'cinem
 
 export type PlayerRole = 'human' | 'ai' | 'stub';
 
-/** `chaser` is the slow test opponent. `normal` uses teammate or defense AI. */
-export type BotBehavior = 'normal' | 'chaser';
+/** `chaser` is the slow test opponent. `goalie` guards the crease. `normal` is a field bot. */
+export type BotBehavior = 'normal' | 'chaser' | 'goalie';
+
+/** Field-player counts. Goalies are extra. `custom` is a hand-edited roster. */
+export type MatchPresetId = '1v1' | '1v1-goalies' | '3v3' | '4v4' | '5v5' | 'custom';
 
 /** Active bots on each side, in slot order. Home does not include the human. */
 export interface RosterSpec {
   home: BotBehavior[];
   away: BotBehavior[];
+  preset?: MatchPresetId;
+  /** Used by 3v3, 4v4, and 5v5. Ignored by the 1v1 presets. */
+  withGoalies?: boolean;
+  goalieSkill?: number;
+  goalieSkillHome?: number;
+  goalieSkillAway?: number;
+  goalieHomeOverride?: boolean;
+  goalieAwayOverride?: boolean;
 }
 
 export type PossessionState = 'free' | 'held';
@@ -174,6 +185,14 @@ export interface Tunables {
   showSunbeams: boolean;
   /** 0 hides the shafts. 1 is the tuned rim brightness. */
   sunbeamIntensity: number;
+  /** 0–100. Reaction, prediction, speed, and catch chance for both goalies. */
+  goalieSkill: number;
+  /** Used when the home override is on. */
+  goalieSkillHome: number;
+  /** Used when the away override is on. */
+  goalieSkillAway: number;
+  goalieHomeOverride: boolean;
+  goalieAwayOverride: boolean;
 }
 
 /** Yellow landing dot. RMB places it on the straight throw; a shot hold slides it with power. */

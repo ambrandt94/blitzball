@@ -12,6 +12,7 @@ import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
 import { defaultTunables } from '../ui/DevPanel';
 import { applyCameraPreset, cameraSettingsBlob, noteCameraEdit, parseCameraSettings } from '../ui/cameraSettings';
 import { parseRoster } from '../ui/rosterStorage';
+import { matchRoster } from '../ui/matchPresets';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
 import { lookBasis, rotateToward, stabilizeUp } from './math';
@@ -2776,6 +2777,82 @@ function checkRosterEdit(): void {
   if (!chaser.hasBall || sim.ball.ownerId !== chaser.id) fail('test chaser dropped the ball');
 }
 
+function checkGoalies(): void {
+  const one = matchRoster('1v1', true);
+  if (one.home.length !== 0 || one.away.join() !== 'normal' || one.withGoalies) fail('1v1 added a goalie');
+  const plus = matchRoster('1v1-goalies', false);
+  if (plus.home.join() !== 'goalie' || plus.away.join() !== 'normal,goalie') fail('1v1 + goalies roster is wrong');
+  const open = matchRoster('3v3', false);
+  if (open.home.length !== 2 || open.away.length !== 3 || open.home.includes('goalie')) {
+    fail('3v3 without goalies still kept a keeper');
+  }
+  const full = matchRoster('5v5', true);
+  if (full.home.length !== 5 || full.away.length !== 6) fail('5v5 with goalies does not fit six a side');
+  if (full.home.filter((bot) => bot === 'goalie').length !== 1) fail('home 5v5 lost its goalie');
+  if (full.away.filter((bot) => bot === 'normal').length !== 5) fail('away 5v5 lost a field player');
+  const saved = parseRoster(JSON.stringify({ home: ['goalie'], away: ['normal', 'goalie'], preset: '1v1-goalies' }));
+  if (!saved || saved.home[0] !== 'goalie' || saved.preset !== '1v1-goalies') fail('goalie roster did not parse');
+
+  const built = new Simulation(defaultTunables());
+  built.applyRoster(matchRoster('4v4', true));
+  if (!built.getHuman().active || built.getHuman().role !== 'human') fail('the match preset removed you');
+  const home = built.exportRoster().home;
+  if (home.length !== 4 || home.filter((bot) => bot === 'goalie').length !== 1) {
+    fail(`4v4 home was ${home.join()}`);
+  }
+
+  const high = new Simulation(defaultTunables());
+  high.applyRoster({ home: [], away: ['goalie'] });
+  high.kickoffLock = 0;
+  high.tunables.goalieSkill = 100;
+  high.tunables.goalieAwayOverride = false;
+  high.tunables.ballDrag = 0.2;
+  const keeper = high.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+  if (!keeper) fail('high-skill goalie did not spawn');
+  keeper.position.set(4, 0, keeper.position.z);
+  keeper.velocity.set(0, 0, 0);
+  const you = high.getHuman();
+  you.position.set(-24, 0, -30);
+  you.velocity.set(0, 0, 0);
+  high.ball.possession = 'free';
+  high.ball.ownerId = null;
+  high.ball.arc = null;
+  high.ball.claimLock = 0;
+  high.ball.velocity.set(0, 0, 16);
+  high.ball.position.set(0, 0, 40);
+  let savedShot = false;
+  for (let i = 0; i < 240; i++) {
+    high.step(1 / 60, blankIntent());
+    if (high.match.score[0] > 0) break;
+    if (keeper.hasBall || high.ball.velocity.z < -1) savedShot = true;
+  }
+  if (high.match.score[0] > 0) fail('a high-skill goalie let a slow straight shot in');
+  if (!savedShot) fail('a high-skill goalie did not catch or turn the slow shot');
+
+  const low = new Simulation(defaultTunables());
+  low.applyRoster({ home: [], away: ['goalie'] });
+  low.kickoffLock = 0;
+  low.tunables.goalieSkill = 0;
+  low.tunables.ballDrag = 0.2;
+  const weak = low.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+  if (!weak) fail('low-skill goalie did not spawn');
+  low.getHuman().position.set(-24, 0, -30);
+  low.getHuman().velocity.set(0, 0, 0);
+  low.ball.possession = 'free';
+  low.ball.ownerId = null;
+  low.ball.arc = null;
+  low.ball.claimLock = 0;
+  low.ball.velocity.set(0, 0, 42);
+  low.ball.position.set(2.8, 0, 36);
+  let scored = false;
+  for (let i = 0; i < 120 && !scored; i++) {
+    low.step(1 / 60, blankIntent());
+    scored = low.match.score[0] > 0;
+  }
+  if (!scored) fail('a low-skill goalie stopped a shot at the far side of the mouth');
+  if (weak.hasBall) fail('a low-skill goalie caught the shot they should have missed');
+}
+
 function checkCameraSettings(): void {
   const tunables = defaultTunables();
   if (tunables.cameraPreset !== 'default') fail('camera did not start on the Default preset');
@@ -2926,6 +3003,7 @@ export function runRotationChecks(): void {
   checkTackleCharge();
   checkDrillOpponent();
   checkRosterEdit();
+  checkGoalies();
   checkArenaShell();
   checkWallRicochet();
   checkRimDeflection();

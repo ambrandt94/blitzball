@@ -24,6 +24,7 @@ import type {
 } from '../game/types';
 import { createPowerStrategy, type PowerStrategy, type PowerTuning } from './shotPower';
 import { DummyAI } from '../ai/DummyAI';
+import { GoalieAI, goalieCatchSpeed, goalieSkill01 } from '../ai/GoalieAI';
 import { TeammateAI } from '../ai/TeammateAI';
 import {
   authoritativeUp,
@@ -39,6 +40,7 @@ import { inCatchVolume, segmentHitsCatch } from './catch';
 import {
   containInNet,
   inGoalPocket,
+  goalPlaneZ,
   pointInsidePocket,
   rayHitsMouth,
   resolveGoalRim,
@@ -225,6 +227,7 @@ export class Simulation {
   private manualRoster = false;
   private ai: DummyAI;
   private teammate: TeammateAI;
+  private goalie: GoalieAI;
   private tmp = {
     moveWorld: new THREE.Vector3(),
     camFwd: new THREE.Vector3(),
@@ -265,6 +268,7 @@ export class Simulation {
     };
     this.ai = new DummyAI();
     this.teammate = new TeammateAI();
+    this.goalie = new GoalieAI();
     this.resetKickoff(true);
   }
 
@@ -413,7 +417,7 @@ export class Simulation {
    * Returns false at the six-swimmer cap.
    */
   addBot(team: 0 | 1, behavior: BotBehavior = 'normal'): boolean {
-    if (behavior !== 'normal' && behavior !== 'chaser') return false;
+    if (behavior !== 'normal' && behavior !== 'chaser' && behavior !== 'goalie') return false;
     if (this.swimmerCount(team) >= ROSTER.maxSwimmers) return false;
     this.adoptManualRoster();
     const slot = this.players.find((p) => p.team === team && p.role !== 'human' && !p.active);
@@ -441,7 +445,7 @@ export class Simulation {
   }
 
   setBotBehavior(id: number, behavior: BotBehavior): void {
-    if (behavior !== 'normal' && behavior !== 'chaser') return;
+    if (behavior !== 'normal' && behavior !== 'chaser' && behavior !== 'goalie') return;
     const player = this.players.find((p) => p.id === id && p.role === 'ai' && p.active);
     if (!player) return;
     this.adoptManualRoster();
@@ -464,6 +468,7 @@ export class Simulation {
   }
 
   private behaviorOf(player: PlayerState): BotBehavior {
+    if (player.aiBehavior === 'goalie') return 'goalie';
     if (
       !this.manualRoster &&
       this.tunables.soloOpponent &&
@@ -545,6 +550,10 @@ export class Simulation {
     const zSign = player.team === 0 ? -1 : 1;
     if (player.role === 'human') {
       player.position.set(0, 0, zSign * sep);
+    } else if (player.aiBehavior === 'goalie') {
+      const ownZ = goalPlaneZ(player.team === 0 ? 1 : 0);
+      const inward = ownZ > 0 ? -1 : 1;
+      player.position.set(0, 0.25, ownZ + inward * 6);
     } else {
       const mates = this.players
         .filter((p) => p.team === player.team && p.active && p.role === 'ai')
@@ -689,6 +698,16 @@ export class Simulation {
     for (const p of this.players) {
       if (!p.active || p.role !== 'ai') continue;
       const onDefense = p.team !== human.team;
+      if (p.aiBehavior === 'goalie') {
+        if (!live) {
+          p.velocity.multiplyScalar(0.9);
+          continue;
+        }
+        const keeper = this.goalie.think(p, this.ball, this.tunables, motion);
+        this.movePlayer(p, keeper, motion, false);
+        this.resolveGoalie(p, keeper);
+        continue;
+      }
       const chaser = this.manualRoster ? p.aiBehavior === 'chaser' : onDefense && this.tunables.soloOpponent;
       if (chaser) {
         if (!live) {
@@ -731,6 +750,7 @@ export class Simulation {
     this.updateBall(motion);
     if (live) {
       this.resolveCatches();
+      this.resolveGoalieContacts();
       this.separateBallFromPlayers();
       this.checkGoals();
     }
@@ -1092,6 +1112,73 @@ export class Simulation {
   private resolveTeammate(player: PlayerState, intent: InputIntent): void {
     if (intent.claim) this.tryClaim(player);
     if (intent.pass && player.hasBall) this.passToHuman(player);
+  }
+
+  private resolveGoalie(player: PlayerState, intent: InputIntent): void {
+    if (intent.claim) this.tryClaim(player);
+    if (intent.pass && player.hasBall) this.goalieDistribute(player);
+  }
+
+  /** Pass to a field teammate, or clear up the pool when nobody is there. */
+  private goalieDistribute(player: PlayerState): void {
+    let best: PlayerState | null = null;
+    let bestDist = 46;
+    for (const mate of this.players) {
+      if (!mate.active || mate.team !== player.team || mate.id === player.id || mate.aiBehavior === 'goalie') continue;
+      const dist = mate.position.distanceTo(player.position);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = mate;
+      }
+    }
+    const inward = this.goalieInward(player.team);
+    const aim = best ? best.position.clone().sub(player.position) : inward.clone();
+    if (aim.lengthSq() < 0.16) aim.copy(inward);
+    else aim.normalize();
+    this.releaseAtHand(player, aim);
+    const speed = Math.max(12, this.tunables.passSpeed * (best ? 0.7 : 0.88));
+    this.noteThrow(player);
+    this.releaseBall(aim.multiplyScalar(speed));
+    this.playPose(player, 'pass', 0.4);
+    this.match.statusMessage = best ? 'Goalie pass' : 'Cleared';
+  }
+
+  /** Direction from this team's goal back toward center court. */
+  private goalieInward(team: 0 | 1): THREE.Vector3 {
+    const ownZ = goalPlaneZ(team === 0 ? 1 : 0);
+    return new THREE.Vector3(0, 0, ownZ > 0 ? -1 : 1);
+  }
+
+  /**
+   * A goalie who has stepped onto the ball either catches a shot they can handle
+   * or punches it back into the pool. Curved shots are still live arcs until then.
+   */
+  private resolveGoalieContacts(): void {
+    if (this.ball.possession === 'held' || this.ball.claimLock > 0) return;
+    for (const player of this.players) {
+      if (!player.active || player.aiBehavior !== 'goalie') continue;
+      const skill = goalieSkill01(this.tunables, player.team);
+      const dist = player.position.distanceTo(this.ball.position);
+      const block = PLAYER.radius + BALL.radius + 0.85 + skill * 0.7;
+      if (dist > block) continue;
+      const intoGoal = this.goalieInward(player.team).multiplyScalar(-1);
+      const closing = this.ball.velocity.dot(intoGoal);
+      const shot = this.ball.arc !== null || closing > 2;
+      if (!shot) continue;
+      const speed = Math.max(this.ball.velocity.length(), this.ball.arc ? 16 : 0);
+      if (speed <= goalieCatchSpeed(skill)) {
+        this.ball.arc = null;
+        this.giveBall(player);
+        this.match.statusMessage = 'Goalie save';
+        return;
+      }
+      this.ball.arc = null;
+      if (closing > 0) this.ball.velocity.addScaledVector(intoGoal, -closing * 1.7);
+      this.ball.velocity.addScaledVector(this.goalieInward(player.team), Math.max(8, speed * 0.35));
+      this.ball.claimLock = 0.18;
+      this.match.statusMessage = 'Parry';
+      return;
+    }
   }
 
   /** Lead the human a little so the return pass is catchable. */
