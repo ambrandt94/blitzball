@@ -41,6 +41,9 @@ function blankIntent(zoom = false): InputIntent {
     pass: false,
     shoot: false,
     shootHeld: false,
+    kick: false,
+    kickHeld: false,
+    burstPower: false,
     aimCancel: false,
     burst: false,
     passHeld: false,
@@ -814,6 +817,107 @@ function checkCatch(): void {
  * the enlarged mitt and take the ball before it arrived.
  */
 /** A slow pass into a squared-up catch-ready mitt is caught. */
+function checkKick(): void {
+  const setup = () => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.setSoloOpponent(false);
+    quietRoster(sim);
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = 40;
+    sim.tunables.arcHandCurve = 0;
+    sim.tunables.shotPowerAngle = 0;
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(-1, 0, 0);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    // Along -X so the chord is not swallowed by a goal-pocket retarget.
+    sim.yaw = Math.PI / 2;
+    sim.pitch = 0;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.lastOwnerId = human.id;
+    sim.ball.claimLock = 0;
+    sim.ball.arc = null;
+    sim.ball.velocity.set(0, 0, 0);
+    sim.ball.position.set(0, 0.2, 0.8);
+    return sim;
+  };
+
+  const throwSim = setup();
+  const throwing = blankIntent();
+  throwing.shootHeld = true;
+  for (let i = 0; i < 8; i++) {
+    throwSim.armShotAim(throwing);
+    throwSim.step(1 / 60, throwing);
+  }
+  const releaseThrow = blankIntent();
+  throwSim.step(1 / 60, releaseThrow);
+  const thrown = throwSim.ball.arc;
+  if (!thrown) fail('equal-power throw did not launch');
+  const throwTravel = thrown.p0.distanceTo(thrown.p2);
+
+  const kickSim = setup();
+  const charging = blankIntent();
+  charging.strafe = true;
+  charging.kickHeld = true;
+  for (let i = 0; i < 8; i++) {
+    kickSim.armShotAim(charging);
+    kickSim.step(1 / 60, charging);
+  }
+  const releaseKick = blankIntent();
+  releaseKick.strafe = true;
+  kickSim.step(1 / 60, releaseKick);
+  if (kickSim.getHuman().hasBall) fail('kick release kept the ball in the hand');
+  let kicked = kickSim.ball.arc;
+  for (let i = 0; i < 20 && !kicked; i++) {
+    kickSim.step(1 / 60, releaseKick);
+    kicked = kickSim.ball.arc;
+  }
+  if (!kicked) fail('kick did not launch from the foot');
+  const kickTravel = kicked.p0.distanceTo(kicked.p2);
+  if (kickTravel < throwTravel * 1.12) {
+    fail(`kick range ${kickTravel.toFixed(1)} was not past the throw ${throwTravel.toFixed(1)}`);
+  }
+  if (kicked.carrySpeed < thrown.carrySpeed * 1.12) {
+    fail(`kick speed ${kicked.carrySpeed.toFixed(1)} was not past the throw ${thrown.carrySpeed.toFixed(1)}`);
+  }
+
+  const cancel = setup();
+  for (let i = 0; i < 4; i++) {
+    cancel.armShotAim(charging);
+    cancel.step(1 / 60, charging);
+  }
+  const stop = blankIntent();
+  stop.strafe = false;
+  stop.kickHeld = true;
+  stop.aimCancel = true;
+  cancel.step(1 / 60, stop);
+  if (!cancel.getHuman().hasBall) fail('cancelling a kick dropped the ball');
+  if (cancel.ball.arc) fail('cancelled kick still launched');
+  if (cancel.ball.velocity.length() > 8) fail('cancelled kick launched the ball');
+
+  const volley = setup();
+  volley.yaw = 0;
+  const human = volley.getHuman();
+  human.facing.set(0, 0, 1);
+  human.hasBall = false;
+  volley.ball.possession = 'free';
+  volley.ball.ownerId = null;
+  volley.ball.lastOwnerId = null;
+  volley.ball.claimLock = 0;
+  volley.ball.arc = null;
+  volley.ball.position.set(0, 0.1, 1.15);
+  volley.ball.velocity.set(0, 0, -2);
+  const flick = blankIntent();
+  flick.kickHeld = true;
+  volley.step(1 / 60, flick);
+  if (human.hasBall || volley.ball.possession !== 'free') fail('volley took possession');
+  if (volley.ball.velocity.z < 8) fail(`volley did not send the ball along the aim (${volley.ball.velocity.z.toFixed(1)})`);
+}
+
 function checkCatchReadyPass(): void {
   const sim = new Simulation(defaultTunables());
   sim.kickoffLock = 0;
@@ -2266,7 +2370,9 @@ function checkThrowPower(): void {
     }
   }
   if (tapFire !== 5) fail(`5 taps fired at click ${tapFire}`);
-  if (tapSpeed < taps.sim.tunables.shootSpeedMax - 1) fail(`5 taps was not full power (${tapSpeed.toFixed(1)})`);
+  const fullThrow =
+    taps.sim.tunables.shootSpeedMax * Math.max(0.2, taps.sim.tunables.throwSpeedScale);
+  if (tapSpeed < fullThrow - 1) fail(`5 taps was not full power (${tapSpeed.toFixed(1)})`);
   if (taps.human.burstTime > 0 || taps.human.burstCooldown > 0) fail('power taps triggered a check');
   if (pulse < 0.5) fail('tap did not pulse the marker');
   if (Math.abs(shotSide(taps.sim)) < 0.4) fail('taps re-aimed and cleared the curve');
@@ -2659,6 +2765,7 @@ export function runRotationChecks(): void {
   checkCatch();
   checkCatchReadyPass();
   checkDeflect();
+  checkKick();
   checkTeammatePassReachesPlayer();
   checkOpponentInterceptsPass();
   checkTackleStillStrips();

@@ -13,6 +13,8 @@ function orEdges(pending: InputIntent, fresh: InputIntent): InputIntent {
     drop: pending.drop || fresh.drop,
     pass: pending.pass || fresh.pass,
     shoot: pending.shoot || fresh.shoot,
+    kick: pending.kick || fresh.kick,
+    burstPower: pending.burstPower || fresh.burstPower,
     aimCancel: pending.aimCancel || fresh.aimCancel,
     burst: pending.burst || fresh.burst,
     resetBall: pending.resetBall || fresh.resetBall,
@@ -29,6 +31,8 @@ function withoutEdges(intent: InputIntent): InputIntent {
     drop: false,
     pass: false,
     shoot: false,
+    kick: false,
+    burstPower: false,
     aimCancel: false,
     burst: false,
     resetBall: false,
@@ -209,22 +213,23 @@ export class Game {
       this.chargeEl.classList.add('visible');
       const pct = Math.round(this.sim.charge.amount * 100);
       this.chargeFill.style.width = `${pct}%`;
-      const shooting = this.sim.charge.kind === 'shoot';
+      const shooting = this.sim.charge.kind === 'shoot' || this.sim.charge.kind === 'kick';
+      const kicking = this.sim.charge.kind === 'kick';
       const dist =
         shooting && this.sim.landingMarker.visible ? Math.round(this.sim.landingMarker.distance) : 0;
       const tapMode = shooting && this.tunables.powerMode === 'tap';
       const mode = this.tunables.powerMode;
       this.syncPips(tapMode ? Math.max(1, readout.tapMax) : 0, readout.taps);
       if (tapMode) {
-        this.chargeLabel.textContent = dist > 0 ? `Tap ${readout.taps}/${readout.tapMax} · ${dist}u` : `Tap ${readout.taps}/${readout.tapMax}`;
+        this.chargeLabel.textContent = dist > 0 ? `${kicking ? 'Kick tap' : 'Tap'} ${readout.taps}/${readout.tapMax} · ${dist}u` : `${kicking ? 'Kick tap' : 'Tap'} ${readout.taps}/${readout.tapMax}`;
       } else if (shooting && mode === 'target') {
         this.chargeLabel.textContent = this.sim.landingMarker.outOfReach ? `Out of reach · ${dist}u` : `Target ${dist}u`;
       } else if (shooting && mode === 'pull') {
         this.chargeLabel.textContent = dist > 0 ? `Pull ${pct} · ${dist}u` : `Pull ${pct}`;
       } else if (shooting && dist > 0) {
-        this.chargeLabel.textContent = `Power ${pct} · ${dist}u`;
+        this.chargeLabel.textContent = `${kicking ? 'Kick' : 'Power'} ${pct} · ${dist}u`;
       } else {
-        this.chargeLabel.textContent = shooting ? `Power ${pct}` : `Pass ${pct}`;
+        this.chargeLabel.textContent = kicking ? `Kick ${pct}` : shooting ? `Power ${pct}` : `Pass ${pct}`;
       }
       this.chargeEl.classList.toggle('shot', shooting);
     } else {

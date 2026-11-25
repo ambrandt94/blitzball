@@ -14,7 +14,7 @@ export type PlayerRole = 'human' | 'ai' | 'stub';
 export type PossessionState = 'free' | 'held';
 
 /** Short pose. `hold` lasts while carrying; the others are timed. */
-export type ActionPose = 'none' | 'claim' | 'hold' | 'pass' | 'shoot' | 'burst';
+export type ActionPose = 'none' | 'claim' | 'hold' | 'pass' | 'shoot' | 'kick' | 'burst';
 
 export interface Tunables {
   goalAxisUp: boolean;
@@ -126,6 +126,20 @@ export interface Tunables {
   shoulderTransition: number;
   /** Seconds to settle into the upright aim tread, and back to the swim. */
   aimPostureBlend: number;
+  /** Kick landing distance relative to a throw of the same power. */
+  kickRange: number;
+  /** Kick flight speed relative to a throw of the same power. */
+  kickSpeed: number;
+  /** How much of the throw's curve a kick keeps. */
+  kickCurve: number;
+  /** Extra seconds after release before the foot meets the ball. */
+  kickWindup: number;
+  /** Half-angle of the first-time volley, in radians off the aim. */
+  volleyCone: number;
+  /** Radians of aim error at full approach speed. */
+  volleySpread: number;
+  /** Scales throw speed. Kicks are measured against this. */
+  throwSpeedScale: number;
   /** Stadium sunbeams. Off hides them; strength scales what is left at the shell. */
   showSunbeams: boolean;
   /** 0 hides the shafts. 1 is the tuned rim brightness. */
@@ -181,6 +195,8 @@ export interface PlayerState {
   selfCatchTime: number;
   /** Seconds left in the shoulder-check hit window. */
   burstTime: number;
+  /** Hold-tackle. A harder knock than a tap. */
+  burstStrong: boolean;
   /** Seconds before another check can start. */
   burstCooldown: number;
   /** 1 when a check just started, decays for the extra bubble puff. */
@@ -254,7 +270,7 @@ export interface MatchState {
 
 export interface ChargeState {
   active: boolean;
-  kind: 'shoot' | 'pass' | null;
+  kind: 'shoot' | 'pass' | 'kick' | null;
   amount: number; // 0..1
 }
 
@@ -270,6 +286,11 @@ export interface InputIntent {
   pass: boolean;
   shoot: boolean;
   shootHeld: boolean;
+  /** F pressed, or gamepad B. A kick while squared up with the ball, otherwise a volley. */
+  kick: boolean;
+  kickHeld: boolean;
+  /** Gamepad RB held long enough for a power tackle. */
+  burstPower: boolean;
   /** Right-click press. Cancels a held throw, including the tap window. */
   aimCancel: boolean;
   /**

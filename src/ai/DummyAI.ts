@@ -38,8 +38,10 @@ export class DummyAI {
       toGoal.normalize();
       intent.move.copy(toGoal);
       intent.up = toGoal.y;
-      // Hesitate before shooting so human can contest
-      if (dist < goalMouthZ() * 0.55 && self.facing.dot(toGoal) > 0.55 && Math.random() < 0.025) {
+      // A long way out, occasionally drop-kick instead of swimming all the way in.
+      if (dist > 28 && self.facing.dot(toGoal) > 0.45 && Math.random() < 0.04) {
+        intent.kick = true;
+      } else if (dist < goalMouthZ() * 0.55 && self.facing.dot(toGoal) > 0.55 && Math.random() < 0.025) {
         intent.shoot = true;
       }
     } else if (ball.possession === 'free') {
@@ -107,6 +109,9 @@ function emptyIntent(): InputIntent {
     pass: false,
     shoot: false,
     shootHeld: false,
+    kick: false,
+    kickHeld: false,
+    burstPower: false,
     aimCancel: false,
     burst: false,
     passHeld: false,

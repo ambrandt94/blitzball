@@ -73,6 +73,7 @@ function makePlayer(
     selfCatchLock: false,
     selfCatchTime: 0,
     burstTime: 0,
+    burstStrong: false,
     burstCooldown: 0,
     burstPuff: 0,
     burstDir: new THREE.Vector3(0, 0, 1),
@@ -99,6 +100,16 @@ export class Simulation {
   ball: BallState;
   match: MatchState;
   charge: ChargeState = { active: false, kind: null, amount: 0 };
+  /** Ball has left the hand and is waiting on the foot. */
+  private kickSwing = {
+    active: false,
+    time: 0,
+    power: 0,
+    playerId: -1,
+    aim: new THREE.Vector3(),
+    bendRight: 0,
+    bendUp: 0,
+  };
   /** Ghost trail samples while charging (beginner aid) or aiming an arc. */
   chargeGhost: THREE.Vector3[] = [];
   /**
@@ -302,6 +313,7 @@ export class Simulation {
         p.selfCatchLock = false;
         p.selfCatchTime = 0;
         p.burstTime = 0;
+        p.burstStrong = false;
         p.burstCooldown = 0;
         p.burstPuff = 0;
         p.checkMask = 0;
@@ -527,6 +539,7 @@ export class Simulation {
     }
 
     if (live) this.updatePossession(human, intent, motion);
+    this.tickKickSwing(motion);
     this.updateBall(motion);
     if (live) {
       this.resolveCatches();
@@ -592,9 +605,14 @@ export class Simulation {
     if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
     if (this.shotBlocked) return;
     if (intent.aimCancel) return;
+    if (this.kickSwing.active) return;
     const human = this.getHuman();
-    if (!human.hasBall || !intent.shootHeld) return;
+    if (!human.hasBall) return;
+    const kick = intent.strafe && intent.kickHeld;
+    const shoot = intent.shootHeld && !kick;
+    if (!kick && !shoot) return;
     if (!this.shotAim.active) this.beginShotAim();
+    this.charge.kind = kick ? 'kick' : 'shoot';
   }
 
   applyFrameLook(intent: InputIntent): void {
@@ -617,7 +635,7 @@ export class Simulation {
         this.shotAim.bendUp += -intent.lookDelta.y * sy * this.tunables.arcBendSpeed;
       }
       this.clampStoredBend();
-      if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
+      if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') this.updateChargeGhost(this.getHuman());
       return;
     }
     this.yaw += intent.lookDelta.x * sx;
@@ -698,11 +716,13 @@ export class Simulation {
 
     // The throw hold keeps the camera locked. WASD still swims, just slowly.
     // shotAim stays active through the release frame.
-    const aimingShot = isHuman && player.hasBall && (intent.shootHeld || this.shotAim.active);
+    const aimingShot =
+      isHuman && player.hasBall && (intent.shootHeld || (this.shotAim.active && this.charge.kind !== 'kick'));
 
+    const tackle = intent.burst || intent.burstPower;
     const canBurst =
       isHuman &&
-      intent.burst &&
+      tackle &&
       !player.hasBall &&
       !player.catchReady &&
       !aimingShot &&
@@ -711,7 +731,7 @@ export class Simulation {
       player.burstCooldown <= 0 &&
       this.kickoffLock <= 0 &&
       this.match.resetTimer <= 0;
-    if (isHuman && player.catchReady && intent.burst && !player.hasBall && !aimingShot) {
+    if (isHuman && player.catchReady && tackle && !player.hasBall && !aimingShot) {
       this.tryDeflect(player);
     } else if (canBurst) {
       const dir = player.burstDir;
@@ -719,7 +739,9 @@ export class Simulation {
       else if (player.facing.lengthSq() > 1e-8) dir.copy(player.facing).normalize();
       else dir.set(0, 0, 1);
       player.checkMask = 0;
-      this.tmp.burstLaunch.copy(dir).multiplyScalar(Math.max(4, this.tunables.burstSpeed));
+      player.burstStrong = intent.burstPower;
+      const power = intent.burstPower ? 1.4 : 1;
+      this.tmp.burstLaunch.copy(dir).multiplyScalar(Math.max(4, this.tunables.burstSpeed) * power);
       player.velocity.lerp(this.tmp.burstLaunch, 0.88);
       player.burstTime = Math.max(0.05, this.tunables.burstDuration);
       player.burstCooldown = Math.max(0.05, this.tunables.burstCooldown);
@@ -843,7 +865,9 @@ export class Simulation {
     if (intent.claim) this.tryClaim(player);
     if (!player.hasBall) return;
     // Dummy AI fires a medium shot without sharing the human charge meter.
-    if (intent.shoot || (!intent.shootHeld && Math.random() < 0.0)) {
+    if (intent.kick) {
+      this.releaseAiKick(player);
+    } else if (intent.shoot || (!intent.shootHeld && Math.random() < 0.0)) {
       this.releaseShot(player, 0.55 + Math.random() * 0.35);
     } else if (intent.pass) {
       this.releasePass(player, 0.55);
@@ -853,10 +877,13 @@ export class Simulation {
   private updatePossession(human: PlayerState, intent: InputIntent, dt: number): void {
     // Charge shoot / pass for human
     if (human.hasBall) {
-      if (intent.aimCancel && this.throwInProgress()) {
-        this.cancelAimedThrow(human, intent.shootHeld);
+      const kickCharge = this.charge.kind === 'kick' && this.throwInProgress() && !this.kickSwing.active;
+      if (kickCharge && !intent.strafe) {
+        this.cancelAimedThrow(human, intent.kickHeld);
+      } else if (intent.aimCancel && this.throwInProgress()) {
+        this.cancelAimedThrow(human, this.charge.kind === 'kick' ? intent.kickHeld : intent.shootHeld);
       } else if (this.shotBlocked) {
-        if (!intent.shootHeld) this.shotBlocked = false;
+        if (!intent.shootHeld && !intent.kickHeld) this.shotBlocked = false;
       } else if (intent.drop) {
         this.clearShotAim();
         const toss = this.lookForward(human);
@@ -864,11 +891,21 @@ export class Simulation {
         this.releaseBall(toss.multiplyScalar(4).add(human.velocity));
         human.reclaimGrace = PLAYER.reclaimCoyote;
         this.match.statusMessage = 'Ball dropped';
+      } else if (
+        !this.shotBlocked &&
+        intent.strafe &&
+        (intent.kickHeld || (this.charge.kind === 'kick' && this.power.capturing()))
+      ) {
+        if (!this.shotAim.active) this.beginShotAim();
+        this.charge.kind = 'kick';
+        this.sustainThrow(human, intent, dt);
+      } else if (this.charge.active && this.charge.kind === 'kick') {
+        this.finishThrowHold(human);
       } else if (intent.shootHeld || this.power.capturing()) {
         this.sustainThrow(human, intent, dt);
       } else if (this.charge.active && this.charge.kind === 'shoot') {
         this.finishThrowHold(human);
-      } else if (intent.passHeld && !intent.shootHeld) {
+      } else if (intent.passHeld && !intent.shootHeld && !intent.strafe) {
         this.charge.active = true;
         this.charge.kind = 'pass';
         this.charge.amount = Math.min(1, this.charge.amount + dt / (BALL.chargeTime * 0.7));
@@ -882,7 +919,8 @@ export class Simulation {
         this.releasePass(human, 0.45);
       }
     } else {
-      if (this.shotAim.active || this.charge.active) this.clearShotAim();
+      if (!this.kickSwing.active && (this.shotAim.active || this.charge.active)) this.clearShotAim();
+      if (intent.kickHeld) this.tryVolley(human);
       // While squared up, E toggles catch-ready instead of grabbing.
       if (intent.claim && !(intent.strafe && !human.hasBall)) this.tryClaim(human);
     }
@@ -1213,7 +1251,11 @@ export class Simulation {
 
   /** A held throw or an open tap window. Right-click drops it without releasing. */
   private throwInProgress(): boolean {
-    return this.shotAim.active || this.power.capturing() || (this.charge.active && this.charge.kind === 'shoot');
+    return (
+      this.shotAim.active ||
+      this.power.capturing() ||
+      (this.charge.active && (this.charge.kind === 'shoot' || this.charge.kind === 'kick'))
+    );
   }
 
   private cancelAimedThrow(human: PlayerState, buttonStillDown: boolean): void {
@@ -1264,27 +1306,31 @@ export class Simulation {
    * Clicks in that window add power. They do not start a check or a new aim.
    */
   private sustainThrow(human: PlayerState, intent: InputIntent, dt: number): void {
+    const kick = this.charge.kind === 'kick';
     if (!this.shotAim.active) this.beginShotAim();
     this.stickBallToHand(human);
     this.acquireTeammate();
     this.charge.active = true;
-    this.charge.kind = 'shoot';
+    this.charge.kind = kick ? 'kick' : 'shoot';
     const tuning = this.powerTuning();
     let fired = false;
+    const edge = kick ? intent.kick : intent.shoot;
+    const held = kick ? intent.kickHeld : intent.shootHeld;
     if (this.power.capturing()) {
-      if (intent.shoot) {
+      if (edge) {
         fired = this.power.tap(tuning);
         this.landingMarker.pulse = 1;
         this.throwReadout.feedback += 1;
       }
       if (!fired) fired = this.power.tick(dt, tuning);
-    } else if (intent.shootHeld) {
+    } else if (held) {
       this.power.hold(dt, tuning);
     }
     this.charge.amount = this.power.amount();
     this.syncThrowReadout();
     if (fired) {
-      this.fireAimedShot(human);
+      if (this.charge.kind === 'kick') this.startKickSwing(human);
+      else this.fireAimedShot(human);
       return;
     }
     // Stay in the hold pose so the ball remains in the palm. The view cocks
@@ -1301,12 +1347,14 @@ export class Simulation {
     const fireNow = this.power.release(this.powerTuning());
     this.charge.amount = this.power.amount();
     this.syncThrowReadout();
+    const kick = this.charge.kind === 'kick';
     if (fireNow) {
-      this.fireAimedShot(human);
+      if (kick) this.startKickSwing(human);
+      else this.fireAimedShot(human);
       return;
     }
     this.charge.active = true;
-    this.charge.kind = 'shoot';
+    this.charge.kind = kick ? 'kick' : 'shoot';
     human.actionPose = 'hold';
     human.actionPoseTime = 0;
     this.refreshShotTarget();
@@ -1420,9 +1468,14 @@ export class Simulation {
   }
 
   /** Landing distance for a power in 0..1, from a short lob out to the aim range. */
+  private kickingDelivery(): boolean {
+    return this.charge.kind === 'kick' || this.kickSwing.active;
+  }
+
   private shotReach(power: number): number {
     const minD = SHOT_ARC.minRange;
-    const maxD = Math.max(minD, this.aimDistance());
+    const range = this.kickingDelivery() ? Math.max(1, this.tunables.kickRange) : 1;
+    const maxD = Math.max(minD, this.aimDistance() * range);
     return THREE.MathUtils.lerp(minD, maxD, THREE.MathUtils.clamp(power, 0, 1));
   }
 
@@ -1441,7 +1494,8 @@ export class Simulation {
   private refreshShotTarget(): void {
     const power = THREE.MathUtils.clamp(this.charge.amount, 0, 1);
     const minD = SHOT_ARC.minRange;
-    const maxD = Math.max(minD, this.aimDistance());
+    const range = this.kickingDelivery() ? Math.max(1, this.tunables.kickRange) : 1;
+    const maxD = Math.max(minD, this.aimDistance() * range);
     this.pointAlongAim(this.landingMarker.minPosition, minD);
     this.pointAlongAim(this.landingMarker.maxPosition, maxD);
     const aimingTarget = this.tunables.powerMode === 'target' && this.shotAim.active;
@@ -1459,7 +1513,10 @@ export class Simulation {
 
   /** A short band from the hand back along the aim. Length follows the pull. */
   private syncPullBand(): void {
-    const show = this.shotAim.active && this.tunables.powerMode === 'pull' && this.charge.kind === 'shoot';
+    const show =
+      this.shotAim.active &&
+      this.tunables.powerMode === 'pull' &&
+      (this.charge.kind === 'shoot' || this.charge.kind === 'kick');
     this.pullBand.visible = show;
     if (!show) return;
     const len = 0.4 + THREE.MathUtils.clamp(this.charge.amount, 0, 1) * 2.2;
@@ -1567,6 +1624,7 @@ export class Simulation {
     // Hand curve and resting height are full on the first frame. Power only
     // adds a small loft on top, so the preview does not ease in from a tall lob.
     const height = Math.max(0, this.tunables.arcHeight + this.tunables.shotPowerAngle * power);
+    const curve = this.kickingDelivery() ? Math.max(0, this.tunables.kickCurve) : 1;
     const basis = this.cameraBasis();
     const p1 = shapedControl(
       new THREE.Vector3(),
@@ -1575,8 +1633,8 @@ export class Simulation {
       basis.right,
       basis.up,
       height,
-      this.shotAim.bendRight,
-      this.shotAim.bendUp,
+      this.shotAim.bendRight * curve,
+      this.shotAim.bendUp * curve,
       this.tunables.arcBendLimit,
       limit,
       this.tunables.arcHandCurve,
@@ -1584,7 +1642,8 @@ export class Simulation {
     const straight = Math.max(0.5, p0.distanceTo(p2));
     const via = p0.distanceTo(p1) + p1.distanceTo(p2);
     const length = Math.max(straight, (straight + via) * 0.5);
-    const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), power);
+    const kickBoost = this.kickingDelivery() ? Math.max(1, this.tunables.kickSpeed) : 1;
+    const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), power) * kickBoost;
     const duration = Math.max(SHOT_ARC.minDuration, length / speed);
 
     let carryLeft = 0;
@@ -1625,6 +1684,129 @@ export class Simulation {
       }
     }
     return aim;
+  }
+
+  /** Drop the ball onto the foot, then launch. The extra beat is the windup. */
+  private startKickSwing(human: PlayerState): void {
+    const power = this.power.amount();
+    this.kickSwing.active = true;
+    this.kickSwing.time = Math.max(0.05, this.tunables.kickWindup);
+    this.kickSwing.power = power;
+    this.kickSwing.playerId = human.id;
+    this.kickSwing.aim.copy(this.lockedAim);
+    this.kickSwing.bendRight = this.shotAim.bendRight;
+    this.kickSwing.bendUp = this.shotAim.bendUp;
+    const drop = human.up.clone().multiplyScalar(-2.4).addScaledVector(human.velocity, 0.15);
+    this.releaseAtHand(human, this.lockedAim);
+    this.noteThrow(human);
+    this.releaseBall(drop);
+    this.ball.claimLock = Math.max(this.ball.claimLock, this.kickSwing.time + 0.25);
+    this.rememberThrow(human, power);
+    this.playPose(human, 'kick', this.kickSwing.time + 0.36);
+    this.clearShotAim();
+    this.match.statusMessage = 'Kick!';
+  }
+
+  private footPoint(player: PlayerState, out: THREE.Vector3): THREE.Vector3 {
+    const forward = player.facing.clone();
+    if (forward.lengthSq() < 1e-8) forward.set(0, 0, 1);
+    else forward.normalize();
+    return out.copy(player.position).addScaledVector(forward, 0.62).addScaledVector(player.up, -0.1);
+  }
+
+  private tickKickSwing(dt: number): void {
+    if (!this.kickSwing.active) return;
+    const player = this.players[this.kickSwing.playerId];
+    if (!player) {
+      this.kickSwing.active = false;
+      return;
+    }
+    const foot = this.footPoint(player, this.tmp.predictPos);
+    const pull = foot.sub(this.ball.position);
+    this.ball.velocity.copy(pull).multiplyScalar(10);
+    this.kickSwing.time -= dt;
+    if (this.kickSwing.time > 0) return;
+    this.launchKick(player);
+  }
+
+  private launchKick(player: PlayerState): void {
+    const power = THREE.MathUtils.clamp(this.kickSwing.power, 0, 1);
+    this.kickSwing.active = false;
+    const foot = this.footPoint(player, this.tmp.predictPos);
+    this.ball.position.copy(foot);
+    this.lockedAim.copy(this.kickSwing.aim);
+    if (this.lockedAim.lengthSq() < 1e-8) this.lockedAim.copy(player.facing);
+    if (this.lockedAim.lengthSq() < 1e-8) this.lockedAim.set(0, 0, 1);
+    this.lockedAim.normalize();
+    this.shotAim.active = true;
+    this.shotAim.lockId = null;
+    this.shotAim.bendRight = this.kickSwing.bendRight;
+    this.shotAim.bendUp = this.kickSwing.bendUp;
+    this.charge.kind = 'kick';
+    this.charge.amount = power;
+    this.pointAlongAim(this.shotAim.target, this.shotReach(power));
+    const arc = this.plannedArc(power);
+    this.ball.arc = {
+      p0: arc.p0,
+      p1: arc.p1,
+      p2: arc.p2,
+      elapsed: 0,
+      duration: arc.duration,
+      receiverId: null,
+      carryLeft: arc.carryLeft,
+      carryDir: arc.carryDir,
+      carrySpeed: arc.carrySpeed,
+    };
+    quadraticVelocity(this.ball.velocity, arc.p0, arc.p1, arc.p2, 0, arc.duration);
+    this.ball.claimLock = BALL.claimCooldown;
+    this.shotAim.active = false;
+    this.shotAim.bendRight = 0;
+    this.shotAim.bendUp = 0;
+    this.charge.kind = null;
+    this.charge.amount = 0;
+    this.match.statusMessage = power > 0.7 ? 'Big kick!' : 'Kick!';
+  }
+
+  /** First-time kick. The ball never becomes yours. Spread grows with how fast you arrive. */
+  private tryVolley(player: PlayerState): void {
+    if (this.ball.possession !== 'free' || this.ball.claimLock > 0 || this.kickSwing.active) return;
+    if (player.selfCatchLock && this.ball.lastOwnerId === player.id) return;
+    const forward = this.lookForward(player);
+    const reach = PLAYER.radius + BALL.radius + 1.35;
+    const cone = Math.max(0.05, this.tunables.volleyCone);
+    if (!inCatchCone(player.position, forward, this.ball.position, reach, cone)) return;
+    const aim = forward.clone();
+    if (aim.lengthSq() < 1e-8) aim.copy(player.facing);
+    if (aim.lengthSq() < 1e-8) aim.set(0, 0, 1);
+    aim.normalize();
+    const approach = player.velocity.length();
+    const spread =
+      Math.max(0, this.tunables.volleySpread) * Math.min(1.4, approach / Math.max(6, this.tunables.playerMaxSpeed));
+    const side = this.tmp.side.copy(player.up).cross(aim);
+    if (side.lengthSq() < 1e-8) side.set(1, 0, 0);
+    else side.normalize();
+    const lift = this.tmp.upHint.copy(aim).cross(side).normalize();
+    aim.addScaledVector(side, Math.sin((Math.random() * 2 - 1) * spread));
+    aim.addScaledVector(lift, Math.sin((Math.random() * 2 - 1) * spread * 0.65));
+    aim.normalize();
+    const speed = Math.max(this.shotSpeedMin() * Math.max(1, this.tunables.kickSpeed) * 0.8, 14);
+    this.ball.arc = null;
+    this.ball.velocity.copy(aim).multiplyScalar(speed).addScaledVector(player.velocity, 0.2);
+    this.ball.claimLock = 0.4;
+    this.playPose(player, 'kick', 0.32);
+    this.match.statusMessage = 'Volley!';
+  }
+
+  /** A long AI shot that leaves the foot instead of the hand. */
+  private releaseAiKick(player: PlayerState): void {
+    const aim = this.getAimDirection(player, false);
+    this.footPoint(player, this.ball.position);
+    const speed = this.shotSpeedMax() * Math.max(1, this.tunables.kickSpeed) * 0.9;
+    this.noteThrow(player);
+    this.releaseBall(aim.clone().multiplyScalar(speed).addScaledVector(player.velocity, 0.2));
+    this.rememberThrow(player, 0.9);
+    this.playPose(player, 'kick', 0.42);
+    this.match.statusMessage = 'Kick!';
   }
 
   private releaseShot(player: PlayerState, charge: number): void {
@@ -2155,7 +2337,7 @@ export class Simulation {
 
   private applyCheck(checker: PlayerState, target: PlayerState, dir: THREE.Vector3): void {
     checker.checkMask |= 1 << target.id;
-    target.velocity.copy(dir).multiplyScalar(PLAYER.checkKnock);
+    target.velocity.copy(dir).multiplyScalar(PLAYER.checkKnock * (checker.burstStrong ? 1.45 : 1));
     target.knockTime = PLAYER.checkKnockTime;
     target.staggerTime = PLAYER.checkStagger;
     target.hitFlash = 1;
@@ -2271,11 +2453,13 @@ export class Simulation {
   }
 
   private shotSpeedMin(): number {
-    return Math.max(4, Math.min(this.tunables.shootSpeedMin, this.tunables.shootSpeedMax));
+    const scale = Math.max(0.2, this.tunables.throwSpeedScale);
+    return Math.max(4, Math.min(this.tunables.shootSpeedMin, this.tunables.shootSpeedMax)) * scale;
   }
 
   private shotSpeedMax(): number {
-    return Math.max(this.shotSpeedMin(), this.tunables.shootSpeedMax);
+    const scale = Math.max(0.2, this.tunables.throwSpeedScale);
+    return Math.max(this.shotSpeedMin(), this.tunables.shootSpeedMax * scale);
   }
 
   /** Loose ball: hide while held. Arc flights point at the end of the curve. */

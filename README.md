@@ -23,20 +23,20 @@ npm run preview  # serve the build
 | Action | Keyboard | Gamepad (sketch) |
 |--------|----------|------------------|
 | Swim (camera-relative, including when pitched) | `WASD` | Left stick |
-| Up / down along the camera | `Space` / `C` | RB / LT |
+| Up / down along the camera | `Space` / `C` | D-pad up / down |
 | Look (right looks right, up looks up) | Mouse | Right stick |
 | Sprint | `Shift` | Left stick click |
-| Claim / tackle (along look). While squared up with empty hands, toggles catch-ready | `E` | A |
-| Drop (along look) | `Q` | B |
-| Pass (tap, or hold to charge) | `F` | X |
-| Square up: upright tread, slowed swim, with or without the ball. With the ball, the landing marker sits on the straight throw and no curve is shown | Hold RMB | Y |
-| Shoulder check along your swim, or your facing if you are not steering (only when you do not have the ball). Knocks any swimmer back, staggers them, and pops a held ball loose. While catch-ready, this click deflects a nearby ball along your aim and does not catch it | LMB | — |
+| Claim (along look). While squared up with empty hands, toggles catch-ready | `E` | A or X |
+| Drop (along look) | `Q` | Y |
+| Pass (tap, or hold to charge). Squared up with the ball: hold to drop-kick. Empty hands: hold and meet the ball to volley | `F` | B |
+| Square up: upright tread, slowed swim, with or without the ball. With the ball, the landing marker sits on the straight throw and no curve is shown | Hold RMB | LT |
+| Shoulder check along your swim, or your facing if you are not steering (only when you do not have the ball). Knocks any swimmer back, staggers them, and pops a held ball loose. While catch-ready, this click deflects a nearby ball along your aim and does not catch it. A hold is a power tackle | LMB | RB (tap light, hold power) |
 | Throw an arc. The aim direction locks to you, the ball stays in the hand, and the marker slides with power. Meter and Hold throw on release. Tap waits for extra clicks | Hold LMB while carrying | RT |
-| While throwing: creep (about 30% speed). The trajectory and the marker move with you | `WASD` and `Space` / `C` | Left stick, RB / LT |
+| While throwing: creep (about 30% speed). The trajectory and the marker move with you | `WASD` and `Space` / `C` | Left stick, d-pad |
 | Bend the arc, while throwing. Meter, Hold, and Tap: both mouse axes bend. Target and Pull: horizontal bends, vertical sets distance or pull | Mouse | Right stick |
 | Full-power reach, while throwing. The wheel sets how far a full-power shot lands. In Target mode the wheel slides the landing spot instead | Mouse wheel | — |
 | Power mode: Meter, Tap, Hold, Target (aim the landing spot), or Pull (drag back to charge). Saved in the browser | Dev panel, Power mode | — |
-| Cancel a throw, including the Tap window. The ball stays in the hand and letting go of LMB does not fire | `RMB` while the throw is held | — |
+| Cancel a throw, including the Tap window, or a kick that is still charging. The ball stays in the hand and letting go of the trigger does not fire | `RMB` while the throw or kick is held | Release LT (a charging kick) |
 | Throw the arc to a teammate | Put the landing marker on them, then hold LMB and release | — |
 | Wide / overview camera | Middle mouse toggles. `V` still zooms (hold, or toggle when Dev says so) | LB |
 | Call for a pass | `G` | — |
@@ -44,7 +44,7 @@ npm run preview  # serve the build
 | Dev panel | `` ` `` | — |
 | Release mouse | `Esc` | — |
 
-Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. The click that captures the pointer does not shoot and does not shoulder-check. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or gamepad Y) to aim: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. With the ball, that aim is the mouse only. The landing marker sits on the straight throw, along the look at **Arc aim distance**, or on a teammate that ray meets. It stays inside the shell. `WASD` does not move it, and right-click does not show the throw curve. The camera eases onto the shoulder on the side of a held ball (the right shoulder when the ball is centered in front). **Shoulder offset** is how far it slides, **Shoulder transition** is how quickly, and both ease in and out without a snap. Without the ball, the same hold squares you up (upright tread, camera centered) and hides the landing marker. `E` then toggles catch-ready: both hands reach toward the ball, a pass inside the cone is caught, and a shot faster than **Fumble speed** can pop loose. A ring marks catch-ready. Letting go of right-click leaves the stance. **Catch radius**, **Catch cone**, **Fumble speed**, and **Deflect strength** are on the dev panel. The rig stays inside the sphere. Right-click does not open the browser menu.
+Look axes are standard pointer-lock: mouse-right looks right, mouse-up looks up. The Dev panel can invert each axis (`Invert mouse look X` / `Y`) without resetting the camera. The click that captures the pointer does not shoot and does not shoulder-check. Passes, claim, and drop use the camera look direction. The body turns toward swim velocity, and eases back to the look when you are nearly still. Hold right mouse (or LT) to square up: the body stays on the camera aim, movement stays relative to that aim, and swim speed drops by **Strafe speed** on the dev panel. With the ball, that aim is the mouse only. The landing marker sits on the straight throw, along the look at **Arc aim distance**, or on a teammate that ray meets. It stays inside the shell. `WASD` does not move it, and right-click does not show the throw curve. The camera eases onto the shoulder on the side of a held ball (the right shoulder when the ball is centered in front). **Shoulder offset** is how far it slides, **Shoulder transition** is how quickly, and both ease in and out without a snap. Without the ball, the same hold squares you up (upright tread, camera centered) and hides the landing marker. `E` then toggles catch-ready: both hands reach toward the ball, a pass inside the cone is caught, and a shot faster than **Fumble speed** can pop loose. A ring marks catch-ready. Letting go of right-click leaves the stance, and cancels a kick that is still charging. With the ball, hold `F` instead of left-click to drop-kick: the same marker, curve, and power mode, then the ball drops and leaves the foot. A kick goes about 25% farther and faster than a throw and bends about half as much. Hold `F` with empty hands and swim into a loose ball to volley it along your aim; you never catch it, and a faster arrival sprays wider. **Catch radius**, **Catch cone**, **Fumble speed**, **Deflect strength**, and the Kick section (**Kick range**, **Kick speed**, **Kick curve**, **Kick windup**, **Volley cone**, **Volley spread**, **Throw speed scale**) are on the dev panel. The rig stays inside the sphere. Right-click does not open the browser menu.
 
 Cruise and sprint are slower than the first greybox so a trip across the sphere stays readable. Acceleration and turn rate stay snappy. Passes and shots are a little slower too. **Cruise speed**, **Sprint mult**, **Pass speed**, **Shot speed min / max**, **Check speed**, **Check window**, and **Check cooldown** are on the dev panel.
 

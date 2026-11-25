@@ -542,6 +542,9 @@ export class SceneView {
       pass: false,
       shoot: false,
       shootHeld: false,
+      kick: false,
+      kickHeld: false,
+      burstPower: false,
       aimCancel: false,
       burst: false,
       passHeld: false,
@@ -1143,8 +1146,18 @@ export class SceneView {
 
     armL.rotation.set(0, yL, zL);
     armR.rotation.set(0, yR, zR);
-    legL.rotation.set(xLegL, 0, 0);
-    legR.rotation.set(xLegR, 0, 0);
+    let kick = 0;
+    if (pose === 'kick') {
+      const duration = Math.max(0.05, player.actionPoseDuration);
+      const t = 1 - THREE.MathUtils.clamp(player.actionPoseTime / duration, 0, 1);
+      kick = t < 0.45 ? THREE.MathUtils.lerp(-1.1, 1.2, t / 0.45) : THREE.MathUtils.lerp(1.2, 0.15, (t - 0.45) / 0.55);
+    } else if (sim.charge.kind === 'kick') {
+      kick = -0.9 * sim.charge.amount;
+    }
+    const kickLeg = player.throwArm === 'left' ? legL : legR;
+    const plant = player.throwArm === 'left' ? legR : legL;
+    kickLeg.rotation.set(xLegR + kick, 0, 0);
+    plant.rotation.set((player.throwArm === 'left' ? xLegL : xLegR) - kick * 0.25, 0, 0);
   }
 
   render(): void {

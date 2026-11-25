@@ -63,6 +63,9 @@ export interface SwimmerRig {
   upperR: THREE.Bone;
   lowerR: THREE.Bone;
   handR: THREE.Bone;
+  hips: THREE.Bone | null;
+  thighL: THREE.Bone | null;
+  thighR: THREE.Bone | null;
   lenUpperL: number;
   lenLowerL: number;
   lenUpperR: number;
@@ -99,7 +102,7 @@ export interface AimPostureInput {
  */
 export function wantsAimPosture(input: AimPostureInput): boolean {
   if (input.burst) return false;
-  if (input.throwing || input.catchReady) return true;
+  if (input.throwing || input.catchReady || input.pose === 'kick') return true;
   if (input.human) return input.strafing;
   return input.hasBall && (input.pose === 'hold' || input.pose === 'pass' || input.pose === 'shoot');
 }
@@ -228,6 +231,12 @@ export function prepareSwimmerTemplate(
   return { scene, swim, tread };
 }
 
+function findBone(root: THREE.Object3D, name: string): THREE.Bone | null {
+  const found = root.getObjectByName(name);
+  if (!found || !(found as THREE.Bone).isBone) return null;
+  return found as THREE.Bone;
+}
+
 function requireBone(root: THREE.Object3D, name: string): THREE.Bone {
   const found = root.getObjectByName(name);
   if (!found || !(found as THREE.Bone).isBone) {
@@ -326,6 +335,9 @@ export function attachSwimmerModel(
       upperR,
       lowerR,
       handR,
+      hips: findBone(wrapper, 'Hips') ?? findBone(wrapper, 'Pelvis'),
+      thighL: findBone(wrapper, 'Thigh_L'),
+      thighR: findBone(wrapper, 'Thigh_R'),
       lenUpperL: lowerL.position.length(),
       lenLowerL: handL.position.length(),
       lenUpperR: lowerR.position.length(),
@@ -449,6 +461,38 @@ function fillGoal(player: PlayerState, _sim: Simulation, swimWeight: number, cat
   // Tread is upright and the carry point is in front of the hips. Lean the spine
   // toward it. Swim is already horizontal around Trans, so this lean fades out.
   goal.lean = (0.28 * reach + 0.42 * hold) * upright;
+}
+
+const _kickAxis = new THREE.Vector3(1, 0, 0);
+const _kickQ = new THREE.Quaternion();
+
+/** Cock the throwing-side thigh, then swing it through as the ball leaves the foot. */
+function poseKick(rig: SwimmerRig, player: PlayerState, sim: Simulation): void {
+  const thigh = player.throwArm === 'left' ? rig.thighL : rig.thighR;
+  if (!thigh) return;
+  const charging = sim.charge.kind === 'kick' && sim.charge.active;
+  const swinging = player.actionPose === 'kick';
+  if (!charging && !swinging) return;
+  const power = swinging ? player.throwPosePower : sim.charge.amount;
+  let angle: number;
+  if (swinging) {
+    const duration = Math.max(0.05, player.actionPoseDuration);
+    const t = 1 - THREE.MathUtils.clamp(player.actionPoseTime / duration, 0, 1);
+    const cock = -1.05 * Math.max(0.35, power);
+    const through = 1.15 * Math.max(0.45, power);
+    angle =
+      t < 0.45
+        ? THREE.MathUtils.lerp(cock, through, t / 0.45)
+        : THREE.MathUtils.lerp(through, 0.2, (t - 0.45) / 0.55);
+  } else {
+    angle = -0.9 * THREE.MathUtils.clamp(power, 0, 1);
+  }
+  _kickQ.setFromAxisAngle(_kickAxis, angle);
+  thigh.quaternion.multiply(_kickQ);
+  if (rig.hips) {
+    _kickQ.setFromAxisAngle(_kickAxis, angle * 0.16);
+    rig.hips.quaternion.multiply(_kickQ);
+  }
 }
 
 /**
@@ -615,6 +659,7 @@ export function updateSwimmerRig(
   const treadRate = amount > 0 ? 1 : 0;
   rig.tread.setEffectiveTimeScale(THREE.MathUtils.lerp(treadRate, 1.15, rig.aimPosture));
   rig.mixer.update(dt);
+  poseKick(rig, player, sim);
 
   const up = authoritativeUp(tun.goalAxisUp);
   rig.model.rotation.set(aimPosturePitch(player.facing.dot(up), rig.aimPosture), 0, 0);
