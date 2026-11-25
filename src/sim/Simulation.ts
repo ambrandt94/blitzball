@@ -6,17 +6,20 @@ import {
   CAMERA,
   MATCH,
   PLAYER,
+  ROSTER,
   SHOT_ARC,
   setArenaRadius,
 } from '../game/constants';
 import type {
   ActionPose,
   BallState,
+  BotBehavior,
   ChargeState,
   InputIntent,
   LandingMarkerState,
   MatchState,
   PlayerState,
+  RosterSpec,
   Tunables,
 } from '../game/types';
 import { createPowerStrategy, type PowerStrategy, type PowerTuning } from './shotPower';
@@ -61,6 +64,7 @@ function makePlayer(
     id,
     team,
     role,
+    aiBehavior: 'normal',
     position: pos,
     velocity: new THREE.Vector3(),
     facing,
@@ -209,6 +213,8 @@ export class Simulation {
   goalTeam: 0 | 1 | null = null;
   /** Tracks the test-opponent toggle so the roster is parked once per change. */
   private soloApplied = false;
+  /** Set once the roster UI edits bots. The solo toggle no longer overwrites them. */
+  private manualRoster = false;
   private ai: DummyAI;
   private teammate: TeammateAI;
   private tmp = {
@@ -285,14 +291,7 @@ export class Simulation {
     } else {
       for (const p of this.players) {
         if (!p.active) continue;
-        const zSign = p.team === 0 ? -1 : 1;
-        const z = zSign * MATCH.kickoffSeparation;
-        const side = p.id === this.humanId ? 0 : p.team === 0 ? -MATCH.kickoffSeparation * 0.85 : 0;
-        const lift = p.team === 0 && p.id !== this.humanId ? 1.5 : 0;
-        p.position.set(side, lift, z + (p.id === this.humanId ? 0 : zSign * MATCH.kickoffSeparation * 0.4));
-        p.velocity.set(0, 0, 0);
-        p.facing.set(0, 0, p.team === 0 ? 1 : -1);
-        p.up.copy(authoritativeUp(this.tunables.goalAxisUp));
+        this.placeOnSide(p);
         p.hasBall = false;
         p.tackleCooldown = 0;
         p.reclaimGrace = 0;
@@ -355,12 +354,202 @@ export class Simulation {
 
   /** Dev toggle. Parks every AI but one slow enemy, or restores the practice pair. */
   setSoloOpponent(on: boolean): void {
+    this.manualRoster = false;
     this.tunables.soloOpponent = on;
     this.soloApplied = !on;
     this.syncSoloRoster();
   }
 
+  maxSwimmers(): number {
+    return ROSTER.maxSwimmers;
+  }
+
+  /** Active swimmers on a side, including the human. */
+  swimmerCount(team: 0 | 1): number {
+    return this.players.filter((p) => p.team === team && p.active && p.role !== 'stub').length;
+  }
+
+  /** Bots currently on the field. The default drill reports the away bot as a test chaser. */
+  exportRoster(): RosterSpec {
+    const side = (team: 0 | 1): BotBehavior[] =>
+      this.players
+        .filter((p) => p.active && p.role === 'ai' && p.team === team)
+        .sort((a, b) => a.id - b.id)
+        .map((p) => this.behaviorOf(p));
+    return { home: side(0), away: side(1) };
+  }
+
+  listBots(): { id: number; team: 0 | 1; behavior: BotBehavior; name: string }[] {
+    const out: { id: number; team: 0 | 1; behavior: BotBehavior; name: string }[] = [];
+    for (const team of [0, 1] as const) {
+      const bots = this.players
+        .filter((p) => p.active && p.role === 'ai' && p.team === team)
+        .sort((a, b) => a.id - b.id);
+      bots.forEach((p, index) => {
+        out.push({ id: p.id, team, behavior: this.behaviorOf(p), name: `Bot ${index + 1}` });
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Spawn one bot on `team`. Reuses an inactive slot before growing the list.
+   * Returns false at the six-swimmer cap.
+   */
+  addBot(team: 0 | 1, behavior: BotBehavior = 'normal'): boolean {
+    if (behavior !== 'normal' && behavior !== 'chaser') return false;
+    if (this.swimmerCount(team) >= ROSTER.maxSwimmers) return false;
+    this.adoptManualRoster();
+    const slot = this.players.find((p) => p.team === team && p.role !== 'human' && !p.active);
+    if (slot) {
+      this.wakeBot(slot, behavior);
+      return true;
+    }
+    const id = this.players.length;
+    const created = makePlayer(id, team, 'ai', new THREE.Vector3(), false);
+    this.players.push(created);
+    this.wakeBot(created, behavior);
+    return true;
+  }
+
+  /**
+   * Despawn one bot. A ball they are holding is left loose where it is.
+   * The human cannot be removed.
+   */
+  removeBot(id: number): boolean {
+    const player = this.players.find((p) => p.id === id);
+    if (!player || player.role !== 'ai' || !player.active) return false;
+    this.adoptManualRoster();
+    this.benchBot(player);
+    return true;
+  }
+
+  setBotBehavior(id: number, behavior: BotBehavior): void {
+    if (behavior !== 'normal' && behavior !== 'chaser') return;
+    const player = this.players.find((p) => p.id === id && p.role === 'ai' && p.active);
+    if (!player) return;
+    this.adoptManualRoster();
+    player.aiBehavior = behavior;
+  }
+
+  /** Replace the on-field bots. Used when a saved roster loads. */
+  applyRoster(spec: RosterSpec): void {
+    this.manualRoster = true;
+    for (const p of this.players) {
+      if (p.role === 'human') continue;
+      if (p.active || p.hasBall || this.ball.ownerId === p.id) this.benchBot(p);
+    }
+    for (const behavior of spec.home) {
+      if (!this.addBot(0, behavior)) break;
+    }
+    for (const behavior of spec.away) {
+      if (!this.addBot(1, behavior)) break;
+    }
+  }
+
+  private behaviorOf(player: PlayerState): BotBehavior {
+    if (
+      !this.manualRoster &&
+      this.tunables.soloOpponent &&
+      player.team !== this.getHuman().team &&
+      player.role === 'ai'
+    ) {
+      return 'chaser';
+    }
+    return player.aiBehavior === 'chaser' ? 'chaser' : 'normal';
+  }
+
+  /** Keep the current field, then stop the solo toggle from parking or waking bots. */
+  private adoptManualRoster(): void {
+    if (this.manualRoster) return;
+    for (const p of this.players) {
+      if (p.role !== 'ai' || !p.active) continue;
+      p.aiBehavior = this.behaviorOf(p);
+    }
+    this.manualRoster = true;
+  }
+
+  private wakeBot(player: PlayerState, behavior: BotBehavior): void {
+    player.role = 'ai';
+    player.aiBehavior = behavior;
+    player.active = true;
+    player.hasBall = false;
+    player.sprinting = false;
+    player.tackleCooldown = 0;
+    player.reclaimGrace = 0;
+    player.selfCatchLock = false;
+    player.selfCatchTime = 0;
+    player.burstTime = 0;
+    player.burstCooldown = 0;
+    player.burstPuff = 0;
+    player.checkMask = 0;
+    player.knockTime = 0;
+    player.staggerTime = 0;
+    player.hitFlash = 0;
+    player.hitBurst = 0;
+    player.catchStance = false;
+    player.actionPose = 'none';
+    player.actionPoseTime = 0;
+    player.actionPoseDuration = 0;
+    player.throwPosePower = 0;
+    player.throwCurveRight = 0;
+    player.throwCurveUp = 0;
+    this.placeOnSide(player);
+  }
+
+  private benchBot(player: PlayerState): void {
+    if (this.ball.possession === 'held' && this.ball.ownerId === player.id) this.releaseBall();
+    if (this.ball.arc?.receiverId === player.id) this.ball.arc.receiverId = null;
+    if (this.shotAim.lockId === player.id) this.shotAim.lockId = null;
+    this.carryPalm.delete(player.id);
+    player.active = false;
+    player.hasBall = false;
+    player.sprinting = false;
+    player.velocity.set(0, 0, 0);
+    player.burstTime = 0;
+    player.burstCooldown = 0;
+    player.burstPuff = 0;
+    player.checkMask = 0;
+    player.knockTime = 0;
+    player.staggerTime = 0;
+    player.hitFlash = 0;
+    player.hitBurst = 0;
+    player.catchStance = false;
+    player.actionPose = 'none';
+    player.actionPoseTime = 0;
+    player.actionPoseDuration = 0;
+    player.throwPosePower = 0;
+    player.throwCurveRight = 0;
+    player.throwCurveUp = 0;
+  }
+
+  /** Line the side up on its half so a new bot does not pop out of another swimmer. */
+  private placeOnSide(player: PlayerState): void {
+    const sep = MATCH.kickoffSeparation * (ARENA_RADIUS / ARENA_REFERENCE);
+    const zSign = player.team === 0 ? -1 : 1;
+    if (player.role === 'human') {
+      player.position.set(0, 0, zSign * sep);
+    } else {
+      const mates = this.players
+        .filter((p) => p.team === player.team && p.active && p.role === 'ai')
+        .sort((a, b) => a.id - b.id);
+      const index = Math.max(0, mates.findIndex((p) => p.id === player.id));
+      const col = index % 3;
+      const row = Math.floor(index / 3);
+      player.position.set(
+        (col - 1) * sep * 0.42,
+        (row === 0 ? 1 : -1) * (1.2 + row),
+        zSign * (sep * 0.95 + row * sep * 0.22),
+      );
+    }
+    player.velocity.set(0, 0, 0);
+    player.facing.set(0, 0, player.team === 0 ? 1 : -1);
+    player.up.copy(authoritativeUp(this.tunables.goalAxisUp));
+    constrainPlayerToSphere(player.position, player.velocity, PLAYER.radius);
+  }
+
   private syncSoloRoster(): void {
+    if (this.manualRoster) return;
     const on = this.tunables.soloOpponent;
     if (on === this.soloApplied) return;
     this.soloApplied = on;
@@ -484,7 +673,8 @@ export class Simulation {
     for (const p of this.players) {
       if (!p.active || p.role !== 'ai') continue;
       const onDefense = p.team !== human.team;
-      if (onDefense && this.tunables.soloOpponent) {
+      const chaser = this.manualRoster ? p.aiBehavior === 'chaser' : onDefense && this.tunables.soloOpponent;
+      if (chaser) {
         if (!live) {
           p.velocity.multiplyScalar(0.9);
           continue;

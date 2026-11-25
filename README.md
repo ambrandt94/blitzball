@@ -91,10 +91,10 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 - Beginner charge ghost trail
 - Sphere wall banks. A hit reflects off the glass with a little speed lost and the curve kept. Close to the shell the water ripples, glows, and throws bubbles and a splash ring. A hard straight shot breaches: the ball arcs out through a spray, then a throw-in brings it back from that spot. It does not vanish.
 - The triangular frame is solid. A clip or an outside hit bounces off the post; only the opening scores. A goal lights the frame, bursts bubbles, holds a GOAL banner, and leaves the ball settling in the net before kickoff.
-- **Test opponent** (on by default): one orange swimmer slowly chases the ball, well under cruise speed. With the ball they wander and never pass or shoot, so a shoulder check can pop it loose. The teammate and any other enemy stay parked. Turn the toggle off to restore practice.
-- Practice, with the test opponent off: one green-ring teammate who gets open, receives a pass, and passes back after **Teammate pass delay** or when you press `G`. The orange defender holds position unless **Defense chases** is on.
-- **3v3 scaffolding**: six roster slots (human + teammate + one defender active; three stubs inactive)
-- Dev toggles: goal-axis vs world-up, V/LB zoom hold vs toggle, invert look X/Y, test opponent, arena radius, sunbeams and sunbeam strength, shoulder offset / transition, arc hand curve, power mode (meter / tap / hold / target / pull, saved in the browser) with fill rate, tap window, max taps, and power angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs
+- **Team roster** (its own card on the dev panel, saved in the browser): add or remove bots on home and away. Each side holds at most six swimmers, and you count on home, so home can field five bots. Zero bots is allowed. Each bot is **Normal AI** or a **Test chaser**. A test chaser slowly chases the ball and then wanders with it — they never pass or shoot. Removing a bot who is carrying drops the ball loose. The default roster is no home bots and one away test chaser. The old single test-opponent toggle is this per-bot behavior.
+- **Normal AI**: a home bot gets open, receives a pass, and passes back after **Teammate pass delay** or when you press `G`. An away bot holds position unless **Normal defense chases** is on.
+- Rosters grow up to six a side. Spare slots start inactive and wake when you add a bot.
+- Dev panel sections (Throwing / Power, Movement, Camera, Arena, Ball / Physics, Teams, Visual / Debug) collapse from their headers, and that state is saved in the browser. Toggles and sliders: goal-axis vs world-up, V/LB zoom hold vs toggle, invert look X/Y, arena radius, sunbeams and sunbeam strength, shoulder offset / transition, arc hand curve, power mode (meter / tap / hold / target / pull, saved in the browser) with fill rate, tap window, max taps, and power angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs, and the team roster.
 
 ## Not in Phase 0
 
@@ -103,7 +103,7 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 - Ripped Final Fantasy models (the ball and swimmers are original procedural meshes)
 - Mobile touch
 - Win-condition settings UI (score-to-N vs timed)
-- Full 3v3 roles and keepers (one practice teammate only; other slots stay stubs)
+- Full 3v3 roles and keepers (bots are normal teammates, normal defense, or test chasers)
 - Remappable inputs UI (constants are tunable in code / Dev panel)
 
 ## Project layout

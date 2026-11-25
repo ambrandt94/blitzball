@@ -7,6 +7,15 @@ export type PowerMode = 'meter' | 'tap' | 'hold' | 'target' | 'pull';
 
 export type PlayerRole = 'human' | 'ai' | 'stub';
 
+/** `chaser` is the slow test opponent. `normal` uses teammate or defense AI. */
+export type BotBehavior = 'normal' | 'chaser';
+
+/** Active bots on each side, in slot order. Home does not include the human. */
+export interface RosterSpec {
+  home: BotBehavior[];
+  away: BotBehavior[];
+}
+
 export type PossessionState = 'free' | 'held';
 
 /** Short pose. `hold` lasts while carrying; the others are timed. */
@@ -140,6 +149,8 @@ export interface PlayerState {
   id: number;
   team: TeamId;
   role: PlayerRole;
+  /** `chaser` drifts after the ball and never passes or shoots. */
+  aiBehavior: BotBehavior;
   position: THREE.Vector3;
   velocity: THREE.Vector3;
   /** Forward facing (normalized). */

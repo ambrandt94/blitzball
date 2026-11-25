@@ -73,13 +73,27 @@ export class Game {
     this.view = new SceneView(this.canvas);
     this.input = new InputManager(this.canvas);
     this.sim = new Simulation(this.tunables);
-    this.dev = new DevPanel(document.getElementById('dev-panel')!, this.tunables, (key) => {
-      if (key === 'goalAxisUp') this.sim.orientAfterUpToggle();
-      if (key === 'arenaRadius') {
-        this.sim.resizeArena(this.tunables.arenaRadius);
-        this.view.rebuildArena();
-      }
-    });
+    this.dev = new DevPanel(
+      document.getElementById('dev-panel')!,
+      this.tunables,
+      (key) => {
+        if (key === 'goalAxisUp') this.sim.orientAfterUpToggle();
+        if (key === 'arenaRadius') {
+          this.sim.resizeArena(this.tunables.arenaRadius);
+          this.view.rebuildArena();
+        }
+      },
+      {
+        listBots: () => this.sim.listBots(),
+        swimmerCount: (team) => this.sim.swimmerCount(team),
+        maxSwimmers: () => this.sim.maxSwimmers(),
+        addBot: (team, behavior) => this.sim.addBot(team, behavior),
+        removeBot: (id) => this.sim.removeBot(id),
+        setBotBehavior: (id, behavior) => this.sim.setBotBehavior(id, behavior),
+        applyRoster: (spec) => this.sim.applyRoster(spec),
+        exportRoster: () => this.sim.exportRoster(),
+      },
+    );
 
     this.scoreA = document.getElementById('score-a')!;
     this.scoreB = document.getElementById('score-b')!;
@@ -229,11 +243,17 @@ export class Game {
           ? `landing ${this.sim.landingMarker.lockId !== null ? 'mate' : 'free'}`
           : 'landing off',
         this.sim.catchStance ? 'catch reach' : 'catch off',
-        this.tunables.soloOpponent
-          ? 'test opponent'
-          : `mate + ${this.tunables.defenseActive ? 'defense chases' : 'defense holds'}`,
+        this.rosterLine(),
       ].join('\n');
     }
+  }
+
+  private rosterLine(): string {
+    const roster = this.sim.exportRoster();
+    const chasers = [...roster.home, ...roster.away].filter((behavior) => behavior === 'chaser').length;
+    const chase = chasers === 0 ? '' : chasers === 1 ? ' · 1 chaser' : ` · ${chasers} chasers`;
+    const defense = this.tunables.defenseActive ? ' · defense chases' : '';
+    return `roster home ${roster.home.length} · away ${roster.away.length}${chase}${defense}`;
   }
 
   private syncPips(count: number, filled: number): void {

@@ -3,13 +3,14 @@
  *   npx tsx src/sim/rotationCheck.ts
  */
 import * as THREE from 'three';
-import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, SHOT_ARC, setArenaRadius } from '../game/constants';
+import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, ROSTER, SHOT_ARC, setArenaRadius } from '../game/constants';
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
 import { defaultTunables } from '../ui/DevPanel';
+import { parseRoster } from '../ui/rosterStorage';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
 import { lookBasis, rotateToward, stabilizeUp } from './math';
@@ -2477,6 +2478,128 @@ function checkAimPowerModes(): void {
   if (!taps.human.hasBall) fail('a cancelled tap window threw when it would have closed');
 }
 
+function checkRosterEdit(): void {
+  const saved = parseRoster(JSON.stringify({ home: ['normal'], away: ['chaser', 'normal'] }));
+  if (!saved || saved.home.join() !== 'normal' || saved.away.join() !== 'chaser,normal') {
+    fail('roster save did not round-trip');
+  }
+  if (parseRoster('nope') !== null) fail('broken roster JSON was accepted');
+  if (parseRoster(null) !== null) fail('missing roster was accepted');
+  if (parseRoster(JSON.stringify({ home: ['fly'], away: [] })) !== null) fail('unknown bot behavior was accepted');
+  const clipped = parseRoster(JSON.stringify({ home: Array(8).fill('normal'), away: Array(9).fill('chaser') }));
+  if (!clipped || clipped.home.length !== ROSTER.maxSwimmers - 1 || clipped.away.length !== ROSTER.maxSwimmers) {
+    fail('roster save ignored the six-swimmer cap');
+  }
+
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  const initial = sim.exportRoster();
+  if (initial.home.length !== 0 || initial.away.length !== 1 || initial.away[0] !== 'chaser') {
+    fail(`default roster was home ${initial.home.join()} away ${initial.away.join()}`);
+  }
+  if (!sim.addBot(0, 'normal')) fail('could not add a home bot');
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  if (!mate) fail('home bot did not spawn');
+  for (let i = 0; i < 30; i++) sim.step(1 / 60, blankIntent());
+  if (!mate.active) fail('added bot was parked again');
+  if (sim.exportRoster().away[0] !== 'chaser') fail('adding a teammate cleared the test chaser');
+
+  let guard = 0;
+  while (sim.addBot(0, 'normal') && guard < 12) guard++;
+  if (sim.exportRoster().home.length !== ROSTER.maxSwimmers - 1) {
+    fail(`home roster is ${sim.exportRoster().home.length}, expected ${ROSTER.maxSwimmers - 1}`);
+  }
+  if (sim.swimmerCount(0) !== ROSTER.maxSwimmers) fail('home side exceeded six swimmers');
+  if (sim.addBot(0, 'chaser')) fail('home accepted another bot past six swimmers');
+
+  guard = 0;
+  while (sim.addBot(1, 'normal') && guard < 12) guard++;
+  if (sim.exportRoster().away.length !== ROSTER.maxSwimmers) {
+    fail(`away roster is ${sim.exportRoster().away.length}, expected ${ROSTER.maxSwimmers}`);
+  }
+  if (sim.addBot(1, 'normal')) fail('away accepted a seventh bot');
+
+  if (sim.removeBot(sim.humanId)) fail('the human was removed');
+  if (sim.removeBot(9999)) fail('a missing bot was removed');
+
+  const human = sim.getHuman();
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  const bystander = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  if (!bystander || !sim.removeBot(bystander.id)) fail('could not remove a home bot');
+  if (bystander.active) fail('removed bot stayed on the field');
+  if (sim.ball.ownerId !== human.id || sim.ball.possession !== 'held') fail('removing a bot stole the human ball');
+
+  const carrier = sim.players.find((p) => p.team === 1 && p.role === 'ai' && p.active);
+  if (!carrier) fail('away roster was empty');
+  const spot = carrier.position.clone();
+  carrier.hasBall = true;
+  human.hasBall = false;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = carrier.id;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(spot);
+  if (!sim.removeBot(carrier.id)) fail('could not remove the carrier');
+  if (carrier.active) fail('carrier stayed active');
+  const dropped: string = sim.ball.possession;
+  if (dropped !== 'free' || sim.ball.ownerId !== null) fail('carrier took the ball with them');
+  if (sim.ball.position.distanceTo(spot) > 0.05) fail('a dropped ball teleported');
+  if (sim.exportRoster().away.includes('chaser') === false && sim.exportRoster().away.length === ROSTER.maxSwimmers) {
+    fail('remove did not shrink the away roster');
+  }
+  if (sim.exportRoster().away.length !== ROSTER.maxSwimmers - 1) fail('away roster did not shrink by one');
+  if (!sim.addBot(1, 'normal')) fail('could not refill a freed slot');
+
+  for (const p of [...sim.players]) {
+    if (p.role === 'ai' && p.active) sim.removeBot(p.id);
+  }
+  const empty = sim.exportRoster();
+  if (empty.home.length !== 0 || empty.away.length !== 0) fail('roster did not reach zero bots');
+  if (!sim.getHuman().active || sim.getHuman().role !== 'human') fail('clearing bots removed the human');
+  for (let i = 0; i < 20; i++) sim.step(1 / 60, blankIntent());
+
+  sim.applyRoster({ home: ['chaser', 'normal'], away: [] });
+  const applied = sim.exportRoster();
+  if (applied.home.join() !== 'chaser,normal' || applied.away.length !== 0) {
+    fail(`applyRoster produced home ${applied.home.join()} away ${applied.away.join()}`);
+  }
+  const chaser = sim.players.find((p) => p.active && p.role === 'ai' && p.aiBehavior === 'chaser');
+  const partner = sim.players.find((p) => p.active && p.role === 'ai' && p.aiBehavior === 'normal');
+  if (!chaser || !partner) fail('applyRoster did not spawn both behaviors');
+  for (const p of sim.players) {
+    if (!p.active || p.role === 'stub') continue;
+    if (p.position.length() > ARENA_RADIUS - PLAYER.radius + 0.05) fail(`bot ${p.id} spawned outside the shell`);
+  }
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 5;
+  sim.ball.arc = null;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.set(0, 0, 24);
+  const startZ = chaser.position.z;
+  for (let i = 0; i < 90; i++) sim.step(1 / 60, blankIntent());
+  if (!chaser.active || !partner.active) fail('roster changed during play');
+  if (chaser.position.z < startZ + 0.4) fail('test chaser did not chase the loose ball');
+  if (chaser.velocity.length() > sim.tunables.playerMaxSpeed * 0.62) {
+    fail(`test chaser moved at ${chaser.velocity.length().toFixed(2)}`);
+  }
+  chaser.hasBall = true;
+  partner.hasBall = false;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = chaser.id;
+  sim.ball.velocity.set(0, 0, 0);
+  let fired = false;
+  for (let i = 0; i < 180; i++) {
+    sim.step(1 / 60, blankIntent());
+    const poss: string = sim.ball.possession;
+    const loose = poss === 'free' && sim.ball.velocity.length() > 8;
+    if (sim.ball.arc || loose) fired = true;
+  }
+  if (fired) fail('test chaser passed or shot');
+  if (!chaser.hasBall || sim.ball.ownerId !== chaser.id) fail('test chaser dropped the ball');
+}
+
 function checkWideCamera(): void {
   const sim = new Simulation(defaultTunables());
   if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
@@ -2532,6 +2655,7 @@ export function runRotationChecks(): void {
   checkBodiesSeparate();
   checkShoulderCheck();
   checkDrillOpponent();
+  checkRosterEdit();
   checkArenaShell();
   checkWallRicochet();
   checkRimDeflection();

@@ -466,16 +466,31 @@ export class SceneView {
   }
 
   ensurePlayers(sim: Simulation): void {
+    const live = new Set<number>();
     for (const p of sim.players) {
-      if (this.playerMeshes.has(p.id)) continue;
-      const marker = p.role === 'human' ? 'you' : p.team === 0 && p.role === 'ai' ? 'mate' : 'none';
+      live.add(p.id);
+      const marker: 'you' | 'mate' | 'none' =
+        p.role === 'human' ? 'you' : p.team === 0 && p.role === 'ai' ? 'mate' : 'none';
+      const existing = this.playerMeshes.get(p.id);
+      if (existing?.userData.marker === marker) continue;
+      if (existing) {
+        this.scene.remove(existing);
+        this.playerMeshes.delete(p.id);
+      }
       const group = createSwimmer(p.team, marker);
       group.userData.team = p.team;
       group.userData.playerId = p.id;
+      group.userData.marker = marker;
       if (this.swimmerTemplate) attachSwimmerModel(group, this.swimmerTemplate, p.team, p.id);
       group.visible = p.active && p.role !== 'stub';
       this.scene.add(group);
       this.playerMeshes.set(p.id, group);
+    }
+    for (const id of [...this.playerMeshes.keys()]) {
+      if (live.has(id)) continue;
+      const group = this.playerMeshes.get(id);
+      if (group) this.scene.remove(group);
+      this.playerMeshes.delete(id);
     }
   }
 

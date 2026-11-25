@@ -221,6 +221,11 @@ export const MATCH = {
   kickoffSeparation: 12,
 };
 
+/** Six swimmers a side, counting you on home. Final Fantasy X fields six. */
+export const ROSTER = {
+  maxSwimmers: 6,
+};
+
 /** Practice partner. Offsets are in world units from the human at kickoff. */
 export const PRACTICE = {
   openSide: 14,
