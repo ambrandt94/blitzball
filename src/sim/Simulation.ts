@@ -3293,13 +3293,13 @@ export class Simulation {
    * Ease the shoulder camera and place the strafe cursor. Call once per
    * rendered frame, after look and physics, so the marker matches this picture.
    */
-  updateAimPresentation(intent: InputIntent, dt: number): void {
+  updateAimPresentation(intent: InputIntent, dt: number, worldDt = dt): void {
     this.noteCatchStance(intent);
     this.strafing = intent.strafe;
     this.updateShoulder(Math.max(0, dt));
     this.updateRecenter(intent, Math.max(0, dt));
     if (this.landingMarker.pulse > 0) {
-      this.landingMarker.pulse = Math.max(0, this.landingMarker.pulse - Math.max(0, dt) * 4.2);
+      this.landingMarker.pulse = Math.max(0, this.landingMarker.pulse - Math.max(0, worldDt) * 4.2);
     }
     this.updateLandingMarker();
     this.updateCatchBeacon();

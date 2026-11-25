@@ -777,7 +777,7 @@ export class SceneView {
     this.arcCore.geometry.setPositions(positions);
   }
 
-  sync(sim: Simulation, intentZoom: boolean, dt = 1 / 60): void {
+  sync(sim: Simulation, intentZoom: boolean, dt = 1 / 60, cameraDt = dt): void {
     this.pulse += dt;
     this.ensurePlayers(sim);
     const pose = sim.getCameraPose({
@@ -809,7 +809,7 @@ export class SceneView {
 
     const humanPos = sim.getHuman().position;
     this.worldUp.copy(authoritativeUp(sim.tunables.goalAxisUp));
-    this.chase.step(pose.position, pose.target, this.worldUp, sim.tunables.camLag, dt);
+    this.chase.step(pose.position, pose.target, this.worldUp, sim.tunables.camLag, cameraDt);
     this.camera.position.copy(this.chase.position);
     this.camera.quaternion.copy(this.chase.quaternion);
     this.camera.up.copy(this.chase.up);

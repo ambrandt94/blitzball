@@ -45,6 +45,8 @@ const TIME_SCALE_KEY = 'blitzball.timeScale';
 const TIME_SCALE_VERSION_KEY = 'blitzball.timeScaleVersion';
 const TIME_SCALE_FLIGHT_KEY = 'blitzball.timeScaleFlight';
 const SHOW_HELP_KEY = 'blitzball.showHelp';
+const ZOOM_HOLD_KEY = 'blitzball.zoomHoldMode';
+const ZOOM_HOLD_VERSION_KEY = 'blitzball.zoomHoldVersion';
 const SECTIONS_KEY = 'blitzball.devSections';
 
 export interface RosterBotView {
@@ -132,6 +134,30 @@ function loadFlightOnly(): boolean {
   }
 }
 
+/** First visit of this default forces toggle. Later checkbox changes are kept. */
+function loadZoomHoldMode(): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    if (localStorage.getItem(ZOOM_HOLD_VERSION_KEY) !== '1') {
+      localStorage.setItem(ZOOM_HOLD_KEY, '0');
+      localStorage.setItem(ZOOM_HOLD_VERSION_KEY, '1');
+      return false;
+    }
+    return localStorage.getItem(ZOOM_HOLD_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveZoomHoldMode(hold: boolean): void {
+  try {
+    localStorage.setItem(ZOOM_HOLD_KEY, hold ? '1' : '0');
+    localStorage.setItem(ZOOM_HOLD_VERSION_KEY, '1');
+  } catch {
+    // Ignore quota and private-mode failures.
+  }
+}
+
 function loadShowHelp(): boolean {
   try {
     if (typeof localStorage === 'undefined') return true;
@@ -206,7 +232,7 @@ export function defaultTunables(): Tunables {
   return {
     // World-Y reads clearer in greybox; goal-axis remains a Dev toggle (Alex unsure).
     goalAxisUp: false,
-    zoomHoldMode: true,
+    zoomHoldMode: false,
     // Standard FPS / over-shoulder: mouse-right → look right, mouse-up → look up.
     mouseLookInvertX: false,
     mouseLookInvertY: false,
@@ -366,6 +392,7 @@ export class DevPanel {
     if (savedScale !== null) this.tunables.timeScale = savedScale;
     this.tunables.timeScaleFlightOnly = loadFlightOnly();
     this.tunables.showHelp = loadShowHelp();
+    this.tunables.zoomHoldMode = loadZoomHoldMode();
     const savedRoster = loadRoster();
     if (savedRoster) {
       this.matchPreset = savedRoster.preset ?? 'custom';
@@ -1126,6 +1153,7 @@ export class DevPanel {
         saveShowHelp(input.checked);
         this.onChange(key);
       }
+      if (key === 'zoomHoldMode') saveZoomHoldMode(input.checked);
     });
     row.append(lab, input);
     this.mount.append(row);

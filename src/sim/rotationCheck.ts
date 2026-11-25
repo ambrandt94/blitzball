@@ -26,6 +26,7 @@ import {
   ballInFlight,
   clampTimeScale,
   createScaleEase,
+  gameFrameDt,
   playbackScale,
   stepScaleEase,
   takeFixedSteps,
@@ -4372,6 +4373,30 @@ function checkTimeScale(): void {
   if (Math.abs(ease.value - 0.25) > 1e-3) fail(`flight scale eased to ${ease.value.toFixed(3)} instead of 0.25`);
   stepScaleEase(ease, playbackScale(0.25, true, false), 0.1);
   if (Math.abs(ease.value - 1) > 1e-3) fail(`catch did not ease back to 1x (${ease.value.toFixed(3)})`);
+
+  const root = new THREE.Group();
+  const mixer = new THREE.AnimationMixer(root);
+  const waterTime = { value: 0 };
+  let gameTime = 0;
+  const frames = 60;
+  for (let i = 0; i < frames; i++) {
+    const frame = gameFrameDt(1 / 60, 0.1, false, false, FIXED_DT);
+    mixer.update(frame);
+    gameTime += frame;
+    waterTime.value = gameTime;
+  }
+  if (Math.abs(mixer.time - 0.1) > 1e-4) fail(`0.1x mixer time was ${mixer.time.toFixed(4)}`);
+  if (Math.abs(waterTime.value - 0.1) > 1e-4) fail(`0.1x water time was ${waterTime.value.toFixed(4)}`);
+  const frozenMixer = mixer.time;
+  const frozenWater = waterTime.value;
+  for (let i = 0; i < 30; i++) {
+    const frame = gameFrameDt(1 / 60, 0.1, true, false, FIXED_DT);
+    mixer.update(frame);
+    if (frame !== 0) fail('pause produced visual time');
+  }
+  if (mixer.time !== frozenMixer || waterTime.value !== frozenWater) fail('pause moved the mixer or the water clock');
+  const oneFrame = gameFrameDt(1 / 60, 0.1, true, true, FIXED_DT);
+  if (Math.abs(oneFrame - FIXED_DT) > 1e-8) fail('step did not advance visuals one physics frame');
 }
 
 function checkCameraSettings(): void {
@@ -4469,7 +4494,8 @@ function checkCameraSettings(): void {
 
 function checkWideCamera(): void {
   const sim = new Simulation(defaultTunables());
-  if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
+  if (sim.tunables.zoomHoldMode) fail('wide camera did not start in toggle mode');
+  sim.tunables.zoomHoldMode = true;
   const held = blankIntent(true);
   if (!sim.isZoomOut(held)) fail('held zoom key did not open the wide view');
   if (sim.zoomOutLatched) fail('held zoom key latched the wide view');
