@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { Line2 } from 'three/examples/jsm/lines/Line2.js';
+import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { ARENA_RADIUS, ARENA_REFERENCE, BALL, CAMERA } from '../game/constants';
 import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
@@ -24,6 +27,12 @@ import {
 const TEAM_COLORS = [0x2b9fff, 0xff6a3d];
 const TRAIL_MAX = 36;
 const GHOST_MAX = 36;
+/** Screen pixels. The halo is the dark edge; the core is the gold curve. */
+const ARC_HALO_PX = 5.5;
+const ARC_CORE_PX = 2.25;
+/** Never fade the preview below this. Water and fog were eating a 1px line. */
+const ARC_HALO_OPACITY = 0.7;
+const ARC_CORE_OPACITY = 0.92;
 
 /** Soft disc so the landing dot stays readable without a screen-space crosshair. */
 function makeLandingGlow(): THREE.CanvasTexture {
@@ -80,7 +89,9 @@ export class SceneView {
   private ballRing!: THREE.Mesh;
   private ballTrail!: THREE.Line;
   private trailPositions: Float32Array;
-  private chargeGhost!: THREE.Line;
+  private chargeGhost!: THREE.Group;
+  private arcHalo!: Line2;
+  private arcCore!: Line2;
   private pullLine!: THREE.Line;
   private pullPositions = new Float32Array(6);
   private ghostPositions: Float32Array;
@@ -197,6 +208,9 @@ export class SceneView {
     this.markGameplay(this.ballTrail);
     this.markGameplay(this.pip);
     this.markGameplay(this.chargeGhost);
+    this.chargeGhost.traverse((obj) => {
+      obj.renderOrder = 40;
+    });
     this.markGameplay(this.aiIntentLine);
     this.markGameplay(this.pullLine);
     this.markGameplay(this.shotMarker);
@@ -390,19 +404,31 @@ export class SceneView {
   }
 
   private buildGhosts(): void {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(this.ghostPositions, 3));
-    geo.setDrawRange(0, 0);
-    this.chargeGhost = new THREE.Line(
-      geo,
-      new THREE.LineDashedMaterial({
-        color: 0xffe066,
-        dashSize: 0.45,
-        gapSize: 0.28,
+    // A 1px GL line vanishes into the water. Draw a screen-space stroke with a
+    // dark edge, on top of the shell, and don't let fog wash the gold out.
+    const arcLine = (color: number, width: number, opacity: number) => {
+      const material = new LineMaterial({
+        color,
+        linewidth: width,
+        worldUnits: false,
         transparent: true,
-        opacity: 0.85,
-      }),
-    );
+        opacity,
+        depthTest: false,
+        depthWrite: false,
+        fog: false,
+        toneMapped: false,
+      });
+      const line = new Line2(new LineGeometry(), material);
+      line.frustumCulled = false;
+      line.renderOrder = 40;
+      return line;
+    };
+    this.arcHalo = arcLine(0x140e08, ARC_HALO_PX, ARC_HALO_OPACITY);
+    this.arcCore = arcLine(0xffe066, ARC_CORE_PX, ARC_CORE_OPACITY);
+    this.chargeGhost = new THREE.Group();
+    this.chargeGhost.name = 'shot-arc';
+    this.chargeGhost.add(this.arcHalo, this.arcCore);
+    this.chargeGhost.visible = false;
     this.scene.add(this.chargeGhost);
 
     const aiGeo = new THREE.BufferGeometry();
@@ -624,6 +650,23 @@ export class SceneView {
     line.visible = n >= 2;
   }
 
+  /** Shot curve. Screen-space width, dark halo, drawn over the water. */
+  private writeArc(points: THREE.Vector3[]): void {
+    const n = Math.min(points.length, GHOST_MAX);
+    const show = n >= 2;
+    this.chargeGhost.visible = show;
+    if (!show) return;
+    for (let i = 0; i < n; i++) {
+      const p = points[i]!;
+      this.ghostPositions[i * 3] = p.x;
+      this.ghostPositions[i * 3 + 1] = p.y;
+      this.ghostPositions[i * 3 + 2] = p.z;
+    }
+    const positions = this.ghostPositions.subarray(0, n * 3);
+    this.arcHalo.geometry.setPositions(positions);
+    this.arcCore.geometry.setPositions(positions);
+  }
+
   sync(sim: Simulation, intentZoom: boolean, dt = 1 / 60): void {
     this.pulse += dt;
     this.ensurePlayers(sim);
@@ -803,7 +846,7 @@ export class SceneView {
     const pipPulse = 1.35 + Math.sin(this.pulse * 4) * 0.12;
     this.pip.scale.set(pipPulse, pipPulse, pipPulse);
 
-    this.writeLine(this.chargeGhost, this.ghostPositions, sim.chargeGhost, GHOST_MAX);
+    this.writeArc(sim.chargeGhost);
     this.syncAiIntents(sim);
     this.syncLandingMarker(sim);
     this.syncPullBand(sim);
