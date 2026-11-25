@@ -1,5 +1,26 @@
 import { ARENA_RADIUS, BALL, CAMERA, PLAYER, PRACTICE, SHOT_ARC, WALL } from '../game/constants';
-import type { Tunables } from '../game/types';
+import type { PowerMode, Tunables } from '../game/types';
+
+const POWER_MODE_KEY = 'blitzball.powerMode';
+
+function loadPowerMode(): PowerMode | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const value = localStorage.getItem(POWER_MODE_KEY);
+    if (value === 'meter' || value === 'tap' || value === 'hold') return value;
+  } catch {
+    // Headless or blocked storage. Keep the built-in default.
+  }
+  return null;
+}
+
+function savePowerMode(mode: PowerMode): void {
+  try {
+    localStorage.setItem(POWER_MODE_KEY, mode);
+  } catch {
+    // Ignore quota and private-mode failures.
+  }
+}
 
 export function defaultTunables(): Tunables {
   return {
@@ -44,6 +65,9 @@ export function defaultTunables(): Tunables {
     arcHandCurve: SHOT_ARC.handCurve,
     shotPowerRate: SHOT_ARC.powerRate,
     shotPowerAngle: SHOT_ARC.powerAngle,
+    powerMode: 'meter',
+    tapWindow: SHOT_ARC.tapWindow,
+    tapMax: SHOT_ARC.tapMax,
     teammateLockRadius: SHOT_ARC.teammateLockRadius,
     shotCarry: SHOT_ARC.carry,
     defenseActive: false,
@@ -67,6 +91,8 @@ export class DevPanel {
     this.root = root;
     this.tunables = tunables;
     this.onChange = onChange;
+    const saved = loadPowerMode();
+    if (saved) this.tunables.powerMode = saved;
     this.render();
   }
 
@@ -131,6 +157,13 @@ export class DevPanel {
     this.range('Arc hand curve', 'arcHandCurve', 0, 0.6, 0.01);
     this.range('Power fill rate', 'shotPowerRate', 0.2, 4, 0.05);
     this.range('Power angle', 'shotPowerAngle', 0, 0.4, 0.01);
+    this.choice('Power mode', 'powerMode', [
+      { value: 'meter', label: 'Meter' },
+      { value: 'tap', label: 'Tap' },
+      { value: 'hold', label: 'Hold' },
+    ]);
+    this.range('Tap window', 'tapWindow', 0.15, 0.9, 0.05);
+    this.range('Max taps', 'tapMax', 1, 9, 1);
     this.range('Teammate lock radius', 'teammateLockRadius', 0.3, 3, 0.05);
     this.range('Shot carry', 'shotCarry', 0, 60, 0.5);
     this.range('Teammate pass delay', 'teammatePassDelay', 0.3, 3, 0.05);
@@ -150,6 +183,31 @@ export class DevPanel {
       // Only the up-axis change rebuilds the chase basis. Invert toggles and
       // other checkboxes must not snap yaw/pitch back to kickoff.
       if (key === 'goalAxisUp') this.onChange(key);
+    });
+    row.appendChild(lab);
+    row.appendChild(input);
+    this.root.appendChild(row);
+  }
+
+  private choice(label: string, key: 'powerMode', options: { value: PowerMode; label: string }[]): void {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('label');
+    lab.style.flex = '1';
+    lab.textContent = label;
+    const input = document.createElement('select');
+    for (const option of options) {
+      const item = document.createElement('option');
+      item.value = option.value;
+      item.textContent = option.label;
+      input.appendChild(item);
+    }
+    input.value = this.tunables[key];
+    input.addEventListener('change', () => {
+      const value = input.value;
+      if (value !== 'meter' && value !== 'tap' && value !== 'hold') return;
+      this.tunables[key] = value;
+      savePowerMode(value);
     });
     row.appendChild(lab);
     row.appendChild(input);

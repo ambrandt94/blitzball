@@ -31,10 +31,11 @@ npm run preview  # serve the build
 | Pass (tap, or hold to charge) | `F` | X |
 | Reach to catch (wider mitt). With the ball: landing marker on the straight throw, no curve | Hold RMB | Y |
 | Shoulder check along your swim, or your facing if you are not steering (only when you do not have the ball). Knocks any swimmer back, staggers them, and pops a held ball loose | LMB | — |
-| Throw an arc (aim locks, ball stays in the hand, power charges; release throws) | Hold LMB while carrying | RT |
-| While throwing: creep (about 30% speed). Does not move the marker | `WASD` and `Space` / `C` | Left stick, RB / LT |
-| Bend the arc, while throwing | Mouse | Right stick |
-| Arc range, while throwing | Mouse wheel | — |
+| Throw an arc. The aim direction locks to you, the ball stays in the hand, and the marker slides with power. Meter and Hold throw on release. Tap waits for extra clicks | Hold LMB while carrying | RT |
+| While throwing: creep (about 30% speed). The trajectory and the marker move with you | `WASD` and `Space` / `C` | Left stick, RB / LT |
+| Bend the arc, while throwing. Starts at 0; only movement during the hold adds curve | Mouse | Right stick |
+| Full-power reach, while throwing. The wheel sets how far a full-power shot lands | Mouse wheel | — |
+| Power mode: Meter (default, oscillates), Tap (clicks after release), or Hold (fills while held). Saved in the browser | Dev panel, Power mode | — |
 | Throw the arc to a teammate | Put the landing marker on them, then hold LMB and release | — |
 | Wide / overview camera | Middle mouse toggles. `V` still zooms (hold, or toggle when Dev says so) | LB |
 | Call for a pass | `G` | — |
@@ -52,19 +53,26 @@ While the ball is loose or in flight, an aqua ring and beam mark where it will s
 
 `public/models/blitzball.glb` is the ball. It is recentered on the physics pivot and scaled to the gameplay radius on load. The procedural ball stays if that file fails to load.
 
-While a throw is held, the camera and the landing marker freeze on the direction you were looking when the button went down. The mouse bends the arc instead of looking. `WASD` and `Space` / `C` still swim, at about 30% of the speed you would otherwise have, and they do not move the marker. The wheel sets range. Let go of the mouse button to throw, look, and swim at full speed again. The dev panel can stay open; pointer lock takes the keys back from its sliders.
+While a throw is held, the camera locks on the direction you were looking when the button went down. That direction stays relative to you: `WASD` and `Space` / `C` still swim, at about 30% speed, and the whole trajectory, including the landing marker, drifts with you. The mouse bends the arc instead of looking, and that bend starts at 0 on every press. The wheel sets how far full power can reach. Meter and Hold throw when you let go. Tap mode keeps the aim and opens a short click window instead. The dev panel can stay open; pointer lock takes the keys back from its sliders.
 
 ## Arc shots
 
-The water sim has drag and no gravity, so a shot is not a falling parabola. Right-click with the ball shows the landing marker on the straight throw and no curve. Hold shoot and the ball stays in the carry pose, in the hands. The camera locks, and that same marker locks on the look ray at **Arc aim distance**. The curve appears only during the hold. While you hold:
+The water sim has drag and no gravity, so a shot is not a falling parabola. Right-click with the ball shows the landing marker on the straight throw and no curve. Hold shoot and the ball stays in the carry pose, in the hands. The camera locks. The landing marker sits on that aim direction, at a distance set by the current power: low power is a short lob, full power reaches **Arc aim distance** (plus the wheel). The curve appears only during the hold. While you hold:
 
-- Mouse (and the right stick) bends the curve. Right bends it to screen-right, up bends it up, through the Bezier control point. **Arc bend speed** is world units of bend per radian. **Arc bend limit** caps that bend as a fraction of the chord.
-- The wheel pushes the marker in and out along the locked look. That bias is the range the next aim starts at (**Arc aim distance**).
-- `WASD` creeps the swimmer. The marker stays where the aim locked.
+- Mouse (and the right stick) bends the curve, starting from 0 on the press. A click or a hold with no mouse movement throws straight. Right bends it to screen-right, up bends it up, through the Bezier control point. **Arc bend speed** is world units of bend per radian. **Arc bend limit** caps that bend as a fraction of the chord.
+- The marker slides in and out as power changes, and the dashed curve follows it. The number on the marker is the projected distance. Two faint rings sit at the minimum and maximum reach along that aim.
+- The wheel changes how far full power lands. That bias is the range the next aim starts at (**Arc aim distance**).
+- `WASD` creeps the swimmer. The aim direction stays locked to you, so the marker and the curve move with the body.
 
-A dashed curve previews the throw and updates as the swimmer creeps and the arc bends. Both the marker and the control point are kept inside the sphere, so the whole quadratic stays in the arena.
+Both the marker and the control point are kept inside the sphere, so the whole quadratic stays in the arena.
 
-The hold starts on the default curve immediately: a slight bend toward the throwing hand (screen-right, **Arc hand curve** × chord) plus a small lob (**Arc height** × chord). The body snaps to the camera on that frame, so the arc does not drop or ease in. Mouse bend is added on top and still dominates the shape. **Power fill rate** runs the meter empty-to-full-to-empty while the button is held; release locks the value. That value lerps shot speed from min to max and adds up to **Power angle** × chord of extra loft. It does not replace the mouse bend.
+The body snaps to the camera on the press, so the arc does not drop or ease in. A small lob (**Arc height** × chord) is the resting height. **Arc hand curve** is an optional side bias and defaults to 0. Mouse bend is added on top and still dominates the shape. **Power mode** in the dev panel picks how power is chosen, and the choice is saved in `localStorage`:
+
+- **Meter** (default). **Power fill rate** runs the meter empty-to-full-to-empty while the button is held. Release throws at the current value, and the marker is sliding the whole time.
+- **Hold**. Power rises linearly while the button is held, stops at full, and release throws. No oscillation.
+- **Tap**. The hold still aims and bends. Release opens a **Tap window** (about 0.45s). Each extra click adds power: zero taps is a soft touch, and **Max taps** (about 5) is full power and throws immediately. The marker pulses and jumps outward, a pip lights in the HUD, and a short click plays. Those clicks do not shoulder-check or start a new aim. The throw fires when the window closes if you have not filled it.
+
+Power lerps shot speed from min to max, slides the landing distance from the short lob out to the aim range, and adds up to **Power angle** × chord of extra loft. It does not replace the mouse bend.
 
 The ball is moved along the parameter of the curve, so it arrives on the marker. If that marker is on a teammate when you hold the shot, it stays on them and they light up green. The wheel lets go of that lock. Release throws that arc; the ball tracks them and they catch it. If the curve meets another swimmer, the script ends and the ball keeps the curve's tangent speed (banks and catches still apply).
 
@@ -73,7 +81,7 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 - Sphere arena, radius 68, with a translucent shell, caustic shimmer, and a stadium bowl outside the water. Sunbeams hug the shell and fade out in the play volume so they do not wash the chase view. **Arena radius** rebuilds the shell, sunbeams, bowl, and goals, and scales whoever is already swimming. Each end is a bowed triangular frame in coral, orange, and tan, with teal and blue trim, chunky corners, a fin on the bottom point, and a shallow tunnel of nested triangles with a faint crest on the back. A shot scores through that opening. Latitude rings mark the sphere without a wireframe cage.
 - Human 6DOF swim with sprint and an off-ball shoulder check; carrier speed/turn damp
 - Chase camera that eases to an over-the-shoulder view while you aim with the ball, and eases back and centers while you reach to catch
-- Landing marker on the straight throw while right-click is held with the ball (look ray at arc aim distance, or a teammate on that ray). No throw curve until left-click. Hidden while reaching off-ball. The marker keeps a steady size on screen and draws in front of swimmers
+- Landing marker on the straight throw while right-click is held with the ball (look ray at arc aim distance, or a teammate on that ray). No throw curve until left-click. During a throw the marker shows the projected distance, slides with power, and faint rings mark min and max reach. Hidden while reaching off-ball. The marker keeps a steady size on screen and draws in front of swimmers
 - Ball claim (forward mitt; wider while reaching), laggy hold, pass, charged shoot. Shots aimed or bent into a triangle carry through the opening.
 - Beginner charge ghost trail
 - Sphere wall banks. A hit reflects off the glass with a little speed lost and the curve kept. Close to the shell the water ripples, glows, and throws bubbles and a splash ring. A hard straight shot breaches: the ball arcs out through a spray, then a throw-in brings it back from that spot. It does not vanish.
@@ -81,7 +89,7 @@ The ball is moved along the parameter of the curve, so it arrives on the marker.
 - **Test opponent** (on by default): one orange swimmer slowly chases the ball, well under cruise speed. With the ball they wander and never pass or shoot, so a shoulder check can pop it loose. The teammate and any other enemy stay parked. Turn the toggle off to restore practice.
 - Practice, with the test opponent off: one green-ring teammate who gets open, receives a pass, and passes back after **Teammate pass delay** or when you press `G`. The orange defender holds position unless **Defense chases** is on.
 - **3v3 scaffolding**: six roster slots (human + teammate + one defender active; three stubs inactive)
-- Dev toggles: goal-axis vs world-up, V/LB zoom hold vs toggle, invert look X/Y, test opponent, arena radius, sunbeams and sunbeam strength, shoulder offset / transition, arc hand curve, power fill rate / angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs
+- Dev toggles: goal-axis vs world-up, V/LB zoom hold vs toggle, invert look X/Y, test opponent, arena radius, sunbeams and sunbeam strength, shoulder offset / transition, arc hand curve, power mode (meter / tap / hold, saved in the browser) with fill rate, tap window, max taps, and power angle, teammate lock radius, wall/claim/hold/accel/drag/assist knobs
 
 ## Not in Phase 0
 

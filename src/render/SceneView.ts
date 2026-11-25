@@ -86,6 +86,14 @@ export class SceneView {
   private shotMarkerRing!: THREE.Mesh;
   private shotMarkerRingMat!: THREE.MeshBasicMaterial;
   private shotMarkerGlowMat!: THREE.SpriteMaterial;
+  private reachMin!: THREE.Mesh;
+  private reachMax!: THREE.Mesh;
+  private distanceSprite!: THREE.Sprite;
+  private distanceMat!: THREE.SpriteMaterial;
+  private distanceCanvas!: HTMLCanvasElement;
+  private distanceCtx!: CanvasRenderingContext2D;
+  private distanceTex!: THREE.CanvasTexture;
+  private distanceShown = '';
   private pip!: THREE.Sprite;
   private pipFree: THREE.CanvasTexture;
   private pipYou: THREE.CanvasTexture;
@@ -379,6 +387,63 @@ export class SceneView {
     this.shotMarkerRingMat = ringMat;
     this.shotMarkerGlowMat = glowMat;
     this.scene.add(group);
+
+    const reachGeo = new THREE.TorusGeometry(1.55, 0.045, 8, 48);
+    const reachMat = (color: number) =>
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.38,
+        depthTest: false,
+        depthWrite: false,
+        fog: false,
+        toneMapped: false,
+      });
+    this.reachMin = new THREE.Mesh(reachGeo, reachMat(0x9ad7ff));
+    this.reachMax = new THREE.Mesh(reachGeo.clone(), reachMat(0xffc27a));
+    this.reachMin.name = 'reachMin';
+    this.reachMax.name = 'reachMax';
+    this.reachMin.renderOrder = 11;
+    this.reachMax.renderOrder = 11;
+    this.reachMin.visible = false;
+    this.reachMax.visible = false;
+    this.scene.add(this.reachMin, this.reachMax);
+
+    this.distanceCanvas = document.createElement('canvas');
+    this.distanceCanvas.width = 256;
+    this.distanceCanvas.height = 128;
+    const ctx = this.distanceCanvas.getContext('2d');
+    if (!ctx) throw new Error('distance label');
+    this.distanceCtx = ctx;
+    this.distanceTex = new THREE.CanvasTexture(this.distanceCanvas);
+    this.distanceMat = new THREE.SpriteMaterial({
+      map: this.distanceTex,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      fog: false,
+      toneMapped: false,
+    });
+    this.distanceSprite = new THREE.Sprite(this.distanceMat);
+    this.distanceSprite.name = 'landingDistance';
+    this.distanceSprite.renderOrder = 15;
+    this.distanceSprite.visible = false;
+    this.scene.add(this.distanceSprite);
+  }
+
+  private paintDistance(text: string): void {
+    const ctx = this.distanceCtx;
+    ctx.clearRect(0, 0, 256, 128);
+    ctx.fillStyle = 'rgba(6, 16, 32, 0.62)';
+    ctx.beginPath();
+    ctx.roundRect(36, 28, 184, 72, 16);
+    ctx.fill();
+    ctx.font = '700 64px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffe9a0';
+    ctx.fillText(text, 128, 66);
+    this.distanceTex.needsUpdate = true;
   }
 
   ensurePlayers(sim: Simulation): void {
@@ -790,6 +855,10 @@ export class SceneView {
   private syncLandingMarker(sim: Simulation): void {
     const mark = sim.landingMarker;
     this.shotMarker.visible = mark.visible;
+    this.distanceSprite.visible = mark.visible;
+    const showReach = mark.visible && mark.showReach;
+    this.placeReach(this.reachMin, mark.minPosition, showReach);
+    this.placeReach(this.reachMax, mark.maxPosition, showReach);
     if (!mark.visible) return;
 
     this.shotMarker.position.copy(mark.position);
@@ -799,15 +868,40 @@ export class SceneView {
     }
     const dist = Math.max(0.5, this.camera.position.distanceTo(this.shotMarker.position));
     const locked = mark.lockId !== null;
-    const pulse = locked ? 1 + Math.sin(this.pulse * 9) * 0.08 : 1;
+    const pulse = (locked ? 1 + Math.sin(this.pulse * 9) * 0.08 : 1) * (1 + mark.pulse * 0.72);
     this.shotMarker.scale.setScalar(THREE.MathUtils.clamp(dist * 0.034, 0.45, 3.4) * pulse);
     this.shotMarkerRing.lookAt(this.camera.position);
 
-    const markerHex = locked ? 0xc6ff6a : 0xffe066;
-    const ringHex = locked ? 0xf4ffe4 : 0xfff4cc;
+    const markerHex = mark.pulse > 0.35 ? 0xffffff : locked ? 0xc6ff6a : 0xffe066;
+    const ringHex = mark.pulse > 0.35 ? 0xfff6d0 : locked ? 0xf4ffe4 : 0xfff4cc;
     this.shotMarkerMat.color.setHex(markerHex);
     this.shotMarkerRingMat.color.setHex(ringHex);
     this.shotMarkerGlowMat.color.setHex(markerHex);
+
+    const label = `${Math.max(0, Math.round(mark.distance))}u`;
+    if (label !== this.distanceShown) {
+      this.paintDistance(label);
+      this.distanceShown = label;
+    }
+    const up = this.camScratch.offset.copy(this.camera.up);
+    if (up.lengthSq() < 1e-6) up.set(0, 1, 0);
+    else up.normalize();
+    const lift = THREE.MathUtils.clamp(dist * 0.05, 0.55, 2.6);
+    this.distanceSprite.position.copy(this.shotMarker.position).addScaledVector(up, lift);
+    const labelScale = THREE.MathUtils.clamp(dist * 0.02, 0.4, 2.4);
+    this.distanceSprite.scale.set(labelScale * 2, labelScale, 1);
+  }
+
+  /** Billboard a faint reach ring. Min and max sit on the current aim. */
+  private placeReach(mesh: THREE.Mesh, point: THREE.Vector3, visible: boolean): void {
+    mesh.visible = visible;
+    if (!visible) return;
+    mesh.position.copy(point);
+    const toCam = this.camScratch.view.copy(this.camera.position).sub(point);
+    if (toCam.lengthSq() > 1e-4) mesh.position.addScaledVector(toCam.normalize(), 0.55);
+    const dist = Math.max(0.5, this.camera.position.distanceTo(mesh.position));
+    mesh.scale.setScalar(THREE.MathUtils.clamp(dist * 0.046, 0.65, 4.8));
+    mesh.lookAt(this.camera.position);
   }
 
   /** Point local +Z along facing and local +Y along up, with no lookAt branch. */

@@ -59,7 +59,10 @@ export class Game {
   private chargeEl: HTMLElement;
   private chargeFill: HTMLElement;
   private chargeLabel: HTMLElement;
+  private chargePips: HTMLElement;
   private goalBanner: HTMLElement | null;
+  private lastThrowFeedback = 0;
+  private audioCtx: AudioContext | null = null;
 
   constructor(app: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -84,6 +87,7 @@ export class Game {
     this.chargeEl = document.getElementById('charge')!;
     this.chargeFill = document.getElementById('charge-fill')!;
     this.chargeLabel = document.getElementById('charge-label')!;
+    this.chargePips = document.getElementById('charge-pips')!;
     this.goalBanner = document.getElementById('goal-banner');
 
     this.onResize();
@@ -169,15 +173,32 @@ export class Game {
       this.possessionEl.classList.add('free');
     }
 
+    const readout = this.sim.throwReadout;
+    if (readout.feedback !== this.lastThrowFeedback) {
+      this.lastThrowFeedback = readout.feedback;
+      this.flashCharge();
+      this.playTap();
+    }
     if (this.sim.charge.active) {
       this.chargeEl.classList.add('visible');
       const pct = Math.round(this.sim.charge.amount * 100);
       this.chargeFill.style.width = `${pct}%`;
       const shooting = this.sim.charge.kind === 'shoot';
-      this.chargeLabel.textContent = shooting ? `Power ${pct}` : `Pass ${pct}`;
+      const dist =
+        shooting && this.sim.landingMarker.visible ? Math.round(this.sim.landingMarker.distance) : 0;
+      const tapMode = shooting && this.tunables.powerMode === 'tap';
+      this.syncPips(tapMode ? Math.max(1, readout.tapMax) : 0, readout.taps);
+      if (tapMode) {
+        this.chargeLabel.textContent = dist > 0 ? `Tap ${readout.taps}/${readout.tapMax} · ${dist}u` : `Tap ${readout.taps}/${readout.tapMax}`;
+      } else if (shooting && dist > 0) {
+        this.chargeLabel.textContent = `Power ${pct} · ${dist}u`;
+      } else {
+        this.chargeLabel.textContent = shooting ? `Power ${pct}` : `Pass ${pct}`;
+      }
       this.chargeEl.classList.toggle('shot', shooting);
     } else {
       this.chargeEl.classList.remove('visible');
+      this.syncPips(0, 0);
     }
 
     this.debugStats.style.display = this.tunables.showDebugStats ? 'block' : 'none';
@@ -192,7 +213,7 @@ export class Game {
         `up ${this.tunables.goalAxisUp ? 'goal-axis' : 'world-Y'}`,
         `zoom ${this.lastZoom ? 'out' : 'chase'} (${this.tunables.zoomHoldMode ? 'hold' : 'toggle'})`,
         this.sim.shotAim.active
-          ? `arc ${b.position.distanceTo(this.sim.shotAim.target).toFixed(1)}u bend ${Math.hypot(this.sim.shotAim.bendRight, this.sim.shotAim.bendUp).toFixed(1)}`
+          ? `arc ${b.position.distanceTo(this.sim.shotAim.target).toFixed(1)}u bend ${Math.hypot(this.sim.shotAim.bendRight, this.sim.shotAim.bendUp).toFixed(1)} ${this.tunables.powerMode}`
           : 'arc idle',
         `check ${h.burstCooldown > 0 ? h.burstCooldown.toFixed(2) + 's' : 'ready'}`,
         this.sim.catchBeacon.visible ? 'catch beacon on' : 'catch beacon off',
@@ -205,6 +226,50 @@ export class Game {
           ? 'test opponent'
           : `mate + ${this.tunables.defenseActive ? 'defense chases' : 'defense holds'}`,
       ].join('\n');
+    }
+  }
+
+  private syncPips(count: number, filled: number): void {
+    this.chargeEl.classList.toggle('taps', count > 0);
+    while (this.chargePips.children.length < count) {
+      this.chargePips.appendChild(document.createElement('i'));
+    }
+    while (this.chargePips.children.length > count) {
+      this.chargePips.lastElementChild?.remove();
+    }
+    for (let i = 0; i < this.chargePips.children.length; i++) {
+      this.chargePips.children[i]?.classList.toggle('on', i < filled);
+    }
+  }
+
+  private flashCharge(): void {
+    this.chargeEl.classList.add('flash');
+    window.setTimeout(() => this.chargeEl.classList.remove('flash'), 90);
+  }
+
+  /** Short click so a power tap is audible as well as visible. */
+  private playTap(): void {
+    const Ctx = window.AudioContext;
+    if (!Ctx) return;
+    try {
+      if (!this.audioCtx) this.audioCtx = new Ctx();
+      const ctx = this.audioCtx;
+      if (ctx.state === 'suspended') void ctx.resume();
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(720, now);
+      osc.frequency.exponentialRampToValueAtTime(1180, now + 0.045);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.06, now + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.08);
+    } catch {
+      // Autoplay policies and missing audio devices should not stop the throw.
     }
   }
 }
