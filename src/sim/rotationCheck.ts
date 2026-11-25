@@ -3,13 +3,16 @@
  *   npx tsx src/sim/rotationCheck.ts
  */
 import * as THREE from 'three';
-import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, SHOT_ARC, setArenaRadius } from '../game/constants';
+import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, ROSTER, SHOT_ARC, setArenaRadius } from '../game/constants';
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
 import { defaultTunables } from '../ui/DevPanel';
+import { applyCameraPreset, cameraSettingsBlob, noteCameraEdit, parseCameraSettings } from '../ui/cameraSettings';
+import { parseRoster } from '../ui/rosterStorage';
+import { matchRoster } from '../ui/matchPresets';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
 import { lookBasis, rotateToward, stabilizeUp } from './math';
@@ -1742,7 +1745,12 @@ function checkShoulderCheck(): void {
   if (enemy.staggerTime <= 0) fail('checked swimmer was not staggered');
   if (human.hitFlash <= 0 || enemy.hitFlash <= 0) fail('check did not flash both swimmers');
   if (sim.cameraShake <= 0) fail('a landed check did not shake the camera');
-  if (human.burstCooldown < 0.75) fail(`check cooldown was ${human.burstCooldown.toFixed(2)}`);
+  if (human.burstCooldown < sim.tunables.lightBurstCooldown * 0.7) {
+    fail(`light check cooldown was ${human.burstCooldown.toFixed(2)}`);
+  }
+  if (human.burstCooldown > sim.tunables.lightBurstCooldown + 0.08) {
+    fail('a tap used the power-tackle cooldown');
+  }
   const gap = human.position.distanceTo(enemy.position);
   if (gap < PLAYER.radius * 2 - 0.05) fail(`check left the bodies overlapping (${gap.toFixed(3)})`);
 
@@ -1811,6 +1819,176 @@ function checkShoulderCheck(): void {
   if (swimmer.velocity.length() > PLAYER.maxSpeed * 0.45) {
     fail(`stagger still swam at ${swimmer.velocity.length().toFixed(2)}`);
   }
+}
+
+function holdTackle(sim: Simulation, seconds: number, move = new THREE.Vector3(0, 0, 1)): void {
+  const press = blankIntent();
+  press.burst = true;
+  press.shootHeld = true;
+  press.move.copy(move);
+  sim.step(1 / 60, press);
+  const held = blankIntent();
+  held.shootHeld = true;
+  held.move.copy(move);
+  const frames = Math.max(0, Math.round(seconds * 60) - 1);
+  for (let i = 0; i < frames; i++) sim.step(1 / 60, held);
+}
+
+function checkTackleCharge(): void {
+  const sim = new Simulation(defaultTunables());
+  const human = solo(sim);
+  human.position.set(0, 0, -8);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.position.set(30, 20, 10);
+  sim.ball.claimLock = 9;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+
+  holdTackle(sim, 0.08);
+  if (!sim.tackleCharge.active || sim.tackleCharge.amount <= 0) fail('tackle charge did not show');
+  if (sim.tackleCharge.amount > sim.tunables.tackleTapTime / sim.tunables.tackleChargeTime + 0.08) {
+    fail(`a tap filled the bar to ${sim.tackleCharge.amount.toFixed(2)}`);
+  }
+  if (human.burstTime > 0) fail('the check lunged before release');
+  sim.step(1 / 60, blankIntent());
+  if (sim.tackleCharge.active) fail('the charge bar stayed up after release');
+  if (human.burstTime <= 0) fail('a short click did not shoulder-check');
+  if (human.staggerTime > 0) fail('a tap staggered the checker');
+  if (human.burstCooldown > sim.tunables.lightBurstCooldown + 0.02) fail('a tap took the power cooldown');
+  const tapSpeed = human.velocity.length();
+  if (tapSpeed > sim.tunables.lightBurstSpeed * 1.08) fail(`tap lunged at ${tapSpeed.toFixed(2)}`);
+  if (tapSpeed < sim.tunables.lightBurstSpeed * 0.7) fail(`tap was too weak (${tapSpeed.toFixed(2)})`);
+
+  const wait = blankIntent();
+  for (let i = 0; i < 40; i++) sim.step(1 / 60, wait);
+  const blocked = blankIntent();
+  blocked.shootHeld = true;
+  blocked.burst = true;
+  human.burstCooldown = sim.tunables.lightBurstCooldown;
+  sim.step(1 / 60, blocked);
+  if (sim.tackleCharge.active) fail('a check on cooldown started a charge');
+
+  human.burstCooldown = 0;
+  human.burstTime = 0;
+  human.velocity.set(0, 0, 0);
+  holdTackle(sim, sim.tunables.tackleChargeTime);
+  if (sim.tackleCharge.amount < 0.95) fail(`full charge only reached ${sim.tackleCharge.amount.toFixed(2)}`);
+  sim.step(1 / 60, blankIntent());
+  if (sim.tackleCharge.active) fail('power release left the bar up');
+  const powerSpeed = human.velocity.length();
+  if (powerSpeed < sim.tunables.burstSpeed * 0.75) fail(`power tackle was ${powerSpeed.toFixed(2)}`);
+  if (human.staggerTime < sim.tunables.tackleSelfStagger * 0.5) fail('power tackle did not self-stagger');
+  if (human.burstCooldown < sim.tunables.burstCooldown * 0.7) {
+    fail(`power cooldown was ${human.burstCooldown.toFixed(2)}`);
+  }
+
+  const lightHit = new Simulation(defaultTunables());
+  lightHit.setSoloOpponent(false);
+  lightHit.kickoffLock = 0;
+  lightHit.tunables.defenseActive = false;
+  const tapper = solo(lightHit);
+  const lightFoe = lightHit.players.find((p) => p.team === 1 && p.role === 'ai');
+  if (!lightFoe) fail('missing a light-check target');
+  tapper.position.set(0, 0, 0);
+  tapper.velocity.set(0, 0, 0);
+  tapper.facing.set(0, 0, 1);
+  tapper.up.set(0, 1, 0);
+  lightHit.yaw = 0;
+  lightHit.pitch = 0;
+  lightFoe.position.set(0, 0, 0.85);
+  lightFoe.velocity.set(0, 0, 0);
+  lightFoe.active = true;
+  lightFoe.hasBall = true;
+  lightHit.ball.possession = 'held';
+  lightHit.ball.ownerId = lightFoe.id;
+  lightHit.ball.position.set(0, 0.15, 1.5);
+  const tap = blankIntent();
+  tap.burst = true;
+  tap.move.set(0, 0, 1);
+  lightHit.step(1 / 60, tap);
+  const lightLoose: string = lightHit.ball.possession;
+  if (lightFoe.hasBall || lightLoose !== 'free') fail('a tap did not pop the ball');
+  const lightKnock = lightFoe.velocity.length();
+
+  const powerHit = new Simulation(defaultTunables());
+  powerHit.setSoloOpponent(false);
+  powerHit.kickoffLock = 0;
+  powerHit.tunables.defenseActive = false;
+  powerHit.tunables.tacklePopMin = 1;
+  powerHit.tunables.tacklePopMax = 1;
+  const charger = solo(powerHit);
+  const powerFoe = powerHit.players.find((p) => p.team === 1 && p.role === 'ai');
+  if (!powerFoe) fail('missing a power-tackle target');
+  charger.position.set(0, 0, 0);
+  charger.velocity.set(0, 0, 0);
+  charger.facing.set(0, 0, 1);
+  charger.up.set(0, 1, 0);
+  powerHit.yaw = 0;
+  powerHit.pitch = 0;
+  powerFoe.position.set(0, 0, 0.85);
+  powerFoe.velocity.set(0, 0, 0);
+  powerFoe.active = true;
+  powerFoe.hasBall = true;
+  powerHit.ball.possession = 'held';
+  powerHit.ball.ownerId = powerFoe.id;
+  powerHit.ball.position.set(0, 0.15, 1.5);
+  holdTackle(powerHit, powerHit.tunables.tackleChargeTime);
+  powerHit.step(1 / 60, blankIntent());
+  const powerLoose: string = powerHit.ball.possession;
+  if (powerFoe.hasBall || powerLoose !== 'free') fail('a full power tackle did not pop the ball');
+  if (powerFoe.velocity.length() < lightKnock + 4) {
+    fail(`power knock ${powerFoe.velocity.length().toFixed(2)} was not above the tap ${lightKnock.toFixed(2)}`);
+  }
+  if (powerFoe.staggerTime <= 0) fail('power tackle did not stagger the target');
+  const pal = powerHit.players.find((p) => p.team === 0 && p.role === 'ai');
+  if (!pal) fail('missing a teammate for friendly fire');
+  charger.burstCooldown = 0;
+  charger.burstTime = 0;
+  charger.staggerTime = 0;
+  charger.position.set(0, 0, 0);
+  charger.velocity.set(0, 0, 0);
+  pal.position.set(0, 0, 0.85);
+  pal.velocity.set(0, 0, 0);
+  pal.active = true;
+  pal.hasBall = true;
+  powerHit.ball.possession = 'held';
+  powerHit.ball.ownerId = pal.id;
+  powerHit.ball.position.set(0, 0.15, 1.5);
+  holdTackle(powerHit, powerHit.tunables.tackleChargeTime);
+  powerHit.step(1 / 60, blankIntent());
+  const friendLoose: string = powerHit.ball.possession;
+  if (pal.hasBall || friendLoose !== 'free') fail('power tackle did not check a teammate');
+
+  const whiff = new Simulation(defaultTunables());
+  whiff.setSoloOpponent(false);
+  whiff.kickoffLock = 0;
+  whiff.tunables.defenseActive = false;
+  whiff.tunables.tacklePopMin = 0;
+  whiff.tunables.tacklePopMax = 0;
+  const swimmer = solo(whiff);
+  const holder = whiff.players.find((p) => p.team === 1 && p.role === 'ai');
+  if (!holder) fail('missing a carrier who keeps the ball');
+  swimmer.position.set(0, 0, 0);
+  swimmer.velocity.set(0, 0, 0);
+  swimmer.facing.set(0, 0, 1);
+  swimmer.up.set(0, 1, 0);
+  whiff.yaw = 0;
+  whiff.pitch = 0;
+  holder.position.set(0, 0, 0.85);
+  holder.velocity.set(0, 0, 0);
+  holder.active = true;
+  holder.hasBall = true;
+  whiff.ball.possession = 'held';
+  whiff.ball.ownerId = holder.id;
+  whiff.ball.position.set(0, 0.15, 1.5);
+  holdTackle(whiff, whiff.tunables.tackleChargeTime);
+  whiff.step(1 / 60, blankIntent());
+  if (!holder.hasBall || whiff.ball.possession !== 'held') fail('a zero pop chance still stripped the ball');
+  if (holder.staggerTime <= 0 || holder.velocity.length() < 4) fail('a missed pop did not knock the carrier');
 }
 
 function checkDrillOpponent(): void {
@@ -2477,6 +2655,297 @@ function checkAimPowerModes(): void {
   if (!taps.human.hasBall) fail('a cancelled tap window threw when it would have closed');
 }
 
+function checkRosterEdit(): void {
+  const saved = parseRoster(JSON.stringify({ home: ['normal'], away: ['chaser', 'normal'] }));
+  if (!saved || saved.home.join() !== 'normal' || saved.away.join() !== 'chaser,normal') {
+    fail('roster save did not round-trip');
+  }
+  if (parseRoster('nope') !== null) fail('broken roster JSON was accepted');
+  if (parseRoster(null) !== null) fail('missing roster was accepted');
+  if (parseRoster(JSON.stringify({ home: ['fly'], away: [] })) !== null) fail('unknown bot behavior was accepted');
+  const clipped = parseRoster(JSON.stringify({ home: Array(8).fill('normal'), away: Array(9).fill('chaser') }));
+  if (!clipped || clipped.home.length !== ROSTER.maxSwimmers - 1 || clipped.away.length !== ROSTER.maxSwimmers) {
+    fail('roster save ignored the six-swimmer cap');
+  }
+
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  const initial = sim.exportRoster();
+  if (initial.home.length !== 0 || initial.away.length !== 1 || initial.away[0] !== 'chaser') {
+    fail(`default roster was home ${initial.home.join()} away ${initial.away.join()}`);
+  }
+  if (!sim.addBot(0, 'normal')) fail('could not add a home bot');
+  const mate = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  if (!mate) fail('home bot did not spawn');
+  for (let i = 0; i < 30; i++) sim.step(1 / 60, blankIntent());
+  if (!mate.active) fail('added bot was parked again');
+  if (sim.exportRoster().away[0] !== 'chaser') fail('adding a teammate cleared the test chaser');
+
+  let guard = 0;
+  while (sim.addBot(0, 'normal') && guard < 12) guard++;
+  if (sim.exportRoster().home.length !== ROSTER.maxSwimmers - 1) {
+    fail(`home roster is ${sim.exportRoster().home.length}, expected ${ROSTER.maxSwimmers - 1}`);
+  }
+  if (sim.swimmerCount(0) !== ROSTER.maxSwimmers) fail('home side exceeded six swimmers');
+  if (sim.addBot(0, 'chaser')) fail('home accepted another bot past six swimmers');
+
+  guard = 0;
+  while (sim.addBot(1, 'normal') && guard < 12) guard++;
+  if (sim.exportRoster().away.length !== ROSTER.maxSwimmers) {
+    fail(`away roster is ${sim.exportRoster().away.length}, expected ${ROSTER.maxSwimmers}`);
+  }
+  if (sim.addBot(1, 'normal')) fail('away accepted a seventh bot');
+
+  if (sim.removeBot(sim.humanId)) fail('the human was removed');
+  if (sim.removeBot(9999)) fail('a missing bot was removed');
+
+  const human = sim.getHuman();
+  human.hasBall = true;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  const bystander = sim.players.find((p) => p.team === 0 && p.role === 'ai' && p.active);
+  if (!bystander || !sim.removeBot(bystander.id)) fail('could not remove a home bot');
+  if (bystander.active) fail('removed bot stayed on the field');
+  if (sim.ball.ownerId !== human.id || sim.ball.possession !== 'held') fail('removing a bot stole the human ball');
+
+  const carrier = sim.players.find((p) => p.team === 1 && p.role === 'ai' && p.active);
+  if (!carrier) fail('away roster was empty');
+  const spot = carrier.position.clone();
+  carrier.hasBall = true;
+  human.hasBall = false;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = carrier.id;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.copy(spot);
+  if (!sim.removeBot(carrier.id)) fail('could not remove the carrier');
+  if (carrier.active) fail('carrier stayed active');
+  const dropped: string = sim.ball.possession;
+  if (dropped !== 'free' || sim.ball.ownerId !== null) fail('carrier took the ball with them');
+  if (sim.ball.position.distanceTo(spot) > 0.05) fail('a dropped ball teleported');
+  if (sim.exportRoster().away.includes('chaser') === false && sim.exportRoster().away.length === ROSTER.maxSwimmers) {
+    fail('remove did not shrink the away roster');
+  }
+  if (sim.exportRoster().away.length !== ROSTER.maxSwimmers - 1) fail('away roster did not shrink by one');
+  if (!sim.addBot(1, 'normal')) fail('could not refill a freed slot');
+
+  for (const p of [...sim.players]) {
+    if (p.role === 'ai' && p.active) sim.removeBot(p.id);
+  }
+  const empty = sim.exportRoster();
+  if (empty.home.length !== 0 || empty.away.length !== 0) fail('roster did not reach zero bots');
+  if (!sim.getHuman().active || sim.getHuman().role !== 'human') fail('clearing bots removed the human');
+  for (let i = 0; i < 20; i++) sim.step(1 / 60, blankIntent());
+
+  sim.applyRoster({ home: ['chaser', 'normal'], away: [] });
+  const applied = sim.exportRoster();
+  if (applied.home.join() !== 'chaser,normal' || applied.away.length !== 0) {
+    fail(`applyRoster produced home ${applied.home.join()} away ${applied.away.join()}`);
+  }
+  const chaser = sim.players.find((p) => p.active && p.role === 'ai' && p.aiBehavior === 'chaser');
+  const partner = sim.players.find((p) => p.active && p.role === 'ai' && p.aiBehavior === 'normal');
+  if (!chaser || !partner) fail('applyRoster did not spawn both behaviors');
+  for (const p of sim.players) {
+    if (!p.active || p.role === 'stub') continue;
+    if (p.position.length() > ARENA_RADIUS - PLAYER.radius + 0.05) fail(`bot ${p.id} spawned outside the shell`);
+  }
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.claimLock = 5;
+  sim.ball.arc = null;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.set(0, 0, 24);
+  const startZ = chaser.position.z;
+  for (let i = 0; i < 90; i++) sim.step(1 / 60, blankIntent());
+  if (!chaser.active || !partner.active) fail('roster changed during play');
+  if (chaser.position.z < startZ + 0.4) fail('test chaser did not chase the loose ball');
+  if (chaser.velocity.length() > sim.tunables.playerMaxSpeed * 0.62) {
+    fail(`test chaser moved at ${chaser.velocity.length().toFixed(2)}`);
+  }
+  chaser.hasBall = true;
+  partner.hasBall = false;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = chaser.id;
+  sim.ball.velocity.set(0, 0, 0);
+  let fired = false;
+  for (let i = 0; i < 180; i++) {
+    sim.step(1 / 60, blankIntent());
+    const poss: string = sim.ball.possession;
+    const loose = poss === 'free' && sim.ball.velocity.length() > 8;
+    if (sim.ball.arc || loose) fired = true;
+  }
+  if (fired) fail('test chaser passed or shot');
+  if (!chaser.hasBall || sim.ball.ownerId !== chaser.id) fail('test chaser dropped the ball');
+}
+
+function checkGoalies(): void {
+  const one = matchRoster('1v1', true);
+  if (one.home.length !== 0 || one.away.join() !== 'normal' || one.withGoalies) fail('1v1 added a goalie');
+  const plus = matchRoster('1v1-goalies', false);
+  if (plus.home.join() !== 'goalie' || plus.away.join() !== 'normal,goalie') fail('1v1 + goalies roster is wrong');
+  const open = matchRoster('3v3', false);
+  if (open.home.length !== 2 || open.away.length !== 3 || open.home.includes('goalie')) {
+    fail('3v3 without goalies still kept a keeper');
+  }
+  const full = matchRoster('5v5', true);
+  if (full.home.length !== 5 || full.away.length !== 6) fail('5v5 with goalies does not fit six a side');
+  if (full.home.filter((bot) => bot === 'goalie').length !== 1) fail('home 5v5 lost its goalie');
+  if (full.away.filter((bot) => bot === 'normal').length !== 5) fail('away 5v5 lost a field player');
+  const saved = parseRoster(JSON.stringify({ home: ['goalie'], away: ['normal', 'goalie'], preset: '1v1-goalies' }));
+  if (!saved || saved.home[0] !== 'goalie' || saved.preset !== '1v1-goalies') fail('goalie roster did not parse');
+
+  const built = new Simulation(defaultTunables());
+  built.applyRoster(matchRoster('4v4', true));
+  if (!built.getHuman().active || built.getHuman().role !== 'human') fail('the match preset removed you');
+  const home = built.exportRoster().home;
+  if (home.length !== 4 || home.filter((bot) => bot === 'goalie').length !== 1) {
+    fail(`4v4 home was ${home.join()}`);
+  }
+
+  const high = new Simulation(defaultTunables());
+  high.applyRoster({ home: [], away: ['goalie'] });
+  high.kickoffLock = 0;
+  high.tunables.goalieSkill = 100;
+  high.tunables.goalieAwayOverride = false;
+  high.tunables.ballDrag = 0.2;
+  const keeper = high.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+  if (!keeper) fail('high-skill goalie did not spawn');
+  keeper.position.set(4, 0, keeper.position.z);
+  keeper.velocity.set(0, 0, 0);
+  const you = high.getHuman();
+  you.position.set(-24, 0, -30);
+  you.velocity.set(0, 0, 0);
+  high.ball.possession = 'free';
+  high.ball.ownerId = null;
+  high.ball.arc = null;
+  high.ball.claimLock = 0;
+  high.ball.velocity.set(0, 0, 16);
+  high.ball.position.set(0, 0, 40);
+  let savedShot = false;
+  for (let i = 0; i < 240; i++) {
+    high.step(1 / 60, blankIntent());
+    if (high.match.score[0] > 0) break;
+    if (keeper.hasBall || high.ball.velocity.z < -1) savedShot = true;
+  }
+  if (high.match.score[0] > 0) fail('a high-skill goalie let a slow straight shot in');
+  if (!savedShot) fail('a high-skill goalie did not catch or turn the slow shot');
+
+  const low = new Simulation(defaultTunables());
+  low.applyRoster({ home: [], away: ['goalie'] });
+  low.kickoffLock = 0;
+  low.tunables.goalieSkill = 0;
+  low.tunables.ballDrag = 0.2;
+  const weak = low.players.find((p) => p.aiBehavior === 'goalie' && p.active);
+  if (!weak) fail('low-skill goalie did not spawn');
+  low.getHuman().position.set(-24, 0, -30);
+  low.getHuman().velocity.set(0, 0, 0);
+  low.ball.possession = 'free';
+  low.ball.ownerId = null;
+  low.ball.arc = null;
+  low.ball.claimLock = 0;
+  low.ball.velocity.set(0, 0, 42);
+  low.ball.position.set(2.8, 0, 36);
+  let scored = false;
+  for (let i = 0; i < 120 && !scored; i++) {
+    low.step(1 / 60, blankIntent());
+    scored = low.match.score[0] > 0;
+  }
+  if (!scored) fail('a low-skill goalie stopped a shot at the far side of the mouth');
+  if (weak.hasBall) fail('a low-skill goalie caught the shot they should have missed');
+}
+
+function checkCameraSettings(): void {
+  const tunables = defaultTunables();
+  if (tunables.cameraPreset !== 'default') fail('camera did not start on the Default preset');
+  if (tunables.camDistance !== CAMERA.chaseDistance || tunables.camFov !== CAMERA.fov) {
+    fail('default follow distance or FOV drifted from the chase camera');
+  }
+  if (tunables.wideDistance !== CAMERA.zoomOutDistance || !tunables.camShell || tunables.ballCam) {
+    fail('default wide view or shell collision changed');
+  }
+  applyCameraPreset(tunables, 'close');
+  const closePreset: string = tunables.cameraPreset;
+  if (closePreset !== 'close' || tunables.camDistance >= CAMERA.chaseDistance) {
+    fail('Close preset did not pull the camera in');
+  }
+  tunables.camDistance += 0.4;
+  noteCameraEdit(tunables);
+  const edited: string = tunables.cameraPreset;
+  if (edited !== 'custom') fail('a manual edit stayed on the Close preset');
+  const parsed = parseCameraSettings(JSON.stringify(cameraSettingsBlob(tunables)));
+  if (!parsed || parsed.preset !== 'custom' || parsed.camDistance !== tunables.camDistance) {
+    fail('camera settings did not round-trip');
+  }
+  if (parseCameraSettings('nope') !== null) fail('broken camera JSON was accepted');
+  if (parseCameraSettings(JSON.stringify({ preset: 'fly' })) !== null) fail('unknown camera preset was accepted');
+  applyCameraPreset(tunables, 'default');
+  if (tunables.camDistance !== CAMERA.chaseDistance || tunables.cameraPreset !== 'default') {
+    fail('reset did not restore the Default preset');
+  }
+
+  const sim = new Simulation(tunables);
+  sim.kickoffLock = 0;
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(1, 0, 0);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.position.set(12, 0, 0);
+  sim.ball.velocity.set(0, 0, 0);
+  const aim = sim.getCameraPose(blankIntent());
+  sim.tunables.lookAhead = 'move';
+  human.velocity.set(14, 0, 0);
+  const moving = sim.getCameraPose(blankIntent());
+  if (moving.target.x <= aim.target.x + 0.4) fail('movement look-ahead ignored swim velocity');
+  sim.tunables.lookAhead = 'aim';
+  sim.tunables.ballCam = true;
+  const tracked = sim.getCameraPose(blankIntent());
+  if (tracked.target.distanceTo(sim.ball.position) >= aim.target.distanceTo(sim.ball.position)) {
+    fail('ball cam did not look toward the ball');
+  }
+  sim.tunables.ballCam = false;
+
+  const wide = blankIntent(true);
+  const near = sim.getCameraPose(blankIntent()).position.distanceTo(human.position);
+  sim.tunables.wideDistance = 50;
+  const far = sim.getCameraPose(wide).position.distanceTo(human.position);
+  if (far < near + 10) fail(`wide view stayed close (${far.toFixed(1)} vs ${near.toFixed(1)})`);
+  if (sim.zoomOutLatched) fail('reading the wide pose latched the wide view');
+
+  const shell = ARENA_RADIUS - PLAYER.radius - 0.05;
+  human.position.set(0, 0, shell);
+  human.velocity.set(0, 0, 0);
+  sim.yaw = Math.PI;
+  sim.pitch = 0;
+  sim.tunables.camDistance = 18;
+  sim.tunables.camPitch = 0;
+  sim.tunables.camShell = false;
+  if (sim.getCameraPose(blankIntent()).position.length() < ARENA_RADIUS + 1) {
+    fail('shell collision off kept a long follow inside the sphere');
+  }
+  sim.tunables.camShell = true;
+  if (sim.getCameraPose(blankIntent()).position.length() > ARENA_RADIUS - CAMERA.wallClearance + 0.05) {
+    fail('shell collision on let the camera leave the sphere');
+  }
+
+  human.position.set(0, 0, 0);
+  human.facing.set(1, 0, 0);
+  sim.yaw = 0;
+  sim.pitch = 0.2;
+  sim.tunables.camRecenter = true;
+  sim.tunables.camRecenterDelay = 0.1;
+  sim.tunables.camShell = true;
+  sim.tunables.camDistance = CAMERA.chaseDistance;
+  const before = angle(sim.getCameraPose(blankIntent()).target.clone().sub(human.position).normalize(), human.facing);
+  const idle = blankIntent();
+  for (let i = 0; i < 40; i++) sim.updateAimPresentation(idle, 1 / 60);
+  const afterForward = new THREE.Vector3(0, 0, 1);
+  afterForward.copy(lookBasis(sim.yaw, sim.pitch, false).forward);
+  const after = angle(afterForward, human.facing);
+  if (after > before - 0.2) fail(`auto-recenter left the view ${deg(after).toFixed(1)}° off the body`);
+}
+
 function checkWideCamera(): void {
   const sim = new Simulation(defaultTunables());
   if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
@@ -2531,7 +3000,10 @@ export function runRotationChecks(): void {
   checkTriangleOpening();
   checkBodiesSeparate();
   checkShoulderCheck();
+  checkTackleCharge();
   checkDrillOpponent();
+  checkRosterEdit();
+  checkGoalies();
   checkArenaShell();
   checkWallRicochet();
   checkRimDeflection();
@@ -2543,6 +3015,7 @@ export function runRotationChecks(): void {
   checkCarryPalm();
   checkThrowPoses();
   checkAimPowerModes();
+  checkCameraSettings();
   checkWideCamera();
   checkBallFit();
   checkSpeeds();

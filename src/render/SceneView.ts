@@ -466,16 +466,31 @@ export class SceneView {
   }
 
   ensurePlayers(sim: Simulation): void {
+    const live = new Set<number>();
     for (const p of sim.players) {
-      if (this.playerMeshes.has(p.id)) continue;
-      const marker = p.role === 'human' ? 'you' : p.team === 0 && p.role === 'ai' ? 'mate' : 'none';
+      live.add(p.id);
+      const marker: 'you' | 'mate' | 'none' =
+        p.role === 'human' ? 'you' : p.team === 0 && p.role === 'ai' ? 'mate' : 'none';
+      const existing = this.playerMeshes.get(p.id);
+      if (existing?.userData.marker === marker) continue;
+      if (existing) {
+        this.scene.remove(existing);
+        this.playerMeshes.delete(p.id);
+      }
       const group = createSwimmer(p.team, marker);
       group.userData.team = p.team;
       group.userData.playerId = p.id;
+      group.userData.marker = marker;
       if (this.swimmerTemplate) attachSwimmerModel(group, this.swimmerTemplate, p.team, p.id);
       group.visible = p.active && p.role !== 'stub';
       this.scene.add(group);
       this.playerMeshes.set(p.id, group);
+    }
+    for (const id of [...this.playerMeshes.keys()]) {
+      if (live.has(id)) continue;
+      const group = this.playerMeshes.get(id);
+      if (group) this.scene.remove(group);
+      this.playerMeshes.delete(id);
     }
   }
 
@@ -544,17 +559,17 @@ export class SceneView {
     } else {
       // Orbit the offset around the swimmer. A world-position lerp cuts a
       // chord through the body on a fast turn, and lookAt then rolls.
-      if (desiredOffset.lengthSq() > 1e-8) rotateToward(this.camOffsetDir, desiredOffset, CAMERA.lag, dt);
+      if (desiredOffset.lengthSq() > 1e-8) rotateToward(this.camOffsetDir, desiredOffset, sim.tunables.camLag, dt);
       const desiredLen = Math.max(0.25, desiredOffset.length());
-      this.camOffsetLen = THREE.MathUtils.damp(this.camOffsetLen, desiredLen, CAMERA.lag, dt);
-      this.camTarget.lerp(pose.target, 1 - Math.exp(-CAMERA.lag * dt));
+      this.camOffsetLen = THREE.MathUtils.damp(this.camOffsetLen, desiredLen, sim.tunables.camLag, dt);
+      this.camTarget.lerp(pose.target, 1 - Math.exp(-Math.max(0.5, sim.tunables.camLag) * dt));
     }
     const camPos = this.camScratch.pos.copy(humanPos).addScaledVector(this.camOffsetDir, this.camOffsetLen);
     this.camera.position.copy(camPos);
     const view = this.camScratch.view.copy(this.camTarget).sub(camPos);
     if (view.lengthSq() < 1e-8) view.copy(this.camOffsetDir).negate();
     else view.normalize();
-    stabilizeUp(this.camUp, view, pose.up, CAMERA.lag, dt);
+    stabilizeUp(this.camUp, view, pose.up, Math.max(0.5, sim.tunables.camLag), dt);
     this.camera.up.copy(this.camUp);
     this.camera.lookAt(this.camTarget);
     if (Math.abs(this.camera.fov - pose.fov) > 0.01) {

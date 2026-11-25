@@ -7,7 +7,7 @@ import type { BallState, InputIntent, PlayerState, Tunables } from '../game/type
  * and gives it back after a short hold or when you call for it.
  */
 export class TeammateAI {
-  private heldFor = 0;
+  private heldFor = new Map<number, number>();
 
   think(
     self: PlayerState,
@@ -21,15 +21,16 @@ export class TeammateAI {
     const intent = emptyIntent();
 
     if (self.hasBall) {
-      this.heldFor += dt;
+      const held = (this.heldFor.get(self.id) ?? 0) + dt;
+      this.heldFor.set(self.id, held);
       const toHuman = human.position.clone().sub(self.position);
       const dist = toHuman.length();
       if (dist > 16) intent.move.copy(toHuman).multiplyScalar(1 / dist);
-      if (this.heldFor >= tunables.teammatePassDelay || callForPass) intent.pass = true;
+      if (held >= tunables.teammatePassDelay || callForPass) intent.pass = true;
       return intent;
     }
 
-    this.heldFor = 0;
+    this.heldFor.set(self.id, 0);
 
     if (this.shouldReceive(self, ball, human)) {
       const chase = ball.position.clone().addScaledVector(ball.velocity, Math.min(0.4, ball.velocity.length() > 1 ? 0.35 : 0));
