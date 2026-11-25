@@ -272,6 +272,8 @@ export interface Tunables {
   goalieCatchDifficulty: number;
   /** Simulation speed relative to the rendered frame. 1 is real time. */
   timeScale: number;
+  /** When true, `timeScale` applies only while the ball is in flight. */
+  timeScaleFlightOnly: boolean;
   /** 0–100. Reaction, prediction, speed, and catch chance for both goalies. */
   goalieSkill: number;
   /** Used when the home override is on. */

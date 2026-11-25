@@ -42,6 +42,8 @@ import {
 const POWER_MODE_KEY = 'blitzball.powerMode';
 const CURVE_AIM_OFFSET_KEY = 'blitzball.curveAimOffset';
 const TIME_SCALE_KEY = 'blitzball.timeScale';
+const TIME_SCALE_VERSION_KEY = 'blitzball.timeScaleVersion';
+const TIME_SCALE_FLIGHT_KEY = 'blitzball.timeScaleFlight';
 const SECTIONS_KEY = 'blitzball.devSections';
 
 export interface RosterBotView {
@@ -104,15 +106,46 @@ export function parseCurveAimOffset(raw: string | null): number | null {
 }
 
 function loadTimeScale(): number | null {
-  if (typeof localStorage === 'undefined') return null;
-  const parsed = Number(localStorage.getItem(TIME_SCALE_KEY));
-  if (!Number.isFinite(parsed)) return null;
-  return clampTimeScale(parsed);
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    // Older builds saved a slow scale with no way back to 1x. Treat that as unset.
+    if (localStorage.getItem(TIME_SCALE_VERSION_KEY) !== '1') {
+      localStorage.setItem(TIME_SCALE_KEY, String(TIME_SCALE_DEFAULT));
+      localStorage.setItem(TIME_SCALE_VERSION_KEY, '1');
+      return TIME_SCALE_DEFAULT;
+    }
+    const parsed = Number(localStorage.getItem(TIME_SCALE_KEY));
+    if (!Number.isFinite(parsed)) return null;
+    return clampTimeScale(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function loadFlightOnly(): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    return localStorage.getItem(TIME_SCALE_FLIGHT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveFlightOnly(on: boolean): void {
+  try {
+    localStorage.setItem(TIME_SCALE_FLIGHT_KEY, on ? '1' : '0');
+  } catch {
+    // Ignore quota and private-mode failures.
+  }
 }
 
 function saveTimeScale(value: number): void {
-  if (typeof localStorage === 'undefined') return;
-  localStorage.setItem(TIME_SCALE_KEY, String(clampTimeScale(value)));
+  try {
+    localStorage.setItem(TIME_SCALE_KEY, String(clampTimeScale(value)));
+    localStorage.setItem(TIME_SCALE_VERSION_KEY, '1');
+  } catch {
+    // Ignore quota and private-mode failures.
+  }
 }
 
 function saveCurveAimOffset(value: number): void {
@@ -252,6 +285,7 @@ export function defaultTunables(): Tunables {
     goalieReaction: GOALIE.reaction,
     goalieCatchDifficulty: GOALIE.catchDifficulty,
     timeScale: TIME_SCALE_DEFAULT,
+    timeScaleFlightOnly: false,
     goalieSkill: 70,
     goalieSkillHome: 70,
     goalieSkillAway: 70,
@@ -309,6 +343,7 @@ export class DevPanel {
     if (savedOffset !== null) this.tunables.curveAimOffset = savedOffset;
     const savedScale = loadTimeScale();
     if (savedScale !== null) this.tunables.timeScale = savedScale;
+    this.tunables.timeScaleFlightOnly = loadFlightOnly();
     const savedRoster = loadRoster();
     if (savedRoster) {
       this.matchPreset = savedRoster.preset ?? 'custom';
@@ -324,6 +359,15 @@ export class DevPanel {
     if (savedCamera) applyCameraSave(this.tunables, savedCamera);
     this.collapsed = loadCollapsed();
     this.render();
+  }
+
+  resetTimeScale(): void {
+    this.tunables.timeScale = TIME_SCALE_DEFAULT;
+    saveTimeScale(TIME_SCALE_DEFAULT);
+    const input = this.root.querySelector<HTMLInputElement>('input[data-time-scale]');
+    const value = input?.parentElement?.querySelector('.value');
+    if (input) input.value = String(TIME_SCALE_DEFAULT);
+    if (value) value.textContent = `${TIME_SCALE_DEFAULT.toFixed(2)}x`;
   }
 
   setPaused(paused: boolean): void {
@@ -632,6 +676,7 @@ export class DevPanel {
 
     this.section('Playback', 'playback', () => {
       this.range('Time scale', 'timeScale', 0.05, 2, 0.05);
+      this.bool('Only while ball in flight', 'timeScaleFlightOnly');
       const row = document.createElement('div');
       row.className = 'row';
       const pause = document.createElement('button');
@@ -642,7 +687,11 @@ export class DevPanel {
       step.type = 'button';
       step.textContent = 'Step frame';
       step.addEventListener('click', () => this.onStepFrame?.());
-      row.append(pause, step);
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.textContent = 'Reset to 1x';
+      reset.addEventListener('click', () => this.resetTimeScale());
+      row.append(pause, step, reset);
       this.mount.append(row);
       this.pauseButton = pause;
     });
@@ -1041,6 +1090,7 @@ export class DevPanel {
       // other checkboxes must not snap yaw/pitch back to kickoff.
       if (key === 'goalAxisUp' || key === 'waterRefraction' || key === 'showLightBands') this.onChange(key);
       if (key === 'goalieHomeOverride' || key === 'goalieAwayOverride') this.persistRoster();
+      if (key === 'timeScaleFlightOnly') saveFlightOnly(input.checked);
     });
     row.append(lab, input);
     this.mount.append(row);
@@ -1109,9 +1159,11 @@ export class DevPanel {
     input.max = String(max);
     input.step = String(step);
     input.value = String(this.tunables[key]);
+    if (key === 'timeScale') input.dataset.timeScale = '1';
     const value = document.createElement('span');
     value.className = 'value';
-    value.textContent = Number(this.tunables[key]).toFixed(2);
+    value.textContent =
+      key === 'timeScale' ? `${Number(this.tunables[key]).toFixed(2)}x` : Number(this.tunables[key]).toFixed(2);
     input.addEventListener('input', () => {
       const n = parseFloat(input.value);
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
@@ -1121,6 +1173,8 @@ export class DevPanel {
       if (key === 'timeScale') {
         const clamped = clampTimeScale(n);
         this.tunables.timeScale = clamped;
+        input.value = String(clamped);
+        value.textContent = `${clamped.toFixed(2)}x`;
         saveTimeScale(clamped);
       }
       if (key === 'goalieSkill' || key === 'goalieSkillHome' || key === 'goalieSkillAway') this.persistRoster();
