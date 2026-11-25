@@ -1,4 +1,4 @@
-/** Character Forge runtime_v2 bands, low to high. */
+/** cf-kit/1 bands, low to high. A higher band wins a conflict. */
 export const LAYER_BANDS = ['under', 'base', 'mid', 'armor', 'outer'] as const;
 
 export type LayerBand = (typeof LAYER_BANDS)[number];
@@ -15,24 +15,30 @@ export interface SlotDef {
   region?: string;
 }
 
+/**
+ * One wardrobe.json garment, plus its registry id.
+ * `displaces` and `incompatible` are the same list. A document may use either name.
+ */
 export interface GarmentDef {
   id: string;
   slot: string;
   band: string;
   layer: number;
+  kind?: string;
   label: string;
   file: string;
   material: string;
+  texture?: string;
   mask?: string;
   hides: string[];
-  /** Other garments that must not be worn with this one. */
+  hiddenBy: string[];
   displaces: string[];
-  incompatibilities: string[];
-  /** Pulled in automatically when this piece is worn. */
+  incompatible: string[];
   wornOver: string[];
   nodes: string[];
-  /** Hide token (`trunks:leg_L`) to the mesh node name. */
+  /** Hide token (`blitzball/trunks:leg_L`) to the mesh node name. */
   segments: Record<string, string>;
+  shellOffsetM?: number | [number, number];
 }
 
 export interface LookDef {
@@ -42,16 +48,43 @@ export interface LookDef {
   materials: string[];
 }
 
-/** wardrobe.json, plus the fields a project may omit. */
+/** wardrobe.json. Garment ids in the file are unprefixed; loadKit adds the project prefix. */
 export interface WardrobeManifest {
+  format?: string;
   base?: {
     file?: string;
     segments?: Record<string, string>;
   };
   bands?: string[];
   slots?: Record<string, { band?: string; region?: string; layer?: number }>;
-  garments?: Record<string, Partial<GarmentDef> & { file?: string }>;
+  garments?: Record<string, WardrobeGarment>;
   looks?: Record<string, { file?: string; garments?: string[]; materials?: string[] }>;
+  tint?: {
+    material?: string;
+    how?: string;
+    mask?: string;
+  };
+}
+
+/** Fields a wardrobe garment may carry. `incompatible` is an alias of `displaces`. */
+export interface WardrobeGarment {
+  slot?: string;
+  band?: string;
+  layer?: number;
+  kind?: string;
+  label?: string;
+  file?: string;
+  material?: string;
+  texture?: string;
+  mask?: string;
+  hides?: string[];
+  hiddenBy?: string[];
+  displaces?: string[];
+  incompatible?: string[];
+  wornOver?: string[];
+  nodes?: string[];
+  segments?: Record<string, string>;
+  shellOffsetM?: number | [number, number];
 }
 
 export interface OutfitDef {

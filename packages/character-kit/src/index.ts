@@ -1,6 +1,6 @@
 export { LAYER_BANDS } from './types';
-export { createCharacterKit, isLayerBand } from './kit';
-export type { CharacterKit } from './kit';
+export { createCharacterKit, isLayerBand, qualifyId } from './kit';
+export type { CharacterKit, KitRegistry, LoadKitOptions } from './kit';
 export {
   applyHidePlan,
   attachGarment,
@@ -21,5 +21,6 @@ export type {
   OutfitDef,
   RaceDef,
   SlotDef,
+  WardrobeGarment,
   WardrobeManifest,
 } from './types';

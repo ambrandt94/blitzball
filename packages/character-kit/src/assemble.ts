@@ -22,8 +22,10 @@ const TINT_CHUNK = /* glsl */ `
   vec4 sampledDiffuseColor = texture2D( map, vMapUv );
   float tintAmount = texture2D( tintMaskMap, vMapUv ).r;
   tintAmount = mix( tintAmount, 1.0 - tintAmount, tintInvert );
-  sampledDiffuseColor.rgb = mix( sampledDiffuseColor.rgb, sampledDiffuseColor.rgb * teamTintColor, tintAmount );
-  diffuseColor *= sampledDiffuseColor;
+  vec3 piece = diffuseColor.rgb;
+  vec3 trim = sampledDiffuseColor.rgb * piece;
+  vec3 dyed = trim * teamTintColor;
+  diffuseColor = vec4( mix( trim, dyed, tintAmount ), diffuseColor.a * sampledDiffuseColor.a );
 #endif
 `;
 
@@ -91,8 +93,9 @@ function solidMask(): THREE.DataTexture {
 }
 
 /**
- * Team tint through the mask: `mix(tex, tex * color, mask)`.
- * White mask tints, black keeps the trim. A missing mask tints the whole piece.
+ * Dye is material color times team color. The mask keeps fixed trims out of the team multiply.
+ * White mask tints, black keeps the trim. `invertMask` flips that, for packs that paint the cloth black.
+ * The material's own color is the piece dye and is left as the caller set it.
  * Call this on a material instance that will not be cloned afterwards.
  */
 export function installTeamTint(
@@ -101,7 +104,6 @@ export function installTeamTint(
   mask: THREE.Texture | null,
   options: { invertMask?: boolean } = {},
 ): void {
-  material.color.set(0xffffff);
   if (mask) {
     mask.colorSpace = THREE.NoColorSpace;
     nearestTexture(mask);

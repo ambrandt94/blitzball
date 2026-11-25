@@ -17,16 +17,16 @@ const manifest = JSON.parse(readFileSync('public/characters/wardrobe.json', 'utf
 const kit = createBlitzballKit(manifest);
 
 const expectHidden: Record<OutfitId, { worn: string[]; visible: string[]; body: string[]; part?: string }> = {
-  onepiece: { worn: ['onepiece'], visible: ['onepiece'], body: ['Body_pelvis', 'Body_torso'] },
-  trunks: { worn: ['trunks'], visible: ['trunks'], body: ['Body_pelvis'] },
+  onepiece: { worn: ['blitzball/onepiece'], visible: ['blitzball/onepiece'], body: ['Body_pelvis', 'Body_torso'] },
+  trunks: { worn: ['blitzball/trunks'], visible: ['blitzball/trunks'], body: ['Body_pelvis'] },
   boardshorts: {
-    worn: ['trunks', 'boardshorts'],
-    visible: ['boardshorts'],
+    worn: ['blitzball/trunks', 'blitzball/boardshorts'],
+    visible: ['blitzball/boardshorts'],
     body: ['Body_pelvis', 'Body_thigh_L', 'Body_thigh_R'],
   },
   boardshorts_asym: {
-    worn: ['trunks', 'boardshorts_asym'],
-    visible: ['trunks', 'boardshorts_asym'],
+    worn: ['blitzball/trunks', 'blitzball/boardshorts_asym'],
+    visible: ['blitzball/trunks', 'blitzball/boardshorts_asym'],
     body: ['Body_pelvis', 'Body_thigh_L'],
     part: 'Garment_trunks_leg_L',
   },
@@ -49,15 +49,22 @@ for (const [id, expect] of Object.entries(expectHidden) as [OutfitId, (typeof ex
   }
 }
 
+const catalog = kit.registry();
+if (catalog.project !== 'blitzball') fail(`registry project was ${catalog.project}`);
+if (catalog.bands.join('<') !== 'under<base<mid<armor<outer') fail('band order changed');
+const shorts = catalog.garments.find((garment) => garment.id === 'blitzball/boardshorts');
+if (!shorts?.displaces.includes('blitzball/boardshorts_asym')) fail('displaces was not prefixed');
+if (!shorts.incompatible.includes('blitzball/boardshorts_asym')) fail('incompatible did not mirror displaces');
+
 const both = kit.loadoutFromOutfit('boardshorts');
-both.slots.legs = 'boardshorts';
-both.slots.torso_inner = 'onepiece';
+both.slots.legs = 'blitzball/boardshorts';
+both.slots.torso_inner = 'blitzball/onepiece';
 const mixed = kit.resolve(both);
-if (mixed.visible.includes('trunks')) fail('one-piece left the trunks on');
+if (mixed.visible.includes('blitzball/trunks')) fail('one-piece left the trunks on');
 if (!mixed.hiddenBodyNodes.includes('Body_torso')) fail('one-piece left the torso skin on');
 
-const round = kit.parse(kit.serialize(kit.loadoutFromOutfit('boardshorts_asym', { trunks: '#112233' })));
-if (!round || round.outfit !== 'boardshorts_asym' || round.colors.trunks !== '#112233') {
+const round = kit.parse(kit.serialize(kit.loadoutFromOutfit('boardshorts_asym', { 'blitzball/trunks': '#112233' })));
+if (!round || round.outfit !== 'boardshorts_asym' || round.colors['blitzball/trunks'] !== '#112233') {
   fail('loadout did not round-trip');
 }
 if (kit.parse('{') !== null) fail('broken loadout parsed');
@@ -82,7 +89,7 @@ const hand = base.scene.getObjectByName('Hand_R');
 const bound = meshes[0]?.skeleton.bones.find((bone) => bone.name === 'Hand_R');
 if (!hand || bound !== hand) fail('garment did not bind to the base hand');
 const asym = kit.resolve(kit.loadoutFromOutfit('boardshorts_asym'));
-applyHidePlan(base.scene, { trunks: meshes }, asym, kit.baseSegments());
+applyHidePlan(base.scene, { 'blitzball/trunks': meshes }, asym, kit.baseSegments());
 const hidden = meshes
   .filter((mesh) => !mesh.visible)
   .map((mesh) => mesh.name)

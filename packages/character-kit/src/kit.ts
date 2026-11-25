@@ -8,6 +8,7 @@ import type {
   OutfitDef,
   RaceDef,
   SlotDef,
+  WardrobeGarment,
   WardrobeManifest,
 } from './types';
 
@@ -18,26 +19,60 @@ function asList(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
 }
 
-function garmentFromManifest(id: string, raw: Partial<GarmentDef> & { file?: string }): GarmentDef | null {
+/** `body:pelvis` stays put. `trunks` and `trunks:leg_L` become `project/trunks` and `project/trunks:leg_L`. */
+export function qualifyId(project: string, id: string): string {
+  if (!project || !id || id.startsWith('body:') || id.startsWith(`${project}/`)) return id;
+  const colon = id.indexOf(':');
+  if (colon > 0) return `${project}/${id.slice(0, colon)}${id.slice(colon)}`;
+  return `${project}/${id}`;
+}
+
+function qualifyList(project: string, ids: string[]): string[] {
+  return ids.map((id) => qualifyId(project, id));
+}
+
+function garmentFromManifest(id: string, raw: WardrobeGarment, project: string): GarmentDef | null {
   if (!raw.file) return null;
-  const displaces = asList(raw.displaces);
-  const incompatibilities = asList(raw.incompatibilities);
+  const blocked = qualifyList(project, [...asList(raw.displaces), ...asList(raw.incompatible)]);
+  const segments: Record<string, string> = {};
+  for (const [token, node] of Object.entries(raw.segments ?? {})) {
+    segments[qualifyId(project, token)] = node;
+  }
   return {
-    id,
+    id: qualifyId(project, id),
     slot: raw.slot ?? id,
     band: raw.band ?? 'base',
     layer: typeof raw.layer === 'number' ? raw.layer : 0,
+    kind: raw.kind,
     label: raw.label ?? id,
     file: raw.file,
     material: raw.material ?? 'TeamTint',
+    texture: raw.texture,
     mask: raw.mask,
-    hides: asList(raw.hides),
-    displaces,
-    incompatibilities,
-    wornOver: asList(raw.wornOver),
+    hides: qualifyList(project, asList(raw.hides)),
+    hiddenBy: qualifyList(project, asList(raw.hiddenBy)),
+    displaces: blocked,
+    incompatible: blocked,
+    wornOver: qualifyList(project, asList(raw.wornOver)),
     nodes: asList(raw.nodes),
-    segments: raw.segments ?? {},
+    segments,
+    shellOffsetM: raw.shellOffsetM,
   };
+}
+
+export interface KitRegistry {
+  project: string;
+  bands: string[];
+  races: RaceDef[];
+  slots: SlotDef[];
+  garments: GarmentDef[];
+  looks: LookDef[];
+  base: { file: string; segments: Record<string, string> };
+}
+
+export interface LoadKitOptions {
+  /** Prefixed onto garment ids, for example `blitzball` yields `blitzball/boardshorts`. */
+  project?: string;
 }
 
 export interface CharacterKit {
@@ -45,18 +80,14 @@ export interface CharacterKit {
   registerSlot(slot: SlotDef): void;
   registerGarment(garment: GarmentDef): void;
   registerOutfit(outfit: OutfitDef): void;
-  registerLook(look: LookDef): void;
-  setBands(bands: readonly string[]): void;
-  setBase(file: string, segments: Record<string, string>): void;
-  /** Slots, garments, looks, and the base file from a wardrobe.json document. */
-  registerWardrobe(manifest: WardrobeManifest): void;
-  race(id: string): RaceDef | null;
-  races(): RaceDef[];
-  slot(id: string): SlotDef | null;
+  /**
+   * Read a wardrobe.json document. Garment ids, hide targets, and `displaces`
+   * / `incompatible` entries are stored with the project prefix.
+   */
+  loadKit(manifest: WardrobeManifest, options?: LoadKitOptions): void;
+  registry(): KitRegistry;
   garment(id: string): GarmentDef | null;
   outfit(id: string): OutfitDef | null;
-  outfits(): OutfitDef[];
-  look(id: string): LookDef | null;
   baseFile(): string;
   baseSegments(): Record<string, string>;
   loadoutFromOutfit(outfitId: string, colors?: Record<string, string>): Loadout;
@@ -72,6 +103,7 @@ export function createCharacterKit(): CharacterKit {
   const outfits = new Map<string, OutfitDef>();
   const looks = new Map<string, LookDef>();
   let bands: string[] = [...LAYER_BANDS];
+  let project = '';
   let baseFile = '';
   let baseSegments: Record<string, string> = {};
 
@@ -84,8 +116,8 @@ export function createCharacterKit(): CharacterKit {
     return (
       a.displaces.includes(b.id) ||
       b.displaces.includes(a.id) ||
-      a.incompatibilities.includes(b.id) ||
-      b.incompatibilities.includes(a.id) ||
+      a.incompatible.includes(b.id) ||
+      b.incompatible.includes(a.id) ||
       (a.slot === b.slot && a.id !== b.id)
     );
   }
@@ -105,23 +137,15 @@ export function createCharacterKit(): CharacterKit {
       slots.set(slot.id, slot);
     },
     registerGarment(garment) {
-      garments.set(garment.id, garment);
+      const blocked = [...new Set([...garment.displaces, ...garment.incompatible])];
+      garments.set(garment.id, { ...garment, displaces: blocked, incompatible: blocked });
     },
     registerOutfit(outfit) {
       outfits.set(outfit.id, outfit);
     },
-    registerLook(look) {
-      looks.set(look.id, look);
-    },
-    setBands(next) {
-      bands = [...next];
-    },
-    setBase(file, segments) {
-      baseFile = file;
-      baseSegments = { ...segments };
-    },
-    registerWardrobe(manifest) {
-      if (manifest.bands && manifest.bands.length > 0) bands = [...manifest.bands];
+    loadKit(manifest, options) {
+      project = options?.project ?? '';
+      bands = manifest.bands && manifest.bands.length > 0 ? [...manifest.bands] : [...LAYER_BANDS];
       if (manifest.base?.file) baseFile = manifest.base.file;
       if (manifest.base?.segments) baseSegments = { ...manifest.base.segments };
       for (const [id, slot] of Object.entries(manifest.slots ?? {})) {
@@ -133,39 +157,35 @@ export function createCharacterKit(): CharacterKit {
         });
       }
       for (const [id, raw] of Object.entries(manifest.garments ?? {})) {
-        const garment = garmentFromManifest(id, raw);
+        const garment = garmentFromManifest(id, raw, project);
         if (garment) kit.registerGarment(garment);
       }
       for (const [id, look] of Object.entries(manifest.looks ?? {})) {
         if (!look.file) continue;
-        kit.registerLook({
+        looks.set(id, {
           id,
           file: look.file,
-          garments: asList(look.garments),
+          garments: qualifyList(project, asList(look.garments)),
           materials: asList(look.materials),
         });
       }
     },
-    race(id) {
-      return races.get(id) ?? null;
-    },
-    races() {
-      return [...races.values()];
-    },
-    slot(id) {
-      return slots.get(id) ?? null;
+    registry() {
+      return {
+        project,
+        bands: [...bands],
+        races: [...races.values()],
+        slots: [...slots.values()],
+        garments: [...garments.values()],
+        looks: [...looks.values()],
+        base: { file: baseFile, segments: { ...baseSegments } },
+      };
     },
     garment(id) {
       return garments.get(id) ?? null;
     },
     outfit(id) {
       return outfits.get(id) ?? null;
-    },
-    outfits() {
-      return [...outfits.values()];
-    },
-    look(id) {
-      return looks.get(id) ?? null;
     },
     baseFile() {
       return baseFile;
