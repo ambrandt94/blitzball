@@ -212,6 +212,9 @@ export function buildGoalFrame(team: 0 | 1): THREE.Group {
   spikeCap.position.set(bottom.x, bottom.y - 2.85, 0.12);
   group.add(spikeCap);
 
+  const target = new THREE.Group();
+  target.name = 'goalTarget';
+
   const bandMat = new THREE.MeshBasicMaterial({
     color: 0xe9fbff,
     transparent: true,
@@ -229,7 +232,7 @@ export function buildGoalFrame(team: 0 | 1): THREE.Group {
     const mat = bandMat.clone();
     mat.opacity = band.opacity;
     for (let i = 0; i < 3; i++) {
-      group.add(tube(goalFrameCurve(i as 0 | 1 | 2, 0, band.z, band.scale), band.radius, mat, 18));
+      target.add(tube(goalFrameCurve(i as 0 | 1 | 2, 0, band.z, band.scale), band.radius, mat, 18));
     }
   }
 
@@ -247,7 +250,7 @@ export function buildGoalFrame(team: 0 | 1): THREE.Group {
     }),
   );
   back.position.z = GOAL.pocketDepth * 0.98;
-  group.add(back);
+  target.add(back);
 
   const crest = new THREE.Mesh(
     new THREE.PlaneGeometry(GOAL.rimRadius * 0.72, GOAL.rimRadius * 0.72),
@@ -261,7 +264,7 @@ export function buildGoalFrame(team: 0 | 1): THREE.Group {
     }),
   );
   crest.position.z = GOAL.pocketDepth * 0.9;
-  group.add(crest);
+  target.add(crest);
 
   const glow = new THREE.Mesh(
     new THREE.ShapeGeometry(triangleShape(GOAL.scoreScale * 0.92)),
@@ -276,7 +279,8 @@ export function buildGoalFrame(team: 0 | 1): THREE.Group {
     }),
   );
   glow.position.z = 0.2;
-  group.add(glow);
+  target.add(glow);
+  group.add(target);
 
   const flash = new THREE.Mesh(
     new THREE.ShapeGeometry(triangleShape(0.96)),

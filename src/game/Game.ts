@@ -4,6 +4,7 @@ import { SceneView } from '../render/SceneView';
 import { Simulation } from '../sim/Simulation';
 import { BLITZBALL_OUTFITS } from '../characters/outfits';
 import { loadCharacterSettings, saveCharacterSettings } from '../ui/characterSettings';
+import { loadIndicatorSettings, saveIndicatorSettings } from '../ui/indicatorSettings';
 import { DevPanel, defaultTunables } from '../ui/DevPanel';
 import type { InputIntent } from './types';
 
@@ -126,8 +127,13 @@ export class Game {
           this.view.setCharacters(settings);
         },
       },
+      (settings) => {
+        saveIndicatorSettings(settings);
+        this.view.setIndicators(settings);
+      },
     );
     this.view.setCharacters(loadCharacterSettings());
+    this.view.setIndicators(loadIndicatorSettings());
     const shot = new URLSearchParams(location.search).get('shot');
     if (shot === 'wide' || shot === 'inside' || shot === 'ball' || shot === 'windup' || shot === 'bank' || shot === 'play') {
       this.shotMode = shot;
