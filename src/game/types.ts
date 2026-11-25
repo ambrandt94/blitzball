@@ -143,6 +143,8 @@ export interface PlayerState {
   up: THREE.Vector3;
   sprinting: boolean;
   hasBall: boolean;
+  /** Hand that cradles a held ball. Defaults to the right. */
+  throwArm: 'right' | 'left';
   tackleCooldown: number;
   reclaimGrace: number;
   /**

@@ -14,6 +14,7 @@ import { createSwimmer } from './swimmer';
 import {
   attachSwimmerModel,
   prepareSwimmerTemplate,
+  readCarrierPalm,
   swimmerRig,
   updateSwimmerRig,
   type SwimmerTemplate,
@@ -114,6 +115,7 @@ export class SceneView {
   private bodyY = new THREE.Vector3();
   private bodyZ = new THREE.Vector3();
   private bodyBasis = new THREE.Matrix4();
+  private palmPoint = new THREE.Vector3();
   private pulse = 0;
   private water!: WaterRig;
   private trails!: BubblePool;
@@ -574,8 +576,15 @@ export class SceneView {
         mesh.rotateZ(-0.55 * follow);
       }
       const rig = swimmerRig(mesh);
-      if (rig) updateSwimmerRig(rig, mesh, p, sim, dt);
-      else this.poseLimbs(mesh, p, sim, dt);
+      if (rig) {
+        updateSwimmerRig(rig, mesh, p, sim, dt);
+        // After the mixer and the pose offsets, so the ball sits in the palm
+        // for this frame and the sim releases from that same point.
+        sim.setCarryPalm(p.id, readCarrierPalm(rig, p, this.palmPoint));
+      } else {
+        this.poseLimbs(mesh, p, sim, dt);
+        sim.clearCarryPalm(p.id);
+      }
       const flash = mesh.getObjectByName('hitFlash');
       if (flash instanceof THREE.Mesh) {
         const mat = flash.material as THREE.MeshBasicMaterial;

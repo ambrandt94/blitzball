@@ -44,6 +44,9 @@ import {
 import { clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
+/** Fresh catches ease into the palm instead of popping onto the hand bone. */
+const CARRY_BLEND_SECONDS = 0.08;
+
 function makePlayer(
   id: number,
   team: 0 | 1,
@@ -62,6 +65,7 @@ function makePlayer(
     up: new THREE.Vector3(0, 1, 0),
     sprinting: false,
     hasBall: false,
+    throwArm: 'right',
     tackleCooldown: 0,
     reclaimGrace: 0,
     selfCatchLock: false,
@@ -197,6 +201,18 @@ export class Simulation {
     predictVel: new THREE.Vector3(),
     burstLaunch: new THREE.Vector3(),
   };
+  /**
+   * Palm center in the carrier's body basis (right, up, facing), written by the
+   * view after the mixer and pose offsets. Missing means the procedural offset.
+   */
+  private carryPalm = new Map<number, THREE.Vector3>();
+  /** 0 at the catch, 1 once the ball has settled into the palm. */
+  private carryBlend = 1;
+  private carryFrom = new THREE.Vector3();
+  private palmRight = new THREE.Vector3();
+  private palmUp = new THREE.Vector3();
+  private palmForward = new THREE.Vector3();
+  private palmDelta = new THREE.Vector3();
 
   tunables: Tunables;
 
@@ -735,7 +751,7 @@ export class Simulation {
     const aim = human.position.clone().addScaledVector(human.velocity, 0.28).sub(player.position);
     if (aim.lengthSq() < 0.25) aim.copy(player.facing);
     else aim.normalize();
-    this.placeRelease(player, aim);
+    this.releaseAtHand(player, aim);
     const dist = Math.max(3, player.position.distanceTo(human.position));
     const passSpeed = Math.max(4, this.tunables.passSpeed);
     const speed = Math.min(passSpeed, Math.max(passSpeed * 0.45, dist * this.tunables.ballDrag * 1.25));
@@ -762,7 +778,7 @@ export class Simulation {
       if (intent.drop) {
         this.clearShotAim();
         const toss = this.lookForward(human);
-        this.placeRelease(human, toss);
+        this.releaseAtHand(human, toss);
         this.releaseBall(toss.multiplyScalar(4).add(human.velocity));
         human.reclaimGrace = PLAYER.reclaimCoyote;
         this.match.statusMessage = 'Ball dropped';
@@ -893,6 +909,14 @@ export class Simulation {
     const sep = PLAYER.radius + BALL.radius;
     for (const player of this.players) {
       if (!player.active) continue;
+      // A pass, shot, drop, or check leaves from the palm, which overlaps the
+      // body sphere. Pushing it out here would pop it off the hand.
+      if (
+        player.id === this.ball.lastOwnerId &&
+        (player.selfCatchLock || player.reclaimGrace > 0 || this.ball.claimLock > 0.15)
+      ) {
+        continue;
+      }
       const delta = this.ball.position.clone().sub(player.position);
       const dist = delta.length();
       if (dist >= sep || dist <= 1e-5) continue;
@@ -944,6 +968,8 @@ export class Simulation {
     this.ball.ownerId = player.id;
     this.ball.lastOwnerId = player.id;
     this.ball.velocity.set(0, 0, 0);
+    this.carryFrom.copy(this.ball.position);
+    this.carryBlend = 0;
     this.playPose(player, 'claim', 0.34);
   }
 
@@ -1343,7 +1369,7 @@ export class Simulation {
       return;
     }
     const aim = this.getAimDirection(player, false);
-    this.placeRelease(player, aim);
+    this.releaseAtHand(player, aim);
     const speed = THREE.MathUtils.lerp(this.shotSpeedMin(), this.shotSpeedMax(), charge);
     const impulse = aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.35));
     this.noteThrow(player);
@@ -1389,19 +1415,114 @@ export class Simulation {
     this.match.statusMessage = thrownToMate ? 'Throw to teammate' : charge > 0.7 ? 'High power!' : 'Arc shot';
   }
 
-  /** Carry point: in front of the chest, along facing. No lag. */
+  /** Carry point: the rig's palm when the view has reported one, otherwise the chest offset. */
   private stickBallToHand(owner: PlayerState): void {
-    this.ball.position
-      .copy(owner.position)
-      .addScaledVector(owner.facing, BALL.holdOffset)
-      .addScaledVector(owner.up, 0.15);
+    this.carriedPoint(owner, this.ball.position);
     this.ball.velocity.copy(owner.velocity);
+  }
+
+  /**
+   * Passes, shots, drops, and checks leave from the palm when a rig reported
+   * one. The procedural swimmer keeps the offset just outside the body.
+   */
+  private releaseAtHand(player: PlayerState, aim: THREE.Vector3): void {
+    if (this.carryPalm.has(player.id)) {
+      this.stickBallToHand(player);
+      return;
+    }
+    this.placeRelease(player, aim);
   }
 
   /** Put a released ball just outside the body along `aim` so the carrier doesn't block it. */
   private placeRelease(player: PlayerState, aim: THREE.Vector3): void {
     const gap = PLAYER.radius + BALL.radius + 0.2;
     this.ball.position.copy(player.position).addScaledVector(aim, gap);
+  }
+
+  /**
+   * The view calls this after the mixer and the pose offsets, once per swimmer
+   * that has a rig. The ball then tracks that palm, including through the
+   * catch blend. Procedural swimmers never call it and keep the chest offset.
+   */
+  setCarryPalm(playerId: number, worldPoint: THREE.Vector3): void {
+    const player = this.players[playerId];
+    if (!player || !this.writePalmLocal(player, worldPoint)) return;
+    if (this.ball.possession !== 'held' || this.ball.ownerId !== playerId) return;
+    this.ball.position.copy(this.carriedPoint(player, this.tmp.holdTarget));
+    const tail = this.ball.trail[this.ball.trail.length - 1];
+    if (tail) tail.copy(this.ball.position);
+  }
+
+  /** Drop a rig's palm so the procedural offset takes over again. */
+  clearCarryPalm(playerId: number): void {
+    this.carryPalm.delete(playerId);
+  }
+
+  private writePalmLocal(player: PlayerState, worldPoint: THREE.Vector3): boolean {
+    if (!this.prepareBodyAxes(player)) return false;
+    let local = this.carryPalm.get(player.id);
+    const fresh = !local;
+    if (!local) {
+      local = new THREE.Vector3();
+      this.carryPalm.set(player.id, local);
+    }
+    this.palmDelta.copy(worldPoint).sub(player.position);
+    local.set(this.palmDelta.dot(this.palmRight), this.palmDelta.dot(this.palmUp), this.palmDelta.dot(this.palmForward));
+    if (fresh && this.ball.possession === 'held' && this.ball.ownerId === player.id && this.carryBlend >= 1) {
+      this.carryFrom.copy(this.ball.position);
+      this.carryBlend = 0;
+    }
+    return true;
+  }
+
+  private prepareBodyAxes(player: PlayerState): boolean {
+    this.palmForward.copy(player.facing);
+    if (this.palmForward.lengthSq() < 1e-8) return false;
+    this.palmForward.normalize();
+    this.palmUp.copy(player.up).addScaledVector(this.palmForward, -player.up.dot(this.palmForward));
+    if (this.palmUp.lengthSq() < 1e-6) {
+      this.palmUp.set(0, 1, 0).addScaledVector(this.palmForward, -this.palmForward.y);
+      if (this.palmUp.lengthSq() < 1e-6) this.palmUp.set(1, 0, 0);
+    }
+    this.palmUp.normalize();
+    this.palmRight.crossVectors(this.palmUp, this.palmForward).normalize();
+    return true;
+  }
+
+  private readPalmWorld(player: PlayerState, local: THREE.Vector3, out: THREE.Vector3): boolean {
+    if (!this.prepareBodyAxes(player)) return false;
+    out
+      .copy(player.position)
+      .addScaledVector(this.palmRight, local.x)
+      .addScaledVector(this.palmUp, local.y)
+      .addScaledVector(this.palmForward, local.z);
+    return true;
+  }
+
+  /** Palm center, or the chest offset when this swimmer has no rig sample. */
+  private carriedPoint(owner: PlayerState, out: THREE.Vector3): THREE.Vector3 {
+    const local = this.carryPalm.get(owner.id);
+    if (local && this.readPalmWorld(owner, local, out)) {
+      if (this.carryBlend < 1) {
+        const t = this.carryBlend;
+        const eased = t * t * (3 - 2 * t);
+        out.lerp(this.carryFrom, 1 - eased);
+      }
+      return out;
+    }
+    return out
+      .copy(owner.position)
+      .addScaledVector(owner.facing, BALL.holdOffset)
+      .addScaledVector(owner.up, 0.15);
+  }
+
+  /** Look-ray carry point. A reported palm replaces the fixed chest offset. */
+  private lookCarryPoint(player: PlayerState, out: THREE.Vector3): THREE.Vector3 {
+    if (this.carryPalm.has(player.id) && this.ball.possession === 'held' && this.ball.ownerId === player.id) {
+      return this.carriedPoint(player, out);
+    }
+    const basis = this.cameraBasis();
+    return out.copy(player.position).addScaledVector(basis.forward, BALL.holdOffset).addScaledVector(basis.up, 0.15);
   }
 
   private releasePass(player: PlayerState, charge: number): void {
@@ -1422,7 +1543,7 @@ export class Simulation {
       }
     }
     if (best) aim = best.position.clone().sub(player.position).normalize();
-    this.placeRelease(player, aim);
+    this.releaseAtHand(player, aim);
     const speed = Math.max(4, this.tunables.passSpeed) * (0.65 + 0.35 * charge);
     this.noteThrow(player);
     this.releaseBall(aim.clone().multiplyScalar(speed).add(player.velocity.clone().multiplyScalar(0.25)));
@@ -1494,6 +1615,14 @@ export class Simulation {
     if (this.ball.possession === 'held' && this.ball.ownerId !== null) {
       const owner = this.players[this.ball.ownerId];
       if (!owner) return;
+      if (this.carryPalm.has(owner.id)) {
+        // The view writes the palm after the pose. Stick to it, easing in for
+        // the first fraction of a second so a catch does not pop.
+        this.carryBlend = Math.min(1, this.carryBlend + dt / CARRY_BLEND_SECONDS);
+        this.stickBallToHand(owner);
+        return;
+      }
+      this.carryBlend = 1;
       if (this.shotAim.active && owner.id === this.humanId) {
         // The carry lag is enough to leave the ball hanging in the water
         // while the body coasts. During an aim it stays on the hold point.
@@ -1771,8 +1900,12 @@ export class Simulation {
     if (checker.id === this.humanId || target.id === this.humanId) this.cameraShake = 1;
     if (target.id === this.humanId && this.shotAim.active) this.clearShotAim();
     if (target.hasBall && this.ball.ownerId === target.id) {
+      const fromPalm = this.carryPalm.has(target.id);
+      if (fromPalm) this.stickBallToHand(target);
       this.releaseBall(dir.clone().multiplyScalar(PLAYER.checkPop));
-      this.ball.position.copy(target.position).addScaledVector(dir, PLAYER.radius + BALL.radius + 0.4);
+      if (!fromPalm) {
+        this.ball.position.copy(target.position).addScaledVector(dir, PLAYER.radius + BALL.radius + 0.4);
+      }
       this.ball.claimLock = 0.45;
       target.actionPose = 'none';
       target.actionPoseTime = 0;
@@ -2004,10 +2137,7 @@ export class Simulation {
   private placeStraightLanding(out: THREE.Vector3): number | null {
     const human = this.getHuman();
     const basis = this.cameraBasis();
-    const hand = this.tmp.holdTarget
-      .copy(human.position)
-      .addScaledVector(basis.forward, BALL.holdOffset)
-      .addScaledVector(basis.up, 0.15);
+    const hand = this.lookCarryPoint(human, this.tmp.holdTarget);
     const raw = this.tmp.predictPos.copy(hand).addScaledVector(basis.forward, this.aimDistance());
     clampAimMarker(out, raw, hand, SHOT_ARC.minRange, this.markerLimit());
     const mate = this.teammateOnLook();
@@ -2041,11 +2171,7 @@ export class Simulation {
     }
     this.landingMarker.lockId = this.placeStraightLanding(this.landingMarker.position);
     this.landingMarker.visible = true;
-    const basis = this.cameraBasis();
-    const hand = this.tmp.predictVel
-      .copy(human.position)
-      .addScaledVector(basis.forward, BALL.holdOffset)
-      .addScaledVector(basis.up, 0.15);
+    const hand = this.lookCarryPoint(human, this.tmp.predictVel);
     this.landingMarker.distance = this.landingMarker.position.distanceTo(hand);
   }
 }

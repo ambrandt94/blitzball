@@ -2182,6 +2182,128 @@ function checkThrowPower(): void {
   if (tapFire > 8) fail('5 taps waited for the window');
 }
 
+/** A reported palm owns the carry point. Procedural swimmers keep the chest offset. */
+function checkCarryPalm(): void {
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  quietRoster(sim);
+  const human = sim.getHuman();
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  human.hasBall = true;
+  human.throwArm = 'right';
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.possession = 'held';
+  sim.ball.ownerId = human.id;
+  sim.ball.lastOwnerId = human.id;
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.set(0, 0.15, 0.85);
+
+  const palm = new THREE.Vector3(-0.4, 0.95, 0.35);
+  const gap = sim.ball.position.distanceTo(palm);
+  sim.setCarryPalm(human.id, palm);
+  if (sim.ball.position.distanceTo(palm) < gap * 0.5) fail('setting the palm snapped the ball');
+
+  sim.step(1 / 60, blankIntent());
+  const afterOne = sim.ball.position.distanceTo(palm);
+  if (afterOne > gap - 0.02) fail('catch did not ease toward the palm');
+  if (afterOne < gap * 0.5) fail(`catch lerp snapped (${afterOne.toFixed(2)} of ${gap.toFixed(2)})`);
+
+  for (let i = 0; i < 4; i++) sim.step(1 / 60, blankIntent());
+  if (sim.ball.position.distanceTo(palm) > 0.05) {
+    fail(`ball did not settle in the palm (${sim.ball.position.distanceTo(palm).toFixed(2)})`);
+  }
+
+  human.position.set(2, -1, 0.5);
+  sim.step(1 / 60, blankIntent());
+  const followed = palm.clone().add(new THREE.Vector3(2, -1, 0.5));
+  if (sim.ball.position.distanceTo(followed) > 0.08) {
+    fail(`ball did not follow the hand (${sim.ball.position.distanceTo(followed).toFixed(2)})`);
+  }
+
+  const atRelease = sim.ball.position.clone();
+  const pass = blankIntent();
+  pass.pass = true;
+  sim.step(1 / 60, pass);
+  const released: string = sim.ball.possession;
+  if (human.hasBall || released !== 'free') fail('palm pass did not release');
+  if (Math.abs(sim.ball.position.y - atRelease.y) > 0.35) {
+    fail(`pass left the palm height (${sim.ball.position.y.toFixed(2)} vs ${atRelease.y.toFixed(2)})`);
+  }
+  if (sim.ball.position.distanceTo(atRelease) > 1.1) fail('pass teleported off the palm');
+  if (sim.ball.velocity.z < 8) fail('pass did not leave along the aim');
+  for (let i = 0; i < 30; i++) {
+    sim.step(1 / 60, blankIntent());
+    if (human.hasBall) fail('thrower reclaimed a pass that started in the palm');
+  }
+
+  const plain = new Simulation(defaultTunables());
+  plain.kickoffLock = 0;
+  quietRoster(plain);
+  const swimmer = plain.getHuman();
+  swimmer.position.set(0, 0, 0);
+  swimmer.velocity.set(0, 0, 0);
+  swimmer.facing.set(0, 0, 1);
+  swimmer.up.set(0, 1, 0);
+  swimmer.hasBall = true;
+  plain.yaw = 0;
+  plain.pitch = 0;
+  plain.ball.possession = 'held';
+  plain.ball.ownerId = swimmer.id;
+  plain.ball.lastOwnerId = swimmer.id;
+  plain.ball.velocity.set(0, 0, 0);
+  plain.ball.position.set(0, 0.15, 0.85);
+  const plainPass = blankIntent();
+  plainPass.pass = true;
+  plain.step(1 / 60, plainPass);
+  if (plain.ball.position.y > 0.35) fail('offset pass stayed up on a palm that was never reported');
+  const gapRelease = PLAYER.radius + BALL.radius + 0.2;
+  if (plain.ball.position.z < gapRelease * 0.8) fail('offset pass did not start in front of the body');
+
+  const checkSim = new Simulation(defaultTunables());
+  checkSim.setSoloOpponent(false);
+  checkSim.kickoffLock = 0;
+  checkSim.tunables.defenseActive = false;
+  const you = checkSim.getHuman();
+  const enemy = checkSim.players.find((p) => p.team === 1 && p.role === 'ai');
+  if (!enemy) fail('missing a carrier to check');
+  you.position.set(0, 0, -4);
+  you.velocity.set(0, 0, 0);
+  you.facing.set(0, 0, 1);
+  you.up.set(0, 1, 0);
+  you.burstCooldown = 0;
+  checkSim.yaw = 0;
+  checkSim.pitch = 0;
+  enemy.position.set(0, 0, 6);
+  enemy.velocity.set(0, 0, 0);
+  enemy.facing.set(0, 0, 1);
+  enemy.up.set(0, 1, 0);
+  enemy.hasBall = true;
+  enemy.active = true;
+  checkSim.ball.possession = 'held';
+  checkSim.ball.ownerId = enemy.id;
+  checkSim.ball.lastOwnerId = enemy.id;
+  checkSim.ball.velocity.set(0, 0, 0);
+  checkSim.ball.position.copy(enemy.position);
+  checkSim.setCarryPalm(enemy.id, enemy.position.clone().add(new THREE.Vector3(0, 1.05, 0.3)));
+  for (let i = 0; i < 5; i++) checkSim.step(1 / 60, blankIntent());
+  you.position.set(0, 0, 0);
+  enemy.position.set(0, 0, 0.85);
+  const check = blankIntent();
+  check.burst = true;
+  check.move.set(0, 0, 1);
+  checkSim.step(1 / 60, check);
+  const loose: string = checkSim.ball.possession;
+  if (enemy.hasBall || loose !== 'free') fail('check did not knock the palmed ball loose');
+  if (checkSim.ball.position.y < 0.7) {
+    fail(`check teleported the ball off the palm (${checkSim.ball.position.y.toFixed(2)})`);
+  }
+  if (checkSim.ball.velocity.z < 6) fail('checked palm ball was not thrown forward');
+}
+
 function checkWideCamera(): void {
   const sim = new Simulation(defaultTunables());
   if (!sim.tunables.zoomHoldMode) fail('wide camera did not start in hold mode');
@@ -2245,6 +2367,7 @@ export function runRotationChecks(): void {
   checkShotSteer();
   checkThrowAim();
   checkThrowPower();
+  checkCarryPalm();
   checkWideCamera();
   checkBallFit();
   checkSpeeds();
