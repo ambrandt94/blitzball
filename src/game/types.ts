@@ -2,6 +2,9 @@ import type * as THREE from 'three';
 
 export type TeamId = 0 | 1;
 
+/** How a held throw turns into shot power. `meter` is the default. */
+export type PowerMode = 'meter' | 'tap' | 'hold';
+
 export type PlayerRole = 'human' | 'ai' | 'stub';
 
 export type PossessionState = 'free' | 'held';
@@ -69,10 +72,19 @@ export interface Tunables {
   arcBendLimit: number;
   /** Resting lob height as a fraction of the hand→marker chord. */
   arcHeight: number;
-  /** Side curve toward the throwing hand, as a fraction of the chord. Applied as soon as the hold starts. */
+  /**
+   * Optional side bias toward the throwing hand, as a fraction of the chord.
+   * The default is 0, so a click with no mouse movement throws straight.
+   */
   arcHandCurve: number;
-  /** How fast the shot power meter sweeps from empty to full, in full-scales per second. */
+  /** How fast the shot power meter sweeps, in full-scales per second. Hold mode fills at this rate. */
   shotPowerRate: number;
+  /** `meter` oscillates, `tap` counts clicks after release, `hold` fills until you let go. */
+  powerMode: PowerMode;
+  /** Seconds after release that tap mode still accepts power clicks. */
+  tapWindow: number;
+  /** Taps that reach full power. Zero taps stays a soft touch. */
+  tapMax: number;
   /** Extra loft at full power, as a fraction of the chord. Mouse bend stays the larger shape control. */
   shotPowerAngle: number;
   /** Extra radius on the look ray for snapping a shot onto a teammate. */
@@ -103,12 +115,20 @@ export interface Tunables {
   sunbeamIntensity: number;
 }
 
-/** Yellow landing dot. RMB places it on the straight throw; LMB keeps it on the locked arc. */
+/** Yellow landing dot. RMB places it on the straight throw; a shot hold slides it with power. */
 export interface LandingMarkerState {
   visible: boolean;
   position: THREE.Vector3;
   /** Teammate the point is on, or null for a free aim along the look. */
   lockId: number | null;
+  /** Hand → marker distance, world units. */
+  distance: number;
+  /** Min and max landing spots for the current aim. Shown while a throw is held. */
+  showReach: boolean;
+  minPosition: THREE.Vector3;
+  maxPosition: THREE.Vector3;
+  /** 1 after a power tap, decays. The view pulses the marker from this. */
+  pulse: number;
 }
 
 export interface PlayerState {

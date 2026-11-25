@@ -281,23 +281,38 @@ function checkArcBend(): void {
 
 function checkArcMarker(): void {
   const { sim, human, hold } = aimingSim();
+  sim.tunables.shotPowerRate = 0;
   sim.step(1 / 60, hold);
   const playerBefore = human.position.clone();
   const before = sim.shotAim.target.clone();
   hold.move.set(1, 0, 0);
   const frames = 30;
   for (let i = 0; i < frames; i++) sim.step(1 / 60, hold);
-  const moved = sim.shotAim.target.distanceTo(before);
-  if (moved > 0.2) fail(`WASD moved the throw marker (${moved.toFixed(2)})`);
-  if (human.position.distanceTo(playerBefore) < 0.2) fail('WASD did not creep the swimmer during the throw');
+  const playerDelta = human.position.clone().sub(playerBefore);
+  const markDelta = sim.shotAim.target.clone().sub(before);
+  if (playerDelta.length() < 0.2) fail('WASD did not creep the swimmer during the throw');
+  if (markDelta.distanceTo(playerDelta) > 0.55) {
+    fail(`marker did not drift with the swimmer (${markDelta.distanceTo(playerDelta).toFixed(2)})`);
+  }
+  const start = sim.chargeGhost[0];
+  const end = sim.chargeGhost[sim.chargeGhost.length - 1];
+  if (!start || start.distanceTo(sim.ball.position) > 0.08) fail('curve left the ball while drifting');
+  if (!end || end.distanceTo(sim.shotAim.target) > 0.08) fail('curve left the marker while drifting');
 
-  const forward = lookBasis(sim.yaw, sim.pitch, false).forward;
-  const ranged = sim.shotAim.target.clone();
-  sim.nudgeAimDistance(6);
-  const delta = sim.shotAim.target.clone().sub(ranged);
+  const wheel = aimingSim();
+  wheel.sim.tunables.powerMode = 'hold';
+  wheel.sim.tunables.shotPowerRate = 6;
+  for (let i = 0; i < 20; i++) wheel.sim.step(1 / 60, wheel.hold);
+  if (wheel.sim.charge.amount < 0.99) fail('hold mode did not fill');
+  for (let i = 0; i < 15; i++) wheel.sim.step(1 / 60, wheel.hold);
+  if (wheel.sim.charge.amount < 0.99) fail('hold mode oscillated after it filled');
+  const forward = lookBasis(wheel.sim.yaw, wheel.sim.pitch, false).forward;
+  const ranged = wheel.sim.shotAim.target.clone();
+  wheel.sim.nudgeAimDistance(6);
+  const delta = wheel.sim.shotAim.target.clone().sub(ranged);
   const along = delta.dot(forward);
-  if (Math.abs(along - 6) > 0.05) fail(`wheel range slid ${along.toFixed(2)} instead of 6`);
-  if (delta.addScaledVector(forward, -along).length() > 0.05) fail('wheel moved the marker off the look axis');
+  if (Math.abs(along - 6) > 0.15) fail(`wheel range slid ${along.toFixed(2)} instead of 6`);
+  if (delta.addScaledVector(forward, -along).length() > 0.08) fail('wheel moved the marker off the aim');
 }
 
 function checkArcFlight(): void {
@@ -947,10 +962,13 @@ function checkArcShotLeavesThrower(): void {
   sim.ball.claimLock = 0;
   sim.ball.velocity.set(0, 0, 0);
   sim.ball.position.copy(human.position).add(new THREE.Vector3(0, 0.15, 0.85));
+  sim.tunables.powerMode = 'hold';
+  sim.tunables.shotPowerRate = 4;
   const hold = blankIntent();
   hold.shootHeld = true;
-  sim.step(1 / 60, hold);
+  for (let i = 0; i < 20; i++) sim.step(1 / 60, hold);
   if (!sim.shotAim.active) fail('shot did not aim');
+  if (sim.charge.amount < 0.95) fail('leaving shot did not charge');
   sim.step(1 / 60, blankIntent());
   if (human.hasBall) fail('shot did not leave the hand');
   for (let i = 0; i < 40; i++) {
@@ -1094,6 +1112,11 @@ function checkGoalMouth(): void {
   }
 }
 
+function fillThrow(sim: Simulation, hold: InputIntent): void {
+  for (let i = 0; i < 80 && sim.charge.amount < 0.98; i++) sim.step(1 / 60, hold);
+  if (sim.charge.amount < 0.95) fail(`throw did not reach full power (${sim.charge.amount.toFixed(2)})`);
+}
+
 function checkShotIntoGoal(): void {
   const { sim, human, hold } = aimingSim();
   human.position.set(2, 0, 16);
@@ -1101,8 +1124,11 @@ function checkShotIntoGoal(): void {
   human.up.set(0, 1, 0);
   sim.yaw = 0;
   sim.pitch = 0;
+  sim.tunables.arcHandCurve = 0.12;
+  sim.tunables.shotPowerAngle = 0;
   sim.ball.position.copy(holdPoint(sim));
   sim.step(1 / 60, hold);
+  fillThrow(sim, hold);
   const end = sim.chargeGhost[sim.chargeGhost.length - 1];
   if (!end || !inGoalPocket(end, 0)) fail('preview did not finish in the goal');
   if (arcRightOffset(sim) < 0.4) fail(`goal shot flattened the hand curve (${arcRightOffset(sim).toFixed(2)})`);
@@ -1113,8 +1139,11 @@ function checkShotIntoGoal(): void {
   bent.human.up.set(0, 1, 0);
   bent.sim.yaw = 0;
   bent.sim.pitch = 0;
+  bent.sim.tunables.arcHandCurve = 0.12;
+  bent.sim.tunables.shotPowerAngle = 0;
   bent.sim.ball.position.copy(holdPoint(bent.sim));
   bent.sim.step(1 / 60, bent.hold);
+  fillThrow(bent.sim, bent.hold);
   const before = bent.sim.chargeGhost[Math.floor(bent.sim.chargeGhost.length / 2)]!.clone();
   bent.sim.applyFrameLook({ ...blankIntent(), lookDelta: { x: 0.12, y: 0 } });
   bent.sim.step(1 / 60, bent.hold);
@@ -1176,11 +1205,7 @@ function checkArcDefault(): void {
     fail('body kept turning into the aim instead of starting there');
   }
   const side = arcRightOffset(sim);
-  const chord = sim.ball.position.distanceTo(sim.shotAim.target);
-  // Quadratic midpoint sits halfway out toward the control point.
-  if (side < sim.tunables.arcHandCurve * chord * 0.35) {
-    fail(`default arc offset ${side.toFixed(2)} is not toward the throwing hand`);
-  }
+  if (Math.abs(side) > 0.12) fail(`default arc offset ${side.toFixed(2)} is not straight`);
   const frozen = sim.chargeGhost.map((p) => p.clone());
   sim.step(1 / 60, hold);
   let drift = 0;
@@ -1188,6 +1213,16 @@ function checkArcDefault(): void {
     drift = Math.max(drift, p.distanceTo(frozen[i]!));
   });
   if (drift > 0.08) fail(`arc settled ${drift.toFixed(2)} after it appeared`);
+
+  const biased = aimingSim();
+  biased.sim.tunables.shotCarry = 0;
+  biased.sim.tunables.shotPowerRate = 0;
+  biased.sim.tunables.shotPowerAngle = 0;
+  biased.sim.tunables.arcHandCurve = 0.12;
+  biased.sim.step(1 / 60, biased.hold);
+  const chord = biased.sim.ball.position.distanceTo(biased.sim.shotAim.target);
+  const bias = arcRightOffset(biased.sim);
+  if (bias < 0.12 * chord * 0.35) fail(`hand curve slider did nothing (${bias.toFixed(2)})`);
 }
 
 function checkHoldLookOrder(): void {
@@ -1210,6 +1245,7 @@ function checkPowerMeter(): void {
   sim.tunables.shotCarry = 0;
   sim.tunables.shotPowerRate = 1;
   sim.tunables.shotPowerAngle = 0.2;
+  sim.tunables.arcHandCurve = 0.12;
   const amounts: number[] = [];
   for (let i = 0; i < 90; i++) {
     sim.step(1 / 60, hold);
@@ -1242,12 +1278,12 @@ function checkPowerMeter(): void {
     if (!shot.sim.ball.arc) fail('release did not throw');
     if (Math.abs(shot.sim.charge.amount) > 0.001) fail('meter kept running after release');
     if (Math.abs(locked - steps / 60) > 0.04) fail(`release did not lock power ${locked.toFixed(2)}`);
-    return shot.sim.ball.arc.duration;
+    return shot.sim.ball.arc.carrySpeed;
   };
-  // Higher locked power is a faster shot, so the same chord takes less time.
+  // Higher locked power leaves the hand faster. The chord also grows, so duration is not the comparison.
   const early = releaseAt(8);
   const late = releaseAt(50);
-  if (!(late < early)) fail(`power did not speed the shot (${early.toFixed(3)} vs ${late.toFixed(3)})`);
+  if (!(late > early)) fail(`power did not speed the shot (${early.toFixed(2)} vs ${late.toFixed(2)})`);
 }
 
 function checkTeammateLock(): void {
@@ -1295,6 +1331,7 @@ function checkShotSteer(): void {
   sim.ball.position.set(0, 1, -5.2);
   sim.yaw = 0.4;
   sim.pitch = 1;
+  sim.tunables.shotPowerRate = 0;
 
   const upAim = blankIntent();
   upAim.shootHeld = true;
@@ -1304,21 +1341,30 @@ function checkShotSteer(): void {
   const before = sim.shotAim.target.clone();
   const yaw = sim.yaw;
   for (let i = 0; i < 30; i++) sim.step(1 / 60, upAim);
-  if (sim.shotAim.target.distanceTo(before) > 0.25) fail('W moved the locked throw marker');
+  const creptDelta = human.position.clone().sub(lockedAt);
+  const markDelta = sim.shotAim.target.clone().sub(before);
+  if (markDelta.distanceTo(creptDelta) > 0.6) {
+    fail(`W did not carry the throw marker (${markDelta.distanceTo(creptDelta).toFixed(2)})`);
+  }
   if (Math.abs(sim.yaw - yaw) > 1e-6) fail('WASD turned the locked aim');
-  const crept = human.position.distanceTo(lockedAt);
+  const crept = creptDelta.length();
   if (crept < 0.35) fail(`throw hold did not let WASD swim (${crept.toFixed(2)})`);
   const creep = PLAYER.maxSpeed * PLAYER.carrierSpeedMult * PLAYER.throwSwimMult;
   if (human.velocity.length() > creep * 1.3) {
     fail(`throw swim too fast (${human.velocity.length().toFixed(2)})`);
   }
 
+  const riseAt = human.position.clone();
   const riseBefore = sim.shotAim.target.clone();
   const climb = blankIntent();
   climb.shootHeld = true;
   climb.up = 1;
   for (let i = 0; i < 20; i++) sim.step(1 / 60, climb);
-  if (sim.shotAim.target.distanceTo(riseBefore) > 0.25) fail('Space moved the locked throw marker');
+  const riseDelta = human.position.clone().sub(riseAt);
+  const riseMark = sim.shotAim.target.clone().sub(riseBefore);
+  if (riseMark.distanceTo(riseDelta) > 0.6) {
+    fail(`Space did not carry the throw marker (${riseMark.distanceTo(riseDelta).toFixed(2)})`);
+  }
 
   const ranged = new Simulation(defaultTunables());
   ranged.kickoffLock = 0;
@@ -1334,16 +1380,19 @@ function checkShotSteer(): void {
   ranged.ball.position.set(0, 0, 0.8);
   ranged.yaw = 0.2;
   ranged.pitch = -0.1;
+  ranged.tunables.powerMode = 'hold';
+  ranged.tunables.shotPowerRate = 6;
   const hold = blankIntent();
   hold.shootHeld = true;
-  ranged.step(1 / 60, hold);
+  for (let i = 0; i < 20; i++) ranged.step(1 / 60, hold);
+  if (ranged.charge.amount < 0.99) fail('wheel check did not fill the hold');
   const forward = lookBasis(ranged.yaw, ranged.pitch, false).forward;
   const rangedBefore = ranged.shotAim.target.clone();
   ranged.nudgeAimDistance(6);
   const wheelDelta = ranged.shotAim.target.clone().sub(rangedBefore);
   const along = wheelDelta.dot(forward);
-  if (Math.abs(along - 6) > 0.05) fail(`wheel range slid ${along.toFixed(2)} instead of 6`);
-  if (wheelDelta.addScaledVector(forward, -along).length() > 0.05) fail('wheel moved the marker off the look axis');
+  if (Math.abs(along - 6) > 0.15) fail(`wheel range slid ${along.toFixed(2)} instead of 6`);
+  if (wheelDelta.addScaledVector(forward, -along).length() > 0.08) fail('wheel moved the marker off the look axis');
 }
 
 function solo(sim: Simulation): ReturnType<Simulation['getHuman']> {
@@ -1559,13 +1608,21 @@ function checkCatchBeacon(): void {
 }
 
 function checkGoalBoundArc(): void {
-  const { sim, hold } = aimingSim();
-  sim.step(1 / 60, hold);
+  const { sim, human, hold } = aimingSim();
   const mouth = goalPlaneZ(0);
-  sim.shotAim.target.set(0, 0, mouth);
+  human.position.set(0, 1, mouth - 30);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  sim.yaw = 0;
+  sim.pitch = 0;
+  sim.ball.position.copy(holdPoint(sim));
+  sim.tunables.powerMode = 'hold';
+  sim.tunables.shotPowerRate = 8;
+  sim.tunables.shotPowerAngle = 0;
+  sim.step(1 / 60, hold);
   sim.shotAim.bendRight = 6;
   sim.shotAim.bendUp = 3;
-  sim.step(1 / 60, hold);
+  for (let i = 0; i < 12; i++) sim.step(1 / 60, hold);
   const ghost = sim.chargeGhost;
   const mid = ghost[Math.floor(ghost.length / 2)];
   if (!mid) fail('goal-bound preview missing');
@@ -1949,8 +2006,6 @@ function checkThrowAim(): void {
   if (along.lengthSq() < 1e-6 || along.normalize().dot(forward) < 0.9) {
     fail('landing marker left the mouse look');
   }
-  const preview = sim.landingMarker.position.clone();
-
   const shot = blankIntent();
   shot.shootHeld = true;
   shot.lookDelta.x = 0.2;
@@ -1966,14 +2021,25 @@ function checkThrowAim(): void {
   if (sim.landingMarker.position.distanceTo(sim.shotAim.target) > 0.02) {
     fail('curve marker left the landing point');
   }
-  if (sim.shotAim.target.distanceTo(preview) > 0.35) fail('throw hold jumped the straight marker');
-  const marker = sim.shotAim.target.clone();
+  const throwReach = sim.shotAim.target.distanceTo(holdPoint(sim));
+  if (throwReach > sim.tunables.arcAimDistance * 0.45) {
+    fail(`low power marker was not in close (${throwReach.toFixed(1)})`);
+  }
+  const aimFromHand = sim.shotAim.target.clone().sub(holdPoint(sim));
+  if (aimFromHand.lengthSq() < 1e-6 || aimFromHand.normalize().dot(forward) < 0.95) {
+    fail('throw marker left the locked aim');
+  }
+  const frozen = sim.shotAim.target.clone();
   shot.move.set(0, 0, 1);
   shot.lookDelta.x = 0;
   const at = human.position.clone();
   for (let i = 0; i < 20; i++) sim.step(1 / 60, shot);
-  if (sim.shotAim.target.distanceTo(marker) > 0.3) fail('swim moved the locked marker');
+  if (sim.shotAim.target.distanceTo(frozen) < 0.25) fail('marker stayed frozen in the world');
   if (human.position.distanceTo(at) < 0.15) fail('throw hold ignored WASD');
+  const bodyAim = sim.shotAim.target.clone().sub(holdPoint(sim));
+  if (bodyAim.lengthSq() < 1e-6 || bodyAim.normalize().dot(forward) < 0.9) {
+    fail('marker left the swimmer');
+  }
   if (sim.charge.amount < 0.2) fail(`power did not charge during the throw (${sim.charge.amount.toFixed(2)})`);
   sim.step(1 / 60, blankIntent());
   if (!sim.ball.arc) fail('release did not throw');
@@ -2008,6 +2074,112 @@ function checkArenaShell(): void {
   } finally {
     setArenaRadius(saved);
   }
+}
+
+function shotSide(sim: Simulation): number {
+  const arc = sim.ball.arc;
+  if (!arc) fail('shot missing');
+  const mid = new THREE.Vector3();
+  quadraticPoint(mid, arc.p0, arc.p1, arc.p2, 0.5);
+  const chordMid = arc.p0.clone().lerp(arc.p2, 0.5);
+  const right = lookBasis(sim.yaw, sim.pitch, sim.tunables.goalAxisUp).right;
+  return mid.sub(chordMid).dot(right);
+}
+
+function checkThrowPower(): void {
+  const straight = aimingSim();
+  straight.sim.tunables.shotCarry = 0;
+  straight.sim.shotAim.bendRight = 11;
+  straight.sim.shotAim.bendUp = -6;
+  straight.sim.step(1 / 60, straight.hold);
+  if (Math.hypot(straight.sim.shotAim.bendRight, straight.sim.shotAim.bendUp) > 0.02) {
+    fail('press did not reset the curve');
+  }
+  straight.sim.step(1 / 60, blankIntent());
+  if (!straight.sim.ball.arc) fail('click did not throw');
+  const side = shotSide(straight.sim);
+  if (Math.abs(side) > 0.08) fail(`no-movement throw curved ${side.toFixed(2)}`);
+
+  const slide = aimingSim();
+  slide.sim.tunables.shotPowerRate = 1;
+  slide.sim.tunables.shotCarry = 0;
+  slide.sim.step(1 / 60, slide.hold);
+  const d0 = slide.sim.shotAim.target.distanceTo(holdPoint(slide.sim));
+  for (let i = 0; i < 40; i++) slide.sim.step(1 / 60, slide.hold);
+  const d1 = slide.sim.shotAim.target.distanceTo(holdPoint(slide.sim));
+  if (d1 < d0 + 8) fail(`marker distance did not grow with power (${d0.toFixed(1)} → ${d1.toFixed(1)})`);
+  for (let i = 0; i < 50; i++) slide.sim.step(1 / 60, slide.hold);
+  const d2 = slide.sim.shotAim.target.distanceTo(holdPoint(slide.sim));
+  if (d2 > d1 - 3) fail(`marker did not slide back as power fell (${d1.toFixed(1)} → ${d2.toFixed(1)})`);
+  if (slide.sim.landingMarker.minPosition.distanceTo(slide.sim.landingMarker.maxPosition) < 8) {
+    fail('reach envelope did not separate min and max');
+  }
+  slide.sim.tunables.shotPowerRate = 0;
+  const at = slide.human.position.clone();
+  const mark = slide.sim.shotAim.target.clone();
+  slide.hold.move.set(1, 0, 0);
+  for (let i = 0; i < 24; i++) slide.sim.step(1 / 60, slide.hold);
+  const playerDelta = slide.human.position.clone().sub(at);
+  const markDelta = slide.sim.shotAim.target.clone().sub(mark);
+  if (playerDelta.length() < 0.2) fail('throw drift did not move the swimmer');
+  if (markDelta.distanceTo(playerDelta) > 0.55) fail('marker did not stay on the swimmer');
+
+  const soft = aimingSim();
+  soft.sim.tunables.powerMode = 'tap';
+  soft.sim.tunables.tapWindow = 0.45;
+  soft.sim.tunables.tapMax = 5;
+  soft.sim.tunables.shotCarry = 0;
+  soft.sim.step(1 / 60, soft.hold);
+  soft.sim.shotAim.bendRight = 3;
+  soft.sim.step(1 / 60, blankIntent());
+  if (Boolean(soft.sim.ball.arc)) fail('tap mode threw before any tap');
+  if (!soft.sim.shotAim.active || soft.sim.ball.possession !== 'held') fail('tap release dropped the aim');
+  if (Math.abs(soft.sim.shotAim.bendRight - 3) > 0.01) fail('tap release cleared the curve');
+  let firedAt = -1;
+  let speed = 0;
+  const windowFrames = Math.round(soft.sim.tunables.tapWindow * 60);
+  for (let i = 0; i < windowFrames + 8; i++) {
+    soft.sim.step(1 / 60, blankIntent());
+    if (firedAt < 0 && soft.sim.ball.arc) {
+      firedAt = i + 1;
+      speed = soft.sim.ball.arc.carrySpeed;
+    }
+  }
+  if (firedAt < windowFrames - 3) fail(`0 taps fired early (${firedAt})`);
+  if (firedAt < 0 || firedAt > windowFrames + 4) fail(`0 taps did not fire with the window (${firedAt})`);
+  if (speed > soft.sim.tunables.shootSpeedMin + 6) fail(`0 taps was not a soft touch (${speed.toFixed(1)})`);
+  if (soft.human.burstTime > 0 || soft.human.burstCooldown > 0) fail('tap window triggered a check');
+
+  const taps = aimingSim();
+  taps.sim.tunables.powerMode = 'tap';
+  taps.sim.tunables.tapWindow = 0.45;
+  taps.sim.tunables.tapMax = 5;
+  taps.sim.tunables.shotCarry = 0;
+  taps.sim.step(1 / 60, taps.hold);
+  taps.sim.shotAim.bendRight = 3;
+  taps.sim.step(1 / 60, blankIntent());
+  const click = blankIntent();
+  click.shoot = true;
+  click.shootHeld = true;
+  click.burst = true;
+  let tapFire = -1;
+  let tapSpeed = 0;
+  let pulse = 0;
+  for (let i = 0; i < 5; i++) {
+    taps.sim.step(1 / 60, click);
+    pulse = Math.max(pulse, taps.sim.landingMarker.pulse);
+    if (tapFire < 0 && taps.sim.ball.arc) {
+      tapFire = i + 1;
+      tapSpeed = taps.sim.ball.arc.carrySpeed;
+      break;
+    }
+  }
+  if (tapFire !== 5) fail(`5 taps fired at click ${tapFire}`);
+  if (tapSpeed < taps.sim.tunables.shootSpeedMax - 1) fail(`5 taps was not full power (${tapSpeed.toFixed(1)})`);
+  if (taps.human.burstTime > 0 || taps.human.burstCooldown > 0) fail('power taps triggered a check');
+  if (pulse < 0.5) fail('tap did not pulse the marker');
+  if (Math.abs(shotSide(taps.sim)) < 0.4) fail('taps re-aimed and cleared the curve');
+  if (tapFire > 8) fail('5 taps waited for the window');
 }
 
 function checkWideCamera(): void {
@@ -2072,6 +2244,7 @@ export function runRotationChecks(): void {
   checkShotIntoGoal();
   checkShotSteer();
   checkThrowAim();
+  checkThrowPower();
   checkWideCamera();
   checkBallFit();
   checkSpeeds();

@@ -19,6 +19,7 @@ import type {
   PlayerState,
   Tunables,
 } from '../game/types';
+import { createPowerStrategy, type PowerStrategy, type PowerTuning } from './shotPower';
 import { DummyAI } from '../ai/DummyAI';
 import { TeammateAI } from '../ai/TeammateAI';
 import {
@@ -89,21 +90,33 @@ export class Simulation {
   /** Ghost trail samples while charging (beginner aid) or aiming an arc. */
   chargeGhost: THREE.Vector3[] = [];
   /**
-   * Live aim while shoot is held. The marker stays put until the keys or the
-   * wheel move it. Mouse look is stored as a control-point bend instead of yaw.
+   * Live aim while a throw is held. The locked value is the aim direction.
+   * The marker is rebuilt every step from the hand, that direction, and power,
+   * so it drifts with the swimmer and slides as power changes.
+   * Mouse look is stored as a control-point bend instead of yaw.
    */
   readonly shotAim = {
     active: false,
     target: new THREE.Vector3(),
-    /** Control-point offset along camera right, world units. */
+    /** Control-point offset along camera right, world units. Starts at 0 on each press. */
     bendRight: 0,
-    /** Control-point offset along camera up, world units. */
+    /** Control-point offset along camera up, world units. Starts at 0 on each press. */
     bendUp: 0,
     /** Teammate the marker is stuck to, or null for a free aim. */
     lockId: null as number | null,
   };
-  /** Triangle-wave phase for shot power. 0..1 fills, 1..2 empties. */
-  private powerPhase = 0;
+  /** Aim direction captured when the throw button went down. World space, unit length. */
+  private lockedAim = new THREE.Vector3(0, 0, 1);
+  /** Active power mode for the throw that is held right now. */
+  private power: PowerStrategy = createPowerStrategy('meter');
+  /** HUD snapshot. Taps and the window are only live in tap mode. */
+  readonly throwReadout = {
+    taps: 0,
+    tapMax: 0,
+    window: 0,
+    /** Increments on each power tap so the view can flash and click. */
+    feedback: 0,
+  };
   /** Marker was steered after the hold began, so do not snap back onto a teammate. */
   private shotAimManual = false;
   /** Added to Arc aim distance by the mouse wheel. */
@@ -130,6 +143,11 @@ export class Simulation {
     visible: false,
     position: new THREE.Vector3(),
     lockId: null,
+    distance: 0,
+    showReach: false,
+    minPosition: new THREE.Vector3(),
+    maxPosition: new THREE.Vector3(),
+    pulse: 0,
   };
   private strafing = false;
   /** Seconds of extra reach left after a claim press. */
@@ -269,7 +287,8 @@ export class Simulation {
     this.shotAim.bendUp = 0;
     this.shotAim.lockId = null;
     this.shotAimManual = false;
-    this.powerPhase = 0;
+    this.power.reset();
+    this.syncThrowReadout();
     this.match.resetTimer = 0;
     this.kickoffLock = 2.2;
     this.match.statusMessage = 'Face-off…';
@@ -547,8 +566,7 @@ export class Simulation {
     const applied = this.aimDistanceBias - before;
     if (applied === 0 || !this.shotAim.active) return;
     this.breakShotLock();
-    this.shotAim.target.addScaledVector(this.cameraBasis().forward, applied);
-    this.clampShotTarget();
+    this.refreshShotTarget();
     if (this.charge.kind === 'shoot') this.updateChargeGhost(this.getHuman());
   }
 
@@ -615,6 +633,8 @@ export class Simulation {
       intent.burst &&
       !player.hasBall &&
       !aimingShot &&
+      !this.shotAim.active &&
+      !this.power.capturing() &&
       player.burstCooldown <= 0 &&
       this.kickoffLock <= 0 &&
       this.match.resetTimer <= 0;
@@ -746,25 +766,10 @@ export class Simulation {
         this.releaseBall(toss.multiplyScalar(4).add(human.velocity));
         human.reclaimGrace = PLAYER.reclaimCoyote;
         this.match.statusMessage = 'Ball dropped';
-      } else if (intent.shootHeld) {
-        // Snap before placing the marker or the preview, so both start in the hand.
-        if (!this.shotAim.active) this.beginShotAim();
-        this.stickBallToHand(human);
-        this.acquireTeammate();
-        this.charge.active = true;
-        this.charge.kind = 'shoot';
-        this.advanceShotPower(dt);
-        // Stay in the carry pose. A shoot windup pulls the arms off the ball.
-        human.actionPose = 'hold';
-        human.actionPoseTime = 0;
-        this.updateChargeGhost(human);
-        this.match.statusMessage = this.shotAim.lockId !== null
-          ? 'Teammate locked — mouse bends the arc, release throws'
-          : 'Throwing — power cycles, mouse bends the arc';
+      } else if (intent.shootHeld || this.power.capturing()) {
+        this.sustainThrow(human, intent, dt);
       } else if (this.charge.active && this.charge.kind === 'shoot') {
-        this.releaseShot(human, this.charge.amount);
-        this.charge = { active: false, kind: null, amount: 0 };
-        this.chargeGhost = [];
+        this.finishThrowHold(human);
       } else if (intent.passHeld && !intent.shootHeld) {
         this.charge.active = true;
         this.charge.kind = 'pass';
@@ -1005,20 +1010,101 @@ export class Simulation {
     this.shotAim.bendUp = 0;
     this.shotAim.lockId = null;
     this.shotAimManual = false;
-    this.powerPhase = 0;
+    this.power.reset();
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
+    this.syncThrowReadout();
+  }
+
+  private powerTuning(): PowerTuning {
+    return {
+      mode: this.tunables.powerMode,
+      rate: Math.max(0, this.tunables.shotPowerRate),
+      tapWindow: Math.max(0.05, this.tunables.tapWindow),
+      tapMax: Math.max(1, this.tunables.tapMax),
+    };
+  }
+
+  private syncThrowReadout(): void {
+    const tuning = this.powerTuning();
+    this.throwReadout.taps = this.power.taps();
+    this.throwReadout.tapMax = this.power.mode === 'tap' ? this.power.maxTaps(tuning) : 0;
+    this.throwReadout.window = this.power.windowLeft();
+  }
+
+  private throwStatus(): string {
+    if (this.power.capturing()) {
+      const max = this.power.maxTaps(this.powerTuning());
+      return `Tap for power ${this.power.taps()}/${max}`;
+    }
+    if (this.shotAim.lockId !== null) {
+      return 'Teammate locked — mouse bends the arc, release throws';
+    }
+    if (this.power.mode === 'tap') return 'Aim locked — release, then tap for power';
+    if (this.power.mode === 'hold') return 'Hold to charge — release throws';
+    return 'Throwing — power slides the marker, mouse bends the arc';
   }
 
   /**
-   * Shot power, isolated from aim and swim so the meter can change later
-   * without touching the throw. Empty → full → empty while the button is held.
-   * Release keeps the current value.
+   * Keep aiming while the button is down, and keep aiming through a tap window.
+   * Clicks in that window add power. They do not start a check or a new aim.
    */
-  private advanceShotPower(dt: number): void {
-    const rate = Math.max(0, this.tunables.shotPowerRate);
-    this.powerPhase = (this.powerPhase + dt * rate) % 2;
-    this.charge.amount = this.powerPhase <= 1 ? this.powerPhase : 2 - this.powerPhase;
+  private sustainThrow(human: PlayerState, intent: InputIntent, dt: number): void {
+    if (!this.shotAim.active) this.beginShotAim();
+    this.stickBallToHand(human);
+    this.acquireTeammate();
+    this.charge.active = true;
+    this.charge.kind = 'shoot';
+    const tuning = this.powerTuning();
+    let fired = false;
+    if (this.power.capturing()) {
+      if (intent.shoot) {
+        fired = this.power.tap(tuning);
+        this.landingMarker.pulse = 1;
+        this.throwReadout.feedback += 1;
+      }
+      if (!fired) fired = this.power.tick(dt, tuning);
+    } else if (intent.shootHeld) {
+      this.power.hold(dt, tuning);
+    }
+    this.charge.amount = this.power.amount();
+    this.syncThrowReadout();
+    if (fired) {
+      this.fireAimedShot(human);
+      return;
+    }
+    // Stay in the carry pose. A shoot windup pulls the arms off the ball.
+    human.actionPose = 'hold';
+    human.actionPoseTime = 0;
+    this.refreshShotTarget();
+    this.updateChargeGhost(human);
+    this.match.statusMessage = this.throwStatus();
+  }
+
+  /** Button came up. Meter and hold throw now. Tap opens the window instead. */
+  private finishThrowHold(human: PlayerState): void {
+    const fireNow = this.power.release(this.powerTuning());
+    this.charge.amount = this.power.amount();
+    this.syncThrowReadout();
+    if (fireNow) {
+      this.fireAimedShot(human);
+      return;
+    }
+    this.charge.active = true;
+    this.charge.kind = 'shoot';
+    human.actionPose = 'hold';
+    human.actionPoseTime = 0;
+    this.refreshShotTarget();
+    this.updateChargeGhost(human);
+    this.match.statusMessage = this.throwStatus();
+  }
+
+  private fireAimedShot(human: PlayerState): void {
+    const amount = this.power.amount();
+    this.releaseShot(human, amount);
+    this.charge = { active: false, kind: null, amount: 0 };
+    this.chargeGhost = [];
+    this.syncThrowReadout();
   }
 
   private aimDistance(): number {
@@ -1034,8 +1120,9 @@ export class Simulation {
   }
 
   /**
-   * Place the marker and the default hand-side curve on this frame.
-   * The body snaps to the camera so the ball does not swing into the pose.
+   * Start a throw. Curve accumulators reset so a click with no mouse movement
+   * is straight. The body snaps to the camera so the ball does not swing.
+   * The aim direction locks here; the landing point is rebuilt from the body.
    */
   private beginShotAim(): void {
     const human = this.getHuman();
@@ -1043,18 +1130,51 @@ export class Simulation {
     human.facing.copy(basis.forward);
     human.up.copy(basis.up);
     this.stickBallToHand(human);
+    this.lockedAim.copy(basis.forward);
+    if (this.lockedAim.lengthSq() < 1e-8) this.lockedAim.set(0, 0, 1);
+    else this.lockedAim.normalize();
     this.shotAim.active = true;
     this.shotAim.bendRight = 0;
     this.shotAim.bendUp = 0;
     this.shotAim.lockId = null;
     this.shotAimManual = false;
-    this.powerPhase = 0;
+    this.power = createPowerStrategy(this.tunables.powerMode);
+    this.power.begin();
     this.charge.active = true;
     this.charge.kind = 'shoot';
-    this.charge.amount = 0;
-    const raw = this.tmp.holdTarget.copy(this.ball.position).addScaledVector(basis.forward, this.aimDistance());
-    this.clampShotTarget(raw);
+    this.charge.amount = this.power.amount();
+    this.syncThrowReadout();
     this.acquireTeammate();
+    this.refreshShotTarget();
+  }
+
+  /** Landing distance for a power in 0..1, from a short lob out to the aim range. */
+  private shotReach(power: number): number {
+    const minD = SHOT_ARC.minRange;
+    const maxD = Math.max(minD, this.aimDistance());
+    return THREE.MathUtils.lerp(minD, maxD, THREE.MathUtils.clamp(power, 0, 1));
+  }
+
+  /** Point `distance` from the hand along the locked aim, kept inside the shell. */
+  private pointAlongAim(out: THREE.Vector3, distance: number): void {
+    const hand = this.ball.position;
+    const raw = this.tmp.predictPos.copy(hand).addScaledVector(this.lockedAim, distance);
+    clampAimMarker(out, raw, hand, SHOT_ARC.minRange, this.markerLimit());
+  }
+
+  /**
+   * Rebuild the landing point from the current hand, the locked aim, and power.
+   * A teammate lock keeps the marker on them. Min and max stays on the aim
+   * so the reach rings show the envelope of this curve.
+   */
+  private refreshShotTarget(): void {
+    const power = THREE.MathUtils.clamp(this.charge.amount, 0, 1);
+    this.pointAlongAim(this.landingMarker.minPosition, this.shotReach(0));
+    this.pointAlongAim(this.landingMarker.maxPosition, this.shotReach(1));
+    if (this.shotAim.lockId === null) {
+      this.pointAlongAim(this.shotAim.target, this.shotReach(power));
+    }
+    this.landingMarker.distance = this.ball.position.distanceTo(this.shotAim.target);
   }
 
   private breakShotLock(): void {
@@ -1108,16 +1228,6 @@ export class Simulation {
       }
     }
     return best;
-  }
-
-  private clampShotTarget(from?: THREE.Vector3): void {
-    clampAimMarker(
-      this.shotAim.target,
-      from ?? this.shotAim.target,
-      this.ball.position,
-      SHOT_ARC.minRange,
-      this.markerLimit(),
-    );
   }
 
   private clampStoredBend(): void {
@@ -1250,6 +1360,8 @@ export class Simulation {
   private releaseArcShot(player: PlayerState, charge: number): void {
     this.stickBallToHand(player);
     if (!this.shotAim.active) this.beginShotAim();
+    this.charge.amount = THREE.MathUtils.clamp(charge, 0, 1);
+    this.refreshShotTarget();
     const arc = this.plannedArc(charge);
     this.noteThrow(player);
     this.releaseBall();
@@ -1272,7 +1384,7 @@ export class Simulation {
     this.shotAim.bendUp = 0;
     this.shotAim.lockId = null;
     this.shotAimManual = false;
-    this.powerPhase = 0;
+    this.power.reset();
     this.playPose(player, 'shoot', 0.3);
     this.match.statusMessage = thrownToMate ? 'Throw to teammate' : charge > 0.7 ? 'High power!' : 'Arc shot';
   }
@@ -1750,6 +1862,9 @@ export class Simulation {
     this.noteCatchStance(intent);
     this.strafing = intent.strafe;
     this.updateShoulder(Math.max(0, dt));
+    if (this.landingMarker.pulse > 0) {
+      this.landingMarker.pulse = Math.max(0, this.landingMarker.pulse - Math.max(0, dt) * 4.2);
+    }
     this.updateLandingMarker();
     this.updateCatchBeacon();
   }
@@ -1906,20 +2021,31 @@ export class Simulation {
   private updateLandingMarker(): void {
     const human = this.getHuman();
     const holding = this.ball.possession === 'held' && this.ball.ownerId === human.id;
-    if (this.shotAim.active) {
+    if (this.shotAim.active && holding) {
+      this.refreshShotTarget();
+      if (this.charge.kind === 'shoot') this.updateChargeGhost(human);
       this.landingMarker.visible = true;
       this.landingMarker.position.copy(this.shotAim.target);
       this.landingMarker.lockId = this.shotAim.lockId;
+      this.landingMarker.showReach = this.shotAim.lockId === null;
       return;
     }
+    this.landingMarker.showReach = false;
     // Off-ball reach has no aim mark. Right-click with the ball shows the
     // straight landing point and does not build a curve.
     if (!(this.strafing && holding)) {
       this.landingMarker.visible = false;
       this.landingMarker.lockId = null;
+      this.landingMarker.distance = 0;
       return;
     }
     this.landingMarker.lockId = this.placeStraightLanding(this.landingMarker.position);
     this.landingMarker.visible = true;
+    const basis = this.cameraBasis();
+    const hand = this.tmp.predictVel
+      .copy(human.position)
+      .addScaledVector(basis.forward, BALL.holdOffset)
+      .addScaledVector(basis.up, 0.15);
+    this.landingMarker.distance = this.landingMarker.position.distanceTo(hand);
   }
 }
