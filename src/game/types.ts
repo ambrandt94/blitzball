@@ -237,6 +237,8 @@ export interface Tunables {
   waterPixelScale: number;
   /** Caustic web frames per second. */
   causticFps: number;
+  /** Caustic drift in tiles per second. */
+  causticScroll: number;
   /** Diagonal light bands across the water view. */
   showLightBands: boolean;
   /** Mid water colour. `#2E8A84` is the Clearer body. */

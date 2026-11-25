@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   CAUSTIC_FPS_DEFAULT,
+  CAUSTIC_SCROLL_DEFAULT,
   LIGHT_BANDS_DEFAULT,
   WATER_DEEP_DEFAULT,
   WATER_HALO_SCALE,
@@ -65,6 +66,8 @@ uniform vec3  uHaloR;
 uniform sampler2D uWeb;
 uniform float uWebFrame;
 uniform float uWebFrames;
+uniform float uTime;
+uniform float uScroll;
 uniform float uWebTile;
 uniform float uInsideWebTile;
 uniform float uWebMaxF;
@@ -101,6 +104,25 @@ float luma(vec3 c) { if (uBgIsLinear > 0.5) c = toSrgb(c); return dot(c, vec3(0.
 float webAt(vec2 uv, float frame) {
   return texture(uWeb, vec2((uv.x + frame) / uWebFrames, uv.y)).a;
 }
+vec2 snapCell(vec2 uv) {
+  return (floor(fract(uv) * 256.0) + 0.5) / 256.0;
+}
+float webPlane(vec2 uv) {
+  uv = snapCell(uv);
+  float span = max(uWebFrames, 1.0);
+  float phase = mod(uWebFrame, span);
+  float f0 = floor(phase);
+  float f1 = mod(f0 + 1.0, span);
+  return mix(webAt(uv, f0), webAt(uv, f1), fract(phase));
+}
+float webTri(vec3 q, vec3 n) {
+  vec3 w = abs(n);
+  w *= w;
+  w *= w;
+  float sumw = w.x + w.y + w.z;
+  w /= max(sumw, 1e-4);
+  return webPlane(q.zy) * w.x + webPlane(q.xz) * w.y + webPlane(q.xy) * w.z;
+}
 vec3 gradeWater(vec3 c) {
   float l = dot(c, vec3(0.30, 0.59, 0.11));
   float dark = 1.0 - smoothstep(0.05, 0.40, l);
@@ -109,20 +131,17 @@ vec3 gradeWater(vec3 c) {
   return mix(g, c, hot);
 }
 float webMask(vec3 p, vec3 n, vec2 vp, vec2 cvp, float tile) {
-  vec2 uv;
+  float scroll = uTime * uScroll;
   if (uWebScreen > 0.5) {
-    uv = (vp - cvp) / uWebScreenTile;
+    vec2 uv = (vp - cvp) / uWebScreenTile;
     uv.y = -uv.y;
-  } else {
-    vec3 q = (p - uCenter) / tile, a = abs(n);
-    uv = (a.x > a.y && a.x > a.z) ? q.zy : (a.y > a.z ? q.xz : q.xy);
+    uv += scroll * vec2(0.35, -0.22);
+    return webPlane(uv);
   }
-  uv = (floor(fract(uv) * 256.0) + 0.5) / 256.0;
-  float span = max(uWebFrames, 1.0);
-  float phase = mod(uWebFrame, span);
-  float f0 = floor(phase);
-  float f1 = mod(f0 + 1.0, span);
-  return mix(webAt(uv, f0), webAt(uv, f1), fract(phase));
+  vec3 q = (p - uCenter) / max(tile, 0.001);
+  float a = webTri(q + scroll * vec3(0.72, 0.16, 0.41), n);
+  float b = webTri(q + scroll * vec3(-0.28, 0.55, -0.46) * 0.65, n);
+  return max(a, b);
 }
 
 void main() {
@@ -150,7 +169,7 @@ void main() {
     vec3 col = lut(uBodyLUT, clamp(k, 0.0, uBodySteps - 1.0), uBodySteps).rgb;
     if (uRefraction < 0.5) col = lut(uFogLUT, stp, 3.0).rgb;
     if (uRefraction < 0.5 && uRays > 0.5 && mod(vp.x - (uResolution.y / uPixel - vp.y) * uRay.z, uRay.x) < uRay.y) col = lut(uBodyLUT, 3.0 - stp, uBodySteps).rgb;
-    if (n.y > -0.2 && bay < uInsideCausticCover) {
+    if (bay < uInsideCausticCover) {
       col = mix(col, uInsideCaustic, webMask(p, n, vp, cvp, uInsideWebTile));
     }
     fragColor = vec4(gradeWater(col), 1.0);
@@ -186,7 +205,8 @@ void main() {
   col = lut(uBodyLUT, clamp(k, 0.0, uBodySteps - 1.0), uBodySteps).rgb;
 
   vec3 body = col;
-  if (f < uWebMaxF) col = mix(col, uWebColor, webMask(p, n, vp, cvp, uWebTile));
+  float web = webMask(p, n, vp, cvp, uWebTile);
+  col = mix(col, uWebColor, web * (0.85 + 0.15 * clamp(uWebMaxF, 0.0, 1.0)));
 
   for (int i = 0; i < 4; i++) {
     vec4 rc = lut(uRimLUT, float(i), 4.0);
@@ -245,6 +265,7 @@ export interface WaterSphere {
   setRefraction(on: boolean): void;
   setQuality(quality: 'high' | 'low'): void;
   setCausticFps(fps: number): void;
+  setCausticScroll(speed: number): void;
   setLightBands(on: boolean): void;
   setColors(tint: string, deep: string): void;
   dispose(): void;
@@ -293,6 +314,8 @@ export function createWaterSphere(opts: {
     uWeb: { value: lutTexture(loader, `${base}water_web_anim_4f_1024x256.png`) },
     uWebFrame: { value: 0 },
     uWebFrames: { value: 4 },
+    uTime: { value: 0 },
+    uScroll: { value: CAUSTIC_SCROLL_DEFAULT },
     uWebTile: { value: radius * 2.56 },
     uInsideWebTile: { value: radius * 1.2 },
     uWebMaxF: { value: 0.55 },
@@ -333,6 +356,7 @@ export function createWaterSphere(opts: {
   mesh.layers.set(opts.layer ?? 2);
   const state = {
     caustFps: CAUSTIC_FPS_DEFAULT,
+    scroll: CAUSTIC_SCROLL_DEFAULT,
     rt: null as THREE.WebGLRenderTarget | null,
     rtW: 0,
     rtH: 0,
@@ -380,6 +404,8 @@ export function createWaterSphere(opts: {
     const inside = camera.position.distanceTo(u.uCenter.value) < radius;
     u.uInside.value = inside ? 1 : 0;
     material.side = inside ? THREE.BackSide : THREE.FrontSide;
+    u.uTime.value = time;
+    u.uScroll.value = state.scroll;
     u.uWebFrame.value = causticPhase(time, state.caustFps);
     if (u.uRefraction.value > 0.5) {
       ensureRT(drawSize.x, drawSize.y);
@@ -432,6 +458,9 @@ export function createWaterSphere(opts: {
     setCausticFps(fps: number): void {
       state.caustFps = Math.max(0, fps);
     },
+    setCausticScroll(speed: number): void {
+      state.scroll = Math.max(0, speed);
+    },
     setLightBands(on: boolean): void {
       u.uRays.value = on ? 1 : 0;
     },
@@ -460,6 +489,7 @@ export function createWaterFallback(radius: number, base: string): {
   setRadius(radius: number): void;
   update(camera: THREE.Camera, time: number, fps: number): void;
   setColors(tint: string): void;
+  setScroll(speed: number): void;
   dispose(): void;
 } {
   const loader = new THREE.TextureLoader();
@@ -484,24 +514,60 @@ export function createWaterFallback(radius: number, base: string): {
     uniforms: {
       uMap: { value: web },
       uPhase: { value: 0 },
+      uTime: { value: 0 },
+      uScroll: { value: CAUSTIC_SCROLL_DEFAULT },
+      uTile: { value: Math.max(1, radius) * 1.2 },
     },
     vertexShader: /* glsl */ `
-      varying vec2 vUv;
+      varying vec3 vPos;
+      varying vec3 vNrm;
       void main() {
-        vUv = uv;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vec4 world = modelMatrix * vec4(position, 1.0);
+        vPos = world.xyz;
+        vNrm = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * world;
       }
     `,
     fragmentShader: /* glsl */ `
-      varying vec2 vUv;
+      varying vec3 vPos;
+      varying vec3 vNrm;
       uniform sampler2D uMap;
       uniform float uPhase;
+      uniform float uTime;
+      uniform float uScroll;
+      uniform float uTile;
+      vec2 snapCell(vec2 uv) {
+        return (floor(fract(uv) * 256.0) + 0.5) / 256.0;
+      }
+      vec4 webFrame(vec2 uv, float frame) {
+        vec2 s = snapCell(uv);
+        return texture2D(uMap, vec2(s.x * 0.25 + frame * 0.25, s.y));
+      }
+      vec4 webTri(vec3 q, vec3 n, float frame) {
+        vec3 w = abs(n);
+        w *= w;
+        w *= w;
+        w /= max(w.x + w.y + w.z, 1e-4);
+        return webFrame(q.zy, frame) * w.x + webFrame(q.xz, frame) * w.y + webFrame(q.xy, frame) * w.z;
+      }
       void main() {
         float f0 = floor(uPhase);
         float f1 = mod(f0 + 1.0, 4.0);
-        vec2 uv0 = vec2(vUv.x * 0.25 + f0 * 0.25, vUv.y);
-        vec2 uv1 = vec2(vUv.x * 0.25 + f1 * 0.25, vUv.y);
-        vec4 tex = mix(texture2D(uMap, uv0), texture2D(uMap, uv1), fract(uPhase));
+        float blend = fract(uPhase);
+        vec3 q = vPos / max(uTile, 0.001);
+        float scroll = uTime * uScroll;
+        vec3 n = normalize(vNrm);
+        vec4 a = mix(
+          webTri(q + scroll * vec3(0.72, 0.16, 0.41), n, f0),
+          webTri(q + scroll * vec3(0.72, 0.16, 0.41), n, f1),
+          blend
+        );
+        vec4 b = mix(
+          webTri(q + scroll * vec3(-0.28, 0.55, -0.46) * 0.65, n, f0),
+          webTri(q + scroll * vec3(-0.28, 0.55, -0.46) * 0.65, n, f1),
+          blend
+        );
+        vec4 tex = max(a, b);
         if (tex.a < 0.02) discard;
         gl_FragColor = tex;
       }
@@ -552,7 +618,12 @@ export function createWaterFallback(radius: number, base: string): {
     setColors(tint: string): void {
       bodyMat.color.set(tint);
     },
+    setScroll(speed: number): void {
+      webMat.uniforms.uScroll!.value = Math.max(0, speed);
+    },
     update(camera, time, fps): void {
+      webMat.uniforms.uTime!.value = time;
+      webMat.uniforms.uTile!.value = built * 1.2;
       webMat.uniforms.uPhase!.value = causticPhase(time, fps);
       const inside = camera.position.length() < built;
       bodyMat.side = inside ? THREE.BackSide : THREE.FrontSide;

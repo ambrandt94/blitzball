@@ -15,6 +15,9 @@ import {
   CAUSTIC_FPS_DEFAULT,
   CAUSTIC_FPS_MAX,
   CAUSTIC_FPS_MIN,
+  CAUSTIC_SCROLL_DEFAULT,
+  CAUSTIC_SCROLL_MAX,
+  CAUSTIC_SCROLL_MIN,
   LIGHT_BANDS_DEFAULT,
   colorsForPreset,
   loadWaterColors,
@@ -171,6 +174,7 @@ export function defaultTunables(): Tunables {
     waterQuality: 'high',
     waterPixelScale: 1,
     causticFps: CAUSTIC_FPS_DEFAULT,
+    causticScroll: CAUSTIC_SCROLL_DEFAULT,
     showLightBands: LIGHT_BANDS_DEFAULT,
     waterTint: waterColors.tint,
     waterDeep: waterColors.deep,
@@ -358,6 +362,7 @@ export class DevPanel {
       this.bool('Water refraction', 'waterRefraction');
       this.range('Pixel scale', 'waterPixelScale', 1, 3, 1);
       this.range('Caustic speed', 'causticFps', CAUSTIC_FPS_MIN, CAUSTIC_FPS_MAX, 0.05);
+      this.range('Scroll speed', 'causticScroll', CAUSTIC_SCROLL_MIN, CAUSTIC_SCROLL_MAX, 0.005);
       this.bool('Light bands', 'showLightBands');
       this.waterColor('Water tint', 'waterTint');
       this.waterColor('Deep color', 'waterDeep');
@@ -879,7 +884,7 @@ export class DevPanel {
       const n = parseFloat(input.value);
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
       value.textContent = n.toFixed(2);
-      if (key === 'arenaRadius' || key === 'waterPixelScale' || key === 'causticFps') this.onChange(key);
+      if (key === 'arenaRadius' || key === 'waterPixelScale' || key === 'causticFps' || key === 'causticScroll') this.onChange(key);
       if (key === 'goalieSkill' || key === 'goalieSkillHome' || key === 'goalieSkillAway') this.persistRoster();
     });
     wrap.append(name, input, value);

@@ -17,8 +17,10 @@ export interface ArenaVisuals {
   waterQuality: WaterQuality;
   /** 1 keeps the full buffer. 2 and 3 render smaller and upscale with hard pixels. */
   waterPixelScale: number;
-  /** Web frames per second. 1.5 is the slowed default. */
+  /** Web frames per second. 0.4 is a 10 second cross-fade cycle. */
   causticFps: number;
+  /** Caustic drift in tiles per second. */
+  causticScroll: number;
   /** Screen-space diagonal bands. Off unless the panel turns them on. */
   showLightBands: boolean;
   waterTint: string;
@@ -210,6 +212,7 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
   let quality = visuals.waterQuality;
   let pixelScale = visuals.waterPixelScale;
   let causticFps = visuals.causticFps;
+  let causticScroll = visuals.causticScroll;
   let showLightBands = visuals.showLightBands;
   let waterTint = visuals.waterTint;
   let waterDeep = visuals.waterDeep;
@@ -223,12 +226,15 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
     const tintMul = gradeMul(waterTint, WATER_TINT_DEFAULT);
     const deepMul = gradeMul(waterDeep, WATER_DEEP_DEFAULT);
     sphere.setCausticFps(causticFps);
+    sphere.setCausticScroll(causticScroll);
     sphere.setLightBands(showLightBands);
     sphere.setColors(waterTint, waterDeep);
     water.setCausticFps(causticFps);
+    water.setCausticScroll(causticScroll);
     water.setLightBands(showLightBands);
     water.setGrade(tintMul, deepMul);
     fallback.setColors(waterTint);
+    fallback.setScroll(causticScroll);
     setWaterPalette(waterTint, waterFog, waterDeep);
   };
 
@@ -305,6 +311,7 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
       quality = next.waterQuality;
       pixelScale = next.waterPixelScale;
       causticFps = next.causticFps;
+      causticScroll = next.causticScroll;
       showLightBands = next.showLightBands;
       waterTint = next.waterTint;
       waterDeep = next.waterDeep;

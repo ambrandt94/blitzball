@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { applyPixelTexel } from './pixelTexel';
-import { CAUSTIC_FPS_DEFAULT, LIGHT_BANDS_DEFAULT } from './waterSettings';
+import { CAUSTIC_FPS_DEFAULT, CAUSTIC_SCROLL_DEFAULT, LIGHT_BANDS_DEFAULT } from './waterSettings';
 
 /**
  * Trailbound shell. Colours are sphere_palette.json, written as linear values
@@ -54,11 +54,27 @@ uniform float uLayer;
 uniform sampler2D uCaustics;
 uniform sampler2D uBands;
 uniform float uCausticFps;
+uniform float uScroll;
 uniform float uBandsOn;
 uniform vec3 uGradeTint;
 uniform vec3 uGradeDeep;
 
 ${BAYER}
+
+vec2 snap256(vec2 uv) {
+  return (floor(fract(uv) * 256.0) + 0.5) / 256.0;
+}
+vec3 cauFrame(vec2 uv, float frame) {
+  vec2 s = snap256(uv);
+  return texture2D(uCaustics, vec2(s.x * 0.25 + frame * 0.25, s.y)).rgb;
+}
+vec3 cauTri(vec3 q, vec3 n, float frame) {
+  vec3 w = abs(n);
+  w *= w;
+  w *= w;
+  w /= max(w.x + w.y + w.z, 1e-4);
+  return cauFrame(q.zy, frame) * w.x + cauFrame(q.xz, frame) * w.y + cauFrame(q.xy, frame) * w.z;
+}
 
 void main() {
   vec2 pix = floor(gl_FragCoord.xy / 2.0);
@@ -100,20 +116,16 @@ void main() {
   vec3 bands = texture2D(uBands, sph).rgb;
   if (uBandsOn > 0.5) col = mix(col, bands, uInside > 0.5 ? 0.22 : 0.4);
 
-  float speed = max(uCausticFps, 0.0) / 6.0;
   float phase = uCausticFps > 0.0 ? mod(uTime * uCausticFps, 4.0) : 0.0;
   float f0 = floor(phase);
   float f1 = mod(f0 + 1.0, 4.0);
   float blend = fract(phase);
-  float rad = max(uRadius, 1.0);
-  vec2 sphC = vec2(
-    atan(vWorld.z, vWorld.x) / tau + 0.5,
-    asin(clamp(vWorld.y / rad, -1.0, 1.0)) / 3.14159265 + 0.5
-  );
-  sphC = sphC * (rad / 8.0) + uTime * vec2(0.03, 0.012) * speed;
-  vec2 cuv0 = vec2(fract(sphC.x) * 0.25 + f0 * 0.25, fract(sphC.y));
-  vec2 cuv1 = vec2(fract(sphC.x) * 0.25 + f1 * 0.25, fract(sphC.y));
-  vec3 cau = mix(texture2D(uCaustics, cuv0).rgb, texture2D(uCaustics, cuv1).rgb, blend);
+  vec3 nrm = normalize(vNormal);
+  vec3 q = vWorld / 12.0;
+  float scroll = uTime * uScroll;
+  vec3 cauA = mix(cauTri(q + scroll * vec3(0.72, 0.16, 0.41), nrm, f0), cauTri(q + scroll * vec3(0.72, 0.16, 0.41), nrm, f1), blend);
+  vec3 cauB = mix(cauTri(q + scroll * vec3(-0.28, 0.55, -0.46) * 0.65, nrm, f0), cauTri(q + scroll * vec3(-0.28, 0.55, -0.46) * 0.65, nrm, f1), blend);
+  vec3 cau = max(cauA, cauB);
   float cauMix = uInside > 0.5 ? 0.38 : (uLayer < 0.5 ? 0.62 : 0.48);
   col = mix(col, cau, cauMix);
 
@@ -246,13 +258,13 @@ const CAUSTIC_FRAG = /* glsl */ `
 varying vec2 vPos;
 uniform float uTime;
 uniform float uCausticFps;
+uniform float uScroll;
 uniform sampler2D uMap;
 void main() {
-  float speed = max(uCausticFps, 0.0) / 6.0;
   float phase = uCausticFps > 0.0 ? mod(uTime * uCausticFps, 4.0) : 0.0;
   float f0 = floor(phase);
   float f1 = mod(f0 + 1.0, 4.0);
-  vec2 crawl = vPos + uTime * vec2(0.2, 0.08) * speed;
+  vec2 crawl = vPos + uTime * vec2(0.2, 0.08) * uScroll;
   vec2 uv0 = vec2(fract(crawl.x / 8.0) * 0.25 + f0 * 0.25, fract(crawl.y / 8.0));
   vec2 uv1 = vec2(fract(crawl.x / 8.0) * 0.25 + f1 * 0.25, fract(crawl.y / 8.0));
   vec4 tex = mix(texture2D(uMap, uv0), texture2D(uMap, uv1), fract(phase));
@@ -295,6 +307,7 @@ export interface WaterMeshes {
   ): void;
   resize(radius: number): void;
   setCausticFps(fps: number): void;
+  setCausticScroll(speed: number): void;
   setLightBands(on: boolean): void;
   setGrade(tint: [number, number, number], deep: [number, number, number]): void;
 }
@@ -316,6 +329,7 @@ export function createWaterMeshes(): WaterMeshes {
     uCaustics: { value: caustics },
     uBands: { value: bands },
     uCausticFps: { value: CAUSTIC_FPS_DEFAULT },
+    uScroll: { value: CAUSTIC_SCROLL_DEFAULT },
     uBandsOn: { value: LIGHT_BANDS_DEFAULT ? 1 : 0 },
     uGradeTint: { value: new THREE.Vector3(1, 1, 1) },
     uGradeDeep: { value: new THREE.Vector3(1, 1, 1) },
@@ -339,6 +353,7 @@ export function createWaterMeshes(): WaterMeshes {
     'uCaustics',
     'uBands',
     'uCausticFps',
+    'uScroll',
     'uBandsOn',
     'uGradeTint',
     'uGradeDeep',
@@ -425,12 +440,13 @@ export function createWaterMeshes(): WaterMeshes {
     uniforms: {
       uTime: uniforms.uTime,
       uCausticFps: uniforms.uCausticFps,
+      uScroll: uniforms.uScroll,
       uMap: { value: overlay },
     },
     vertexShader: CAUSTIC_VERT,
     fragmentShader: CAUSTIC_FRAG,
   });
-  bind(causticMat, ['uTime', 'uCausticFps']);
+  bind(causticMat, ['uTime', 'uCausticFps', 'uScroll']);
   const caustic = new THREE.Mesh(new THREE.CircleGeometry(108, 64), causticMat);
   caustic.name = 'caustic-overlay';
   caustic.rotation.x = -Math.PI / 2;
@@ -456,6 +472,9 @@ export function createWaterMeshes(): WaterMeshes {
     resize,
     setCausticFps(fps: number): void {
       uniforms.uCausticFps.value = Math.max(0, fps);
+    },
+    setCausticScroll(speed: number): void {
+      uniforms.uScroll.value = Math.max(0, speed);
     },
     setLightBands(on: boolean): void {
       uniforms.uBandsOn.value = on ? 1 : 0;

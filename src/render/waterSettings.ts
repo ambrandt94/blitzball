@@ -1,17 +1,24 @@
 /**
  * Playtest water controls. Colours are the Clearer palette the sphere already
  * paints (sphere_palette.json). A grade of 1 leaves that picture untouched.
- * Caustic playback is four times slower than the old 6 fps frame step.
+ * The caustic web cross-fades across a 10 second cycle and drifts in tiles per second.
  */
 
 export const WATER_TINT_DEFAULT = '#2E8A84';
 export const WATER_DEEP_DEFAULT = '#163A48';
 export const WATER_FOG_DEFAULT = '#1F6066';
 
-/** Old Clearer web stepped at 6 fps. 1.5 is that loop, four times slower. */
-export const CAUSTIC_FPS_DEFAULT = 1.5;
+/**
+ * Frames per second of the 4-frame web. 0.4 makes one full cross-fade cycle
+ * last 10 seconds, so each blend is a long dissolve instead of a step.
+ */
+export const CAUSTIC_FPS_DEFAULT = 0.4;
 export const CAUSTIC_FPS_MIN = 0;
 export const CAUSTIC_FPS_MAX = 8;
+/** Tiles per second. Two layers drift on this and a slower mate. */
+export const CAUSTIC_SCROLL_DEFAULT = 0.04;
+export const CAUSTIC_SCROLL_MIN = 0;
+export const CAUSTIC_SCROLL_MAX = 0.25;
 
 /** Screen-space diagonal bands. Off, because they streak the whole view. */
 export const LIGHT_BANDS_DEFAULT = false;
