@@ -234,6 +234,113 @@ function checkPreviewMatchesFlight(): void {
   };
   match('throw', false);
   match('kick', true);
+  checkFlightReach();
+}
+
+/** Full, soft, and heavy-drag landings end where the preview says they will. */
+function checkFlightReach(): void {
+  const expectReach = (sim: Simulation, kick: boolean, power: number): number => {
+    const dragScale = BALL.drag / Math.max(0.05, sim.tunables.ballDrag);
+    const delivery = kick ? Math.max(1, sim.tunables.kickRange) : Math.max(0.2, sim.tunables.throwSpeedScale);
+    const maxD = Math.max(SHOT_ARC.minRange, sim.tunables.arcAimDistance * dragScale * delivery);
+    return THREE.MathUtils.lerp(SHOT_ARC.minRange, maxD, THREE.MathUtils.clamp(power, 0, 1));
+  };
+
+  const arm = (kick: boolean, drag: number, rate: number) => {
+    const sim = new Simulation(defaultTunables());
+    sim.setSoloOpponent(false);
+    sim.kickoffLock = 0;
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = rate;
+    sim.tunables.shotCarry = 0;
+    sim.tunables.arcHandCurve = 0;
+    sim.tunables.shotPowerAngle = 0;
+    sim.tunables.ballDrag = drag;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(1, 0, 0);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.lastOwnerId = human.id;
+    sim.yaw = Math.PI / 2;
+    sim.pitch = 0;
+    sim.ball.position.copy(holdPoint(sim));
+    const intent = blankIntent();
+    intent.strafe = kick;
+    if (kick) intent.kickHeld = true;
+    else intent.shootHeld = true;
+    sim.armShotAim(intent);
+    sim.step(1 / 60, intent);
+    return { sim, intent };
+  };
+
+  const chord = (sim: Simulation): number => {
+    const ghost = sim.chargeGhost;
+    if (ghost.length < 2) fail('flight preview was empty');
+    return ghost[0]!.distanceTo(ghost[ghost.length - 1]!);
+  };
+
+  const check = (label: string, kick: boolean, drag: number, rate: number, stopAt: number) => {
+    const { sim, intent } = arm(kick, drag, rate);
+    let guard = 0;
+    while (sim.charge.amount < stopAt && guard < 40) {
+      sim.step(1 / 60, intent);
+      guard++;
+    }
+    if (stopAt > 0.9 && sim.charge.amount < 0.95) fail(`${label} did not fill (${sim.charge.amount.toFixed(2)})`);
+    sim.updateAimPresentation(intent, 1 / 60);
+    const flown = chord(sim);
+    const want = expectReach(sim, kick, sim.charge.amount);
+    if (Math.abs(flown - want) > 0.75) {
+      fail(`${label} preview ended at ${flown.toFixed(2)}, flight is ${want.toFixed(2)}`);
+    }
+    if (Math.abs(sim.landingMarker.distance - flown) > 0.35) {
+      fail(`${label} distance read ${sim.landingMarker.distance.toFixed(2)} off a ${flown.toFixed(2)} flight`);
+    }
+    const end = sim.chargeGhost[sim.chargeGhost.length - 1]!;
+    if (sim.landingMarker.position.distanceTo(end) > 0.2) {
+      fail(`${label} reticle left the end of the preview`);
+    }
+    if (stopAt < 0.9) return;
+    const ghostEnd = end.clone();
+    const release = blankIntent();
+    release.strafe = kick;
+    sim.step(1 / 60, release);
+    let waited = 0;
+    while (!sim.ball.arc && waited < 12) {
+      sim.step(1 / 60, release);
+      waited++;
+    }
+    const arc = sim.ball.arc;
+    if (!arc) fail(`${label} release did not fly`);
+    const landed = arc.p2.clone();
+    if (arc.carryLeft > 0.2 && arc.carryDir) landed.addScaledVector(arc.carryDir, arc.carryLeft);
+    if (landed.distanceTo(ghostEnd) > 0.45) {
+      fail(`${label} ball finished ${landed.distanceTo(ghostEnd).toFixed(2)} off the preview`);
+    }
+  };
+
+  check('full throw', false, BALL.drag, 8, 0.98);
+  check('full kick', true, BALL.drag, 8, 0.98);
+  check('soft throw', false, BALL.drag, 0, 0);
+  check('heavy throw', false, BALL.drag * 2, 8, 0.98);
+  const heavy = arm(false, BALL.drag * 2, 8);
+  const light = arm(false, BALL.drag, 8);
+  for (let i = 0; i < 20; i++) {
+    heavy.sim.step(1 / 60, heavy.intent);
+    light.sim.step(1 / 60, light.intent);
+  }
+  const heavyEnd = chord(heavy.sim);
+  const lightEnd = chord(light.sim);
+  if (heavyEnd > lightEnd * 0.6) {
+    fail(`double drag still flew ${heavyEnd.toFixed(1)} against ${lightEnd.toFixed(1)}`);
+  }
 }
 
 function checkVerticalLook(): void {
@@ -920,8 +1027,10 @@ function checkStraightAimMarker(): void {
   const along = sim.landingMarker.position.clone().sub(hand);
   const reach = along.length();
   if (along.normalize().dot(forward) < 0.98) fail('straight marker left the look ray');
-  if (Math.abs(reach - sim.tunables.arcAimDistance) > 0.75) {
-    fail(`marker distance ${reach.toFixed(2)} was not the straight throw`);
+  const straightReach =
+    sim.tunables.arcAimDistance * (BALL.drag / sim.tunables.ballDrag) * sim.tunables.throwSpeedScale;
+  if (Math.abs(reach - straightReach) > 0.75) {
+    fail(`marker distance ${reach.toFixed(2)} was not the straight throw (${straightReach.toFixed(2)})`);
   }
   if (sim.landingMarker.position.distanceTo(sim.ball.position) < 8) fail('held ball stole the landing marker');
 
@@ -2996,8 +3105,12 @@ function checkAimPowerModes(): void {
   aimed.hold.shootHeld = true;
   aimed.sim.step(1 / 60, aimed.hold);
   const started = aimed.sim.landingMarker.distance;
-  if (Math.abs(started - aimed.sim.tunables.arcAimDistance) > 2) {
-    fail(`target mode did not start on the aim point (${started.toFixed(1)})`);
+  const aimPoint =
+    aimed.sim.tunables.arcAimDistance *
+    (BALL.drag / aimed.sim.tunables.ballDrag) *
+    aimed.sim.tunables.throwSpeedScale;
+  if (Math.abs(started - aimPoint) > 2) {
+    fail(`target mode did not start on the aim point (${started.toFixed(1)} vs ${aimPoint.toFixed(1)})`);
   }
   const pullIn = blankIntent();
   pullIn.shootHeld = true;

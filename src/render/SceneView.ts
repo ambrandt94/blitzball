@@ -479,7 +479,7 @@ export class SceneView {
       map: makeLandingGlow(),
       color: 0xffe066,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.32,
       depthTest: false,
       depthWrite: false,
       fog: false,
@@ -492,12 +492,12 @@ export class SceneView {
     group.visible = false;
     const glow = new THREE.Sprite(glowMat);
     glow.name = 'landingGlow';
-    glow.scale.set(3.1, 3.1, 1);
+    glow.scale.set(1.7, 1.7, 1);
     glow.renderOrder = 12;
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.78, 0.14, 10, 40), ringMat);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.52, 0.05, 8, 36), ringMat);
     ring.name = 'landingRing';
     ring.renderOrder = 13;
-    const core = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), markerMat);
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 8), markerMat);
     core.renderOrder = 14;
     group.add(glow, ring, core);
     this.shotMarker = group;
@@ -1178,7 +1178,7 @@ export class SceneView {
     const dist = Math.max(0.5, this.camera.position.distanceTo(this.shotMarker.position));
     const locked = mark.lockId !== null;
     const pulse = (locked ? 1 + Math.sin(this.pulse * 9) * 0.08 : 1) * (1 + mark.pulse * 0.72);
-    this.shotMarker.scale.setScalar(THREE.MathUtils.clamp(dist * 0.034, 0.45, 3.4) * pulse);
+    this.shotMarker.scale.setScalar(THREE.MathUtils.clamp(dist * 0.022, 0.32, 2.05) * pulse);
     this.shotMarkerRing.lookAt(this.camera.position);
 
     const far = mark.outOfReach;
@@ -1187,9 +1187,9 @@ export class SceneView {
     this.shotMarkerMat.color.setHex(markerHex);
     this.shotMarkerRingMat.color.setHex(ringHex);
     this.shotMarkerGlowMat.color.setHex(markerHex);
-    this.shotMarkerMat.opacity = far ? 0.42 : 1;
-    this.shotMarkerRingMat.opacity = far ? 0.4 : 1;
-    this.shotMarkerGlowMat.opacity = far ? 0.35 : 0.85;
+    this.shotMarkerMat.opacity = far ? 0.28 : 0.62;
+    this.shotMarkerRingMat.opacity = far ? 0.22 : 0.46;
+    this.shotMarkerGlowMat.opacity = far ? 0.12 : 0.26;
 
     const label = `${Math.max(0, Math.round(mark.distance))}u`;
     if (label !== this.distanceShown) {
@@ -1199,9 +1199,9 @@ export class SceneView {
     const up = this.camScratch.offset.copy(this.camera.up);
     if (up.lengthSq() < 1e-6) up.set(0, 1, 0);
     else up.normalize();
-    const lift = THREE.MathUtils.clamp(dist * 0.05, 0.55, 2.6);
+    const lift = THREE.MathUtils.clamp(dist * 0.03, 0.36, 1.55);
     this.distanceSprite.position.copy(this.shotMarker.position).addScaledVector(up, lift);
-    const labelScale = THREE.MathUtils.clamp(dist * 0.02, 0.4, 2.4);
+    const labelScale = THREE.MathUtils.clamp(dist * 0.015, 0.32, 1.55);
     this.distanceSprite.scale.set(labelScale * 2, labelScale, 1);
   }
 
