@@ -3,8 +3,9 @@ import { ARENA_RADIUS, ARENA_REFERENCE } from '../game/constants';
 import { attachStadium, type StadiumDetail } from './stadiumKit';
 import type { CrowdDensity } from './stadiumLayout';
 import { createWaterMeshes } from './waterShell';
-import { patchSceneWaterFog, setWaterFogState } from './waterFog';
+import { patchSceneWaterFog, setWaterFogState, setWaterPalette } from './waterFog';
 import { createWaterFallback, createWaterSphere, type WaterPresetName } from './waterSphere';
+import { WATER_DEEP_DEFAULT, WATER_TINT_DEFAULT, gradeMul } from './waterSettings';
 
 export type WaterStyle = 'trailbound' | 'classic';
 export type WaterQuality = 'high' | 'low' | 'basic';
@@ -16,6 +17,13 @@ export interface ArenaVisuals {
   waterQuality: WaterQuality;
   /** 1 keeps the full buffer. 2 and 3 render smaller and upscale with hard pixels. */
   waterPixelScale: number;
+  /** Web frames per second. 1.5 is the slowed default. */
+  causticFps: number;
+  /** Screen-space diagonal bands. Off unless the panel turns them on. */
+  showLightBands: boolean;
+  waterTint: string;
+  waterDeep: string;
+  waterFog: string;
   stadiumDetail: StadiumDetail;
   crowdDensity: CrowdDensity;
 }
@@ -201,10 +209,28 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
   let refraction = visuals.waterRefraction;
   let quality = visuals.waterQuality;
   let pixelScale = visuals.waterPixelScale;
+  let causticFps = visuals.causticFps;
+  let showLightBands = visuals.showLightBands;
+  let waterTint = visuals.waterTint;
+  let waterDeep = visuals.waterDeep;
+  let waterFog = visuals.waterFog;
   let detail = visuals.stadiumDetail;
   let crowd: CrowdDensity = visuals.crowdDensity;
   const fog = scene.fog instanceof THREE.FogExp2 ? scene.fog : new THREE.FogExp2(0x0a4d66, 0.0065);
   scene.fog = fog;
+
+  const applyWaterLook = () => {
+    const tintMul = gradeMul(waterTint, WATER_TINT_DEFAULT);
+    const deepMul = gradeMul(waterDeep, WATER_DEEP_DEFAULT);
+    sphere.setCausticFps(causticFps);
+    sphere.setLightBands(showLightBands);
+    sphere.setColors(waterTint, waterDeep);
+    water.setCausticFps(causticFps);
+    water.setLightBands(showLightBands);
+    water.setGrade(tintMul, deepMul);
+    fallback.setColors(waterTint);
+    setWaterPalette(waterTint, waterFog, waterDeep);
+  };
 
   const showV2 = () => {
     const v2 = style === 'trailbound';
@@ -227,7 +253,7 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
       fog.color.set(0x0a4d66);
       fog.density = 0.0065 * dress;
     } else {
-      fog.color.set(0x1f6066);
+      fog.color.set(waterFog);
       fog.density = 0.0022 * dress;
     }
     guides.visible = style === 'classic';
@@ -235,6 +261,7 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
     showV2();
   };
 
+  applyWaterLook();
   applyFogLook(true);
 
   return {
@@ -277,9 +304,15 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
       refraction = next.waterRefraction;
       quality = next.waterQuality;
       pixelScale = next.waterPixelScale;
+      causticFps = next.causticFps;
+      showLightBands = next.showLightBands;
+      waterTint = next.waterTint;
+      waterDeep = next.waterDeep;
+      waterFog = next.waterFog;
       detail = next.stadiumDetail;
       crowd = next.crowdDensity;
       sphere.applyPreset(preset);
+      applyWaterLook();
       sphere.setRefraction(refraction && quality !== 'basic');
       if (quality === 'high' || quality === 'low') sphere.setQuality(quality);
       stadium.setDetail(detail);
@@ -294,9 +327,9 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
     },
     beforeRender(renderer, scene, camera, time) {
       if (style !== 'trailbound') return;
-      const fps = preset === 'Deeper' ? 4 : 6;
       if (quality === 'basic') {
-        fallback.update(camera, time, fps);
+        applyWaterLook();
+        fallback.update(camera, time, causticFps);
         return;
       }
       const chunk = pixelScale > 1 ? 1 : 2;
@@ -304,6 +337,7 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
       sphere.setRefraction(refraction);
       sphere.setQuality(quality === 'low' ? 'low' : 'high');
       sphere.applyPreset(preset);
+      applyWaterLook();
       sphere.update(renderer, scene, camera, time);
     },
   };

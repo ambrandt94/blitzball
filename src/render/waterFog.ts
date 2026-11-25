@@ -141,6 +141,13 @@ export function patchSceneWaterFog(root: THREE.Object3D): void {
   });
 }
 
+/** Near, mid, and far fog steps. Defaults match the Clearer palette. */
+export function setWaterPalette(tint: string, fog: string, deep: string): void {
+  waterFogUniforms.nearC.value.set(tint);
+  waterFogUniforms.midC.value.set(fog);
+  waterFogUniforms.farC.value.set(deep);
+}
+
 export function setWaterFogState(style: 'trailbound' | 'classic', inside: boolean, arenaRadius: number): void {
   const scale = arenaRadius / 68;
   waterFogUniforms.radius.value = arenaRadius;

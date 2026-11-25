@@ -10,9 +10,12 @@ import {
   standPlacements,
   towerPlacements,
   wallPlacements,
+  KIT_SPHERE_CENTER_Y,
+  KIT_SPHERE_RADIUS,
   type CrowdDensity,
   type KitPlacement,
 } from './stadiumLayout';
+import { basinBowlDrop } from './waterSettings';
 
 export type StadiumDetail = 'off' | 'low' | 'high';
 
@@ -104,6 +107,46 @@ function tuneTree(root: THREE.Object3D, swayNames: Set<string>): void {
     const sway = swayNames.has(mesh.name) || swayNames.has(mesh.parent?.name ?? '');
     for (const material of list) tuneKitMaterial(material, sway);
   });
+}
+
+/**
+ * The halo mesh is wider than the play sphere and was cutting a circle through
+ * the pool disc. Drop the disc and stretch the bowl wall down with it. The
+ * rim, arena floor, and stands stay where the kit put them.
+ */
+function sinkBasinBowl(root: THREE.Object3D, drop: number): void {
+  if (drop <= 0) return;
+  const bottom = -0.6;
+  const top = 1;
+  let sunk = 0;
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const attr = mesh.geometry.getAttribute('position');
+    if (!attr) return;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let maxR = 0;
+    for (let i = 0; i < attr.count; i++) {
+      const y = attr.getY(i);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+      maxR = Math.max(maxR, Math.hypot(attr.getX(i), attr.getZ(i)));
+    }
+    const bowl = maxR > 60 && maxR < 63 && minY < -0.4;
+    if (!bowl) return;
+    const flat = maxY < -0.4;
+    sunk += 1;
+    for (let i = 0; i < attr.count; i++) {
+      const y = attr.getY(i);
+      const t = THREE.MathUtils.clamp((y - bottom) / (top - bottom), 0, 1);
+      attr.setY(i, flat ? y - drop : y - drop * (1 - t));
+    }
+    attr.needsUpdate = true;
+    mesh.geometry.computeBoundingBox();
+    mesh.geometry.computeBoundingSphere();
+  });
+  if (sunk !== 2) console.warn('basin bowl sink matched', sunk);
 }
 
 function instantiate(parts: KitPart[], placements: KitPlacement[], parent: THREE.Object3D): THREE.InstancedMesh[] {
@@ -212,6 +255,7 @@ export function attachStadium(parent: THREE.Object3D, arenaRadius: number): Stad
     tuneTree(crystal, new Set());
     tuneTree(banner, new Set());
     tuneTree(basin, new Set());
+    sinkBasinBowl(basin, basinBowlDrop(KIT_SPHERE_CENTER_Y, KIT_SPHERE_RADIUS));
 
     instantiate(collectParts(stands), standPlacements(), core);
     const wallBits = wallPlacements();

@@ -11,6 +11,16 @@ import {
   saveCameraSettings,
   defaultCameraFields,
 } from './cameraSettings';
+import {
+  CAUSTIC_FPS_DEFAULT,
+  CAUSTIC_FPS_MAX,
+  CAUSTIC_FPS_MIN,
+  LIGHT_BANDS_DEFAULT,
+  colorsForPreset,
+  loadWaterColors,
+  saveWaterColors,
+  type WaterColors,
+} from '../render/waterSettings';
 
 const POWER_MODE_KEY = 'blitzball.powerMode';
 const SECTIONS_KEY = 'blitzball.devSections';
@@ -78,6 +88,7 @@ function saveCollapsed(state: Record<string, boolean>): void {
 }
 
 export function defaultTunables(): Tunables {
+  const waterColors = loadWaterColors();
   return {
     // World-Y reads clearer in greybox; goal-axis remains a Dev toggle (Alex unsure).
     goalAxisUp: false,
@@ -159,6 +170,11 @@ export function defaultTunables(): Tunables {
     waterRefraction: true,
     waterQuality: 'high',
     waterPixelScale: 1,
+    causticFps: CAUSTIC_FPS_DEFAULT,
+    showLightBands: LIGHT_BANDS_DEFAULT,
+    waterTint: waterColors.tint,
+    waterDeep: waterColors.deep,
+    waterFog: waterColors.fog,
     stadiumDetail: 'high',
     crowdDensity: 'high',
     arenaRadius: ARENA_RADIUS,
@@ -182,6 +198,9 @@ export class DevPanel {
   private collapsed: Record<string, boolean>;
   private mount: HTMLElement;
   private rosterBody: HTMLElement | null = null;
+  private waterTintInput: HTMLInputElement | null = null;
+  private waterDeepInput: HTMLInputElement | null = null;
+  private waterFogInput: HTMLInputElement | null = null;
   private matchPreset: MatchPresetId = 'custom';
   private withGoalies = true;
   visible = true;
@@ -321,7 +340,7 @@ export class DevPanel {
       this.bool('Invert look Y', 'mouseLookInvertY');
     });
 
-    this.section('Arena', 'arena', () => {
+    this.section('Water', 'water', () => {
       this.select('Water style', 'waterStyle', [
         { value: 'trailbound', label: 'Trailbound v2' },
         { value: 'classic', label: 'Classic' },
@@ -330,7 +349,7 @@ export class DevPanel {
         { value: 'Mockup', label: 'Mockup' },
         { value: 'Clearer', label: 'Clearer' },
         { value: 'Deeper', label: 'Deeper' },
-      ], () => this.onChange('waterPreset'));
+      ], () => this.applyWaterPresetColors());
       this.select('Water quality', 'waterQuality', [
         { value: 'high', label: 'High' },
         { value: 'low', label: 'Low' },
@@ -338,6 +357,15 @@ export class DevPanel {
       ], () => this.onChange('waterQuality'));
       this.bool('Water refraction', 'waterRefraction');
       this.range('Pixel scale', 'waterPixelScale', 1, 3, 1);
+      this.range('Caustic speed', 'causticFps', CAUSTIC_FPS_MIN, CAUSTIC_FPS_MAX, 0.05);
+      this.bool('Light bands', 'showLightBands');
+      this.waterColor('Water tint', 'waterTint');
+      this.waterColor('Deep color', 'waterDeep');
+      this.waterColor('Fog color', 'waterFog');
+      this.waterReset();
+    });
+
+    this.section('Arena', 'arena', () => {
       this.select('Stadium detail', 'stadiumDetail', [
         { value: 'off', label: 'Off' },
         { value: 'low', label: 'Low' },
@@ -774,7 +802,7 @@ export class DevPanel {
       (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
       // Only the up-axis change rebuilds the chase basis. Invert toggles and
       // other checkboxes must not snap yaw/pitch back to kickoff.
-      if (key === 'goalAxisUp' || key === 'waterRefraction') this.onChange(key);
+      if (key === 'goalAxisUp' || key === 'waterRefraction' || key === 'showLightBands') this.onChange(key);
       if (key === 'goalieHomeOverride' || key === 'goalieAwayOverride') this.persistRoster();
     });
     row.append(lab, input);
@@ -851,10 +879,73 @@ export class DevPanel {
       const n = parseFloat(input.value);
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
       value.textContent = n.toFixed(2);
-      if (key === 'arenaRadius' || key === 'waterPixelScale') this.onChange(key);
+      if (key === 'arenaRadius' || key === 'waterPixelScale' || key === 'causticFps') this.onChange(key);
       if (key === 'goalieSkill' || key === 'goalieSkillHome' || key === 'goalieSkillAway') this.persistRoster();
     });
     wrap.append(name, input, value);
     this.mount.append(wrap);
+  }
+
+  private waterColors(): WaterColors {
+    return {
+      tint: this.tunables.waterTint,
+      deep: this.tunables.waterDeep,
+      fog: this.tunables.waterFog,
+    };
+  }
+
+  private syncWaterColorInputs(): void {
+    if (this.waterTintInput) this.waterTintInput.value = this.tunables.waterTint;
+    if (this.waterDeepInput) this.waterDeepInput.value = this.tunables.waterDeep;
+    if (this.waterFogInput) this.waterFogInput.value = this.tunables.waterFog;
+  }
+
+  private applyWaterPresetColors(): void {
+    const colors = colorsForPreset(this.tunables.waterPreset);
+    this.tunables.waterTint = colors.tint;
+    this.tunables.waterDeep = colors.deep;
+    this.tunables.waterFog = colors.fog;
+    this.syncWaterColorInputs();
+    saveWaterColors(colors);
+    this.onChange('waterPreset');
+  }
+
+  private waterColor(label: string, key: 'waterTint' | 'waterDeep' | 'waterFog'): void {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const lab = document.createElement('label');
+    lab.style.flex = '1';
+    lab.textContent = label;
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.dataset.key = key;
+    input.value = this.tunables[key];
+    input.addEventListener('input', () => {
+      this.tunables[key] = input.value;
+      saveWaterColors(this.waterColors());
+      this.onChange(key);
+    });
+    if (key === 'waterTint') this.waterTintInput = input;
+    if (key === 'waterDeep') this.waterDeepInput = input;
+    if (key === 'waterFog') this.waterFogInput = input;
+    row.append(lab, input);
+    this.mount.append(row);
+  }
+
+  private waterReset(): void {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'add-bot';
+    button.textContent = 'Reset water colors';
+    button.addEventListener('click', () => {
+      const colors = colorsForPreset('Clearer');
+      this.tunables.waterTint = colors.tint;
+      this.tunables.waterDeep = colors.deep;
+      this.tunables.waterFog = colors.fog;
+      this.syncWaterColorInputs();
+      saveWaterColors(colors);
+      this.onChange('waterTint');
+    });
+    this.mount.append(button);
   }
 }

@@ -140,6 +140,11 @@ export class SceneView {
     waterRefraction: true,
     waterQuality: 'high',
     waterPixelScale: 1,
+    causticFps: 1.5,
+    showLightBands: false,
+    waterTint: '#2E8A84',
+    waterDeep: '#163A48',
+    waterFog: '#1F6066',
     stadiumDetail: 'high',
     crowdDensity: 'high',
   };
