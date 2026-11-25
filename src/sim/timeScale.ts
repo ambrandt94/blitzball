@@ -90,3 +90,20 @@ export function takeFixedSteps(
   }
   return { accum: time, steps };
 }
+
+/**
+ * Seconds of world time for this rendered frame.
+ * Playing time is real time multiplied by the scale. Pause contributes nothing.
+ * One step adds a single fixed physics frame so the picture moves with that step.
+ */
+export function gameFrameDt(
+  realDt: number,
+  scale: number,
+  paused: boolean,
+  stepOnce: boolean,
+  fixedDt: number,
+): number {
+  const playing = paused ? 0 : Math.max(0, realDt) * clampTimeScale(scale);
+  const stepped = stepOnce ? fixedDt : 0;
+  return playing + stepped;
+}

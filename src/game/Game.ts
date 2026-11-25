@@ -1,5 +1,5 @@
 import { FIXED_DT } from './constants';
-import { ballInFlight, createScaleEase, playbackScale, stepScaleEase, takeFixedSteps } from '../sim/timeScale';
+import { ballInFlight, createScaleEase, gameFrameDt, playbackScale, stepScaleEase, takeFixedSteps } from '../sim/timeScale';
 import { InputManager } from '../input/InputManager';
 import { SceneView } from '../render/SceneView';
 import { Simulation } from '../sim/Simulation';
@@ -275,7 +275,8 @@ export class Game {
       this.tunables.timeScaleFlightOnly,
       ballInFlight(this.sim.ball),
     );
-    stepScaleEase(this.scaleEase, targetScale, dt);
+    if (!this.paused) stepScaleEase(this.scaleEase, targetScale, dt);
+    const gameDt = gameFrameDt(dt, this.scaleEase.value, this.paused, this.stepOnce, FIXED_DT);
     const clock = takeFixedSteps(
       this.accum,
       dt,
@@ -292,9 +293,9 @@ export class Game {
     }
     this.pendingEdge = clock.steps > 0 ? null : intent;
 
-    this.sim.updateAimPresentation(fresh, dt);
+    this.sim.updateAimPresentation(fresh, dt, gameDt);
     this.lastZoom = this.sim.isZoomOut(fresh);
-    this.view.sync(this.sim, this.lastZoom, dt);
+    this.view.sync(this.sim, this.lastZoom, gameDt, dt);
     this.view.render();
     this.updateHud();
 
