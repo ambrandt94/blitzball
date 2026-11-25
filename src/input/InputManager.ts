@@ -8,11 +8,12 @@ const KEYS = {
   back: ['KeyS', 'ArrowDown'],
   left: ['KeyA', 'ArrowLeft'],
   right: ['KeyD', 'ArrowRight'],
-  up: ['Space'],
-  down: ['ControlLeft'],
+  up: ['KeyE'],
+  down: ['KeyQ'],
   sprint: ['ShiftLeft', 'ShiftRight'],
-  claim: ['KeyE'],
-  drop: ['KeyQ'],
+  claim: ['KeyX'],
+  drop: ['KeyZ'],
+  tackle: ['Space'],
   pass: ['KeyF'],
   kick: ['KeyC'],
   callForPass: ['KeyG'],
@@ -289,6 +290,7 @@ export class InputManager {
       shootHeld: rt,
       burst,
       burstPower,
+      tackleHeld: rb,
       passHeld: false,
       zoomOut: lb,
       zoomTogglePressed: rsEdge,
@@ -335,7 +337,8 @@ export class InputManager {
       kickHeld: this.anyDown(KEYS.kick),
       burstPower: false,
       aimCancel: this.rmbPressed,
-      burst: this.lmbPressed,
+      burst: this.anyJust(KEYS.tackle),
+      tackleHeld: this.anyDown(KEYS.tackle),
       passHeld: this.anyDown(KEYS.pass),
       zoomOut: this.anyDown(KEYS.zoom),
       zoomTogglePressed: this.anyJust(KEYS.zoom),
@@ -367,6 +370,7 @@ export class InputManager {
       intent.kickHeld = intent.kickHeld || Boolean(pad.kickHeld);
       intent.burst = intent.burst || Boolean(pad.burst);
       intent.burstPower = intent.burstPower || Boolean(pad.burstPower);
+      intent.tackleHeld = intent.tackleHeld || Boolean(pad.tackleHeld);
       intent.passHeld = intent.passHeld || Boolean(pad.passHeld);
       intent.zoomOut = intent.zoomOut || Boolean(pad.zoomOut);
       intent.zoomTogglePressed = intent.zoomTogglePressed || Boolean(pad.zoomTogglePressed);

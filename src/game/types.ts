@@ -278,6 +278,10 @@ export interface Tunables {
 export interface LandingMarkerState {
   visible: boolean;
   position: THREE.Vector3;
+  /** Where the cursor would sit with no curve. The focus circle stays here. */
+  straightPosition: THREE.Vector3;
+  /** World radius of that circle. A full curve lands the cursor on its edge. */
+  focusRadius: number;
   /** Teammate the point is on, or null for a free aim along the look. */
   lockId: number | null;
   /** Hand → marker distance, world units. */
@@ -430,11 +434,10 @@ export interface InputIntent {
   burstPower: boolean;
   /** Right-click press. Cancels a held throw, including the tap window. */
   aimCancel: boolean;
-  /**
-   * Off-ball primary click. Same edge as shoot; the sim shoulder-checks only
-   * when this player is not holding the ball.
-   */
+  /** Off-ball tackle press. Space on the keyboard, a short RB tap on a pad. */
   burst: boolean;
+  /** Tackle button held down. Space, or RB. */
+  tackleHeld: boolean;
   passHeld: boolean;
   zoomOut: boolean;
   /** Keyboard or gamepad edge. Toggles only when zoom hold mode is off. */
