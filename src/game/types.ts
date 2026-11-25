@@ -110,8 +110,10 @@ export interface Tunables {
   aimAssist: number;
   showChargeGhost: boolean;
   showDebugStats: boolean;
-  /** Body slerp toward velocity, radians-worth of rate (1/seconds). */
+  /** Max facing rate, radians per second. */
   bodyTurnRate: number;
+  /** Seconds the turn rate takes to catch up. Higher is smoother. */
+  turnSmooth: number;
   /** Speed under which facing falls back to aim / camera. */
   bodyIdleSpeed: number;
   /** Paddle cycles per second at full speed. */
@@ -196,6 +198,12 @@ export interface Tunables {
   kickCurve: number;
   /** Extra seconds after release before the foot meets the ball. */
   kickWindup: number;
+  /** Metres per second added to a fully charged clean strike. */
+  kickPower: number;
+  /** How wide the clean part of the swing is, in swing-phase units. */
+  kickSweet: number;
+  /** Radius of the foot's hit volume, in metres. */
+  kickReach: number;
   /** Half-angle of the first-time volley, in radians off the aim. */
   volleyCone: number;
   /** Radians of aim error at full approach speed. */
@@ -296,6 +304,8 @@ export interface PlayerState {
   facing: THREE.Vector3;
   /** World-up relative basis when goal-axis mode is off; otherwise goal-axis up. */
   up: THREE.Vector3;
+  /** Current facing rate, radians per second. Eases toward the turn cap. */
+  turnOmega: number;
   sprinting: boolean;
   hasBall: boolean;
   /** Hand that cradles a held ball. Defaults to the right. */

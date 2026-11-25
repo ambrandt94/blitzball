@@ -3,10 +3,11 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { ARENA_RADIUS, ARENA_REFERENCE, BALL, CAMERA } from '../game/constants';
+import { ARENA_RADIUS, ARENA_REFERENCE, BALL } from '../game/constants';
 import type { PlayerState } from '../game/types';
 import type { Simulation } from '../sim/Simulation';
-import { authoritativeUp, rotateToward, stabilizeUp } from '../sim/math';
+import { authoritativeUp } from '../sim/math';
+import { ChaseRig } from './chaseCamera';
 import { buildArenaDressing, type ArenaVisuals, type WaterRig } from './arenaDressing';
 import { createBlitzball, fitBallModel, mountStadiumBall, tuneUnderwaterBallMaterials } from './blitzball';
 import { BubblePool } from './bubbles';
@@ -120,14 +121,8 @@ export class SceneView {
   private pipYou: THREE.CanvasTexture;
   private pipOrange: THREE.CanvasTexture;
   private pipBlue: THREE.CanvasTexture;
-  private camOffsetDir = new THREE.Vector3(0, 0.15, 1);
-  private camOffsetLen = CAMERA.chaseDistance;
-  private camTarget = new THREE.Vector3();
-  private camUp = new THREE.Vector3(0, 1, 0);
+  private chase = new ChaseRig();
   private worldUp = new THREE.Vector3(0, 1, 0);
-  private camInitialized = false;
-  private camQuat = new THREE.Quaternion();
-  private camQuatReady = false;
   private camScratch = {
     offset: new THREE.Vector3(),
     pos: new THREE.Vector3(),
@@ -757,38 +752,6 @@ export class SceneView {
     line.visible = n >= 2;
   }
 
-  /**
-   * Point the chase camera from its position at the look target.
-   * `lookAt` picks an arbitrary axis when up is parallel to the view, which
-   * is the snap at straight up and straight down. A bad frame is also capped
-   * so it cannot roll the picture all the way around in one tick.
-   */
-  private aimChaseCamera(lambda: number, dt: number): void {
-    const back = this.camScratch.offset.copy(this.camera.position).sub(this.camTarget);
-    if (back.lengthSq() < 1e-10) return;
-    back.normalize();
-    const x = this.bodyX.crossVectors(this.camUp, back);
-    if (x.lengthSq() < 1e-6) return;
-    x.normalize();
-    const y = this.bodyY.crossVectors(back, x).normalize();
-    this.bodyBasis.makeBasis(x, y, back);
-    this.camQuat.setFromRotationMatrix(this.bodyBasis);
-    if (!this.camQuatReady) {
-      this.camera.quaternion.copy(this.camQuat);
-      this.camQuatReady = true;
-    } else {
-      const theta = this.camera.quaternion.angleTo(this.camQuat);
-      if (theta <= 0.45) {
-        this.camera.quaternion.copy(this.camQuat);
-      } else {
-        const step = Math.min(theta, Math.max(0.2, lambda * Math.max(0, dt)));
-        this.camera.quaternion.slerp(this.camQuat, theta > 1e-5 ? step / theta : 1);
-      }
-    }
-    this.camUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    this.camera.up.copy(this.camUp);
-  }
-
   /** Shot curve. Screen-space width, dark halo, drawn over the water. */
   private writeArc(points: THREE.Vector3[]): void {
     const n = Math.min(points.length, GHOST_MAX);
@@ -836,28 +799,11 @@ export class SceneView {
     });
 
     const humanPos = sim.getHuman().position;
-    const desiredOffset = this.camScratch.offset.copy(pose.position).sub(humanPos);
-    if (!this.camInitialized) {
-      this.camOffsetLen = Math.max(0.25, desiredOffset.length());
-      if (desiredOffset.lengthSq() > 1e-8) this.camOffsetDir.copy(desiredOffset).normalize();
-      this.camTarget.copy(pose.target);
-      this.camUp.copy(pose.up);
-      this.camInitialized = true;
-    } else {
-      // Orbit the offset around the swimmer. A world-position lerp cuts a
-      // chord through the body on a fast turn, and lookAt then rolls.
-      if (desiredOffset.lengthSq() > 1e-8) rotateToward(this.camOffsetDir, desiredOffset, sim.tunables.camLag, dt);
-      const desiredLen = Math.max(0.25, desiredOffset.length());
-      this.camOffsetLen = THREE.MathUtils.damp(this.camOffsetLen, desiredLen, sim.tunables.camLag, dt);
-      this.camTarget.lerp(pose.target, 1 - Math.exp(-Math.max(0.5, sim.tunables.camLag) * dt));
-    }
-    const camPos = this.camScratch.pos.copy(humanPos).addScaledVector(this.camOffsetDir, this.camOffsetLen);
-    this.camera.position.copy(camPos);
-    const view = this.camScratch.view.copy(this.camTarget).sub(camPos);
-    if (view.lengthSq() < 1e-8) view.copy(this.camOffsetDir).negate();
-    else view.normalize();
-    stabilizeUp(this.camUp, view, pose.up, Math.max(0.5, sim.tunables.camLag), dt);
-    this.aimChaseCamera(Math.max(0.5, sim.tunables.camLag), dt);
+    this.worldUp.copy(authoritativeUp(sim.tunables.goalAxisUp));
+    this.chase.step(pose.position, pose.target, this.worldUp, sim.tunables.camLag, dt);
+    this.camera.position.copy(this.chase.position);
+    this.camera.quaternion.copy(this.chase.quaternion);
+    this.camera.up.copy(this.chase.up);
     if (Math.abs(this.camera.fov - pose.fov) > 0.01) {
       this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, pose.fov, 0.2);
       this.camera.updateProjectionMatrix();
@@ -868,14 +814,15 @@ export class SceneView {
     if (burstK > 0) {
       this.camera.fov += 3.4 * burstK;
       this.camera.updateProjectionMatrix();
-      this.camera.position.addScaledVector(this.camOffsetDir, 0.32 * burstK);
+      const back = this.camScratch.offset.copy(this.camera.position).sub(humanPos);
+      if (back.lengthSq() > 1e-6) this.camera.position.addScaledVector(back.normalize(), 0.32 * burstK);
     }
     if (sim.cameraShake > 0) {
       const mag = sim.cameraShake * sim.cameraShake * 0.34;
       const sway = Math.sin(this.pulse * 46);
       const bob = Math.cos(this.pulse * 37);
       this.camera.position.addScaledVector(this.camera.up, sway * mag);
-      this.camScratch.view.crossVectors(this.camera.up, this.camOffsetDir);
+      this.camScratch.view.crossVectors(this.camera.up, this.camScratch.offset);
       if (this.camScratch.view.lengthSq() > 1e-6) {
         this.camScratch.view.normalize();
         this.camera.position.addScaledVector(this.camScratch.view, bob * mag * 0.65);

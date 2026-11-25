@@ -7,6 +7,7 @@ import { ARENA_RADIUS, BALL, CAMERA, GOAL, PLAYER, ROSTER, SHOT_ARC, setArenaRad
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from '../input/primaryClickGate';
 import { fitBallModel } from '../render/blitzball';
+import { ChaseRig } from '../render/chaseCamera';
 import { aimPosturePitch, spring1, stepAimPosture, updateSwimmerRig, wantsAimPosture, type SwimmerRig } from '../render/swimmerModel';
 import { blendLimbPose, swimLimbPose } from '../render/limbs';
 import { sampleThrowPose, throwPoseSeconds } from '../render/throwPose';
@@ -16,7 +17,8 @@ import { parseRoster } from '../ui/rosterStorage';
 import { matchRoster } from '../ui/matchPresets';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalMouthZ, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
-import { lookBasis, rotateToward, stabilizeUp, transportUp } from './math';
+import { kickFootPoint } from './kick';
+import { authoritativeUp, lookBasis, rotateToward, stabilizeUp, transportUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 
@@ -175,6 +177,7 @@ function checkPreviewMatchesFlight(): void {
     if (kick) hold.kickHeld = true;
     else hold.shootHeld = true;
     sim.armShotAim(hold);
+    sim.applyFrameLook(hold);
     sim.step(1 / 60, hold);
     return { sim, human };
   };
@@ -276,6 +279,7 @@ function checkCurveAimOffset(): void {
     if (kick) intent.kickHeld = true;
     else intent.shootHeld = true;
     sim.armShotAim(intent);
+    sim.applyFrameLook(intent);
     for (let i = 0; i < 20 && sim.charge.amount < 0.98; i++) sim.step(1 / 60, intent);
     return { sim, intent };
   };
@@ -384,6 +388,7 @@ function checkFlightReach(): void {
     if (kick) intent.kickHeld = true;
     else intent.shootHeld = true;
     sim.armShotAim(intent);
+    sim.applyFrameLook(intent);
     sim.step(1 / 60, intent);
     return { sim, intent };
   };
@@ -1354,6 +1359,7 @@ function checkKick(): void {
   if (cancel.ball.velocity.length() > 8) fail('cancelled kick launched the ball');
 
   const volley = setup();
+  volley.kickoffLock = 0;
   volley.yaw = 0;
   const human = volley.getHuman();
   human.facing.set(0, 0, 1);
@@ -1363,13 +1369,62 @@ function checkKick(): void {
   volley.ball.lastOwnerId = null;
   volley.ball.claimLock = 0;
   volley.ball.arc = null;
-  volley.ball.position.set(0, 0.1, 1.15);
-  volley.ball.velocity.set(0, 0, -2);
+  const foot = kickFootPoint(new THREE.Vector3(), human.position, human.facing, human.up, 0.5);
+  volley.ball.position.copy(foot);
+  volley.ball.velocity.set(0, 0, 0);
+  volley.ball.claimLock = 1;
+  volley.ball.lastOwnerId = human.id;
   const flick = blankIntent();
   flick.kickHeld = true;
   volley.step(1 / 60, flick);
-  if (human.hasBall || volley.ball.possession !== 'free') fail('volley took possession');
-  if (volley.ball.velocity.z < 8) fail(`volley did not send the ball along the aim (${volley.ball.velocity.z.toFixed(1)})`);
+  const releaseFlick = blankIntent();
+  volley.step(1 / 60, releaseFlick);
+  for (let i = 0; i < 24 && volley.ball.velocity.z < 8; i++) volley.step(1 / 60, releaseFlick);
+  if (human.hasBall || volley.ball.possession !== 'free') fail('kick took possession');
+  if (volley.ball.velocity.z < 8) fail(`kick did not send the ball along the aim (${volley.ball.velocity.z.toFixed(1)})`);
+}
+
+/** A running strike outruns a standing one, and a mistimed foot is weaker. */
+function checkKickStrike(): void {
+  const speedOf = (moving: boolean, phase: number): number => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.setSoloOpponent(false);
+    sim.tunables.ballDrag = 0;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.velocity.set(0, 0, moving ? 18 : 0);
+    sim.yaw = 0;
+    sim.pitch = 0;
+    const foot = kickFootPoint(new THREE.Vector3(), human.position, human.facing, human.up, phase);
+    sim.ball.possession = 'free';
+    sim.ball.ownerId = null;
+    sim.ball.lastOwnerId = human.id;
+    sim.ball.claimLock = 1.2;
+    sim.ball.arc = null;
+    sim.ball.position.copy(foot);
+    sim.ball.velocity.set(0, 0, moving ? 18 : 0);
+    const hold = blankIntent();
+    hold.kickHeld = true;
+    if (moving) hold.move.set(0, 0, 1);
+    sim.step(1 / 60, hold);
+    const release = blankIntent();
+    if (moving) release.move.set(0, 0, 1);
+    sim.step(1 / 60, release);
+    for (let i = 0; i < 24; i++) sim.step(1 / 60, release);
+    return sim.ball.velocity.length();
+  };
+  const standing = speedOf(false, 0.5);
+  const running = speedOf(true, 0.5);
+  const scuffed = speedOf(false, 0.34);
+  if (standing < 8) fail(`standing kick was too soft (${standing.toFixed(1)})`);
+  if (running < standing + 4) fail(`running kick ${running.toFixed(1)} was not faster than standing ${standing.toFixed(1)}`);
+  if (scuffed > standing * 0.72) fail(`mistimed kick ${scuffed.toFixed(1)} was not weaker than ${standing.toFixed(1)}`);
 }
 
 function checkCatchReadyPass(): void {
@@ -1878,6 +1933,112 @@ function checkArcDefault(): void {
   if (bias < 0.12 * chord * 0.35) fail(`hand curve slider did nothing (${bias.toFixed(2)})`);
 }
 
+/**
+ * A throw or kick opens straight. Mouse movement from before the hold, and the
+ * sample that starts it, do not bend. Later movement does, and a new hold
+ * starts at zero again. The preview, the aim-offset landing, and the flight match.
+ */
+function checkHoldStartsStraight(): void {
+  const straightness = (sim: Simulation): number => Math.abs(arcRightOffset(sim));
+  const run = (kick: boolean) => {
+    const sim = new Simulation(defaultTunables());
+    sim.kickoffLock = 0;
+    sim.setSoloOpponent(false);
+    sim.tunables.powerMode = 'hold';
+    sim.tunables.shotPowerRate = 0;
+    sim.tunables.shotCarry = 0;
+    sim.tunables.kickWindup = 0.05;
+    for (const p of sim.players) {
+      if (p.id !== sim.humanId) p.active = false;
+    }
+    const human = sim.getHuman();
+    human.position.set(0, 0, 0);
+    human.velocity.set(0, 0, 0);
+    human.facing.set(0, 0, 1);
+    human.up.set(0, 1, 0);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.lastOwnerId = human.id;
+    sim.ball.position.copy(holdPoint(sim));
+    sim.yaw = 0.2;
+    sim.pitch = 0.1;
+    const before = blankIntent();
+    before.lookDelta.x = 0.4;
+    sim.applyFrameLook(before);
+    const yaw = sim.yaw;
+    const hold = blankIntent();
+    hold.strafe = kick;
+    hold.lookDelta.x = 0.35;
+    if (kick) hold.kickHeld = true;
+    else hold.shootHeld = true;
+    sim.armShotAim(hold);
+    sim.applyFrameLook(hold);
+    const label = kick ? 'kick' : 'throw';
+    if (Math.abs(sim.shotAim.bendRight) > 0.01 || Math.abs(sim.shotAim.bendUp) > 0.01) {
+      fail(`${label} hold began bent (${sim.shotAim.bendRight.toFixed(2)})`);
+    }
+    if (Math.abs(sim.yaw - yaw) > 1e-6) fail(`${label} hold turned the camera with the press`);
+    if (sim.chargeGhost.length < 4) fail(`${label} hold hid the straight preview`);
+    if (straightness(sim) > 0.08) fail(`${label} preview was not straight (${straightness(sim).toFixed(3)})`);
+    const aim = lookBasis(sim.yaw, sim.pitch, false).forward;
+    const toMark = sim.shotAim.target.clone().sub(holdPoint(sim));
+    if (toMark.lengthSq() < 1e-6 || toMark.normalize().dot(aim) < 0.98) {
+      fail(`${label} landing left the aim ray before any curve`);
+    }
+    const drag = blankIntent();
+    drag.strafe = kick;
+    drag.lookDelta.x = -0.22;
+    if (kick) drag.kickHeld = true;
+    else drag.shootHeld = true;
+    sim.applyFrameLook(drag);
+    const expect = -0.22 * sim.tunables.arcBendSpeed;
+    if (Math.abs(sim.shotAim.bendRight - expect) > 0.05) {
+      fail(`${label} curve ${sim.shotAim.bendRight.toFixed(2)} != ${expect.toFixed(2)}`);
+    }
+    if (straightness(sim) < 0.35) fail(`${label} preview ignored the post-hold drag`);
+    const ghost = sim.chargeGhost.map((p) => p.clone());
+    const landing = sim.shotAim.target.clone();
+    const release = blankIntent();
+    release.strafe = kick;
+    sim.step(1 / 60, release);
+    let guard = 0;
+    while (!sim.ball.arc && guard < 12) {
+      sim.step(1 / 60, release);
+      guard++;
+    }
+    const arc = sim.ball.arc;
+    if (!arc) fail(`${label} release did not fly`);
+    const point = new THREE.Vector3();
+    let worst = 0;
+    const n = Math.min(ghost.length, SHOT_ARC.samples + 1);
+    for (let i = 0; i < n; i++) {
+      quadraticPoint(point, arc.p0, arc.p1, arc.p2, i / SHOT_ARC.samples);
+      worst = Math.max(worst, point.distanceTo(ghost[i]!));
+    }
+    if (worst > 0.35) fail(`${label} flight left the curved preview by ${worst.toFixed(2)}`);
+    if (arc.p2.distanceTo(landing) > 0.45) fail(`${label} landing left the aim-offset spot`);
+    human.hasBall = true;
+    sim.ball.possession = 'held';
+    sim.ball.ownerId = human.id;
+    sim.ball.arc = null;
+    sim.ball.position.copy(holdPoint(sim));
+    const again = blankIntent();
+    again.strafe = kick;
+    again.lookDelta.x = 0.5;
+    if (kick) again.kickHeld = true;
+    else again.shootHeld = true;
+    sim.armShotAim(again);
+    sim.applyFrameLook(again);
+    if (Math.abs(sim.shotAim.bendRight) > 0.01 || Math.abs(sim.shotAim.bendUp) > 0.01) {
+      fail(`${label} restart kept the old curve`);
+    }
+    if (straightness(sim) > 0.08) fail(`${label} restart was not straight`);
+  };
+  run(false);
+  run(true);
+}
+
 function checkHoldLookOrder(): void {
   const { sim, hold } = aimingSim();
   const yaw = sim.yaw;
@@ -1887,9 +2048,13 @@ function checkHoldLookOrder(): void {
   sim.applyFrameLook(hold);
   if (!sim.shotAim.active) fail('shot aim was not armed before look');
   if (Math.abs(sim.yaw - yaw) > 1e-6) fail('the press-drag turned the camera');
+  if (Math.abs(sim.shotAim.bendRight) > 0.01 || Math.abs(sim.shotAim.bendUp) > 0.01) {
+    fail('the press sample bent the arc');
+  }
+  sim.applyFrameLook(hold);
   const expect = 0.25 * sim.tunables.arcBendSpeed;
   if (Math.abs(sim.shotAim.bendRight - expect) > 0.05) {
-    fail(`press-drag bend ${sim.shotAim.bendRight.toFixed(2)} != ${expect.toFixed(2)}`);
+    fail(`later drag bend ${sim.shotAim.bendRight.toFixed(2)} != ${expect.toFixed(2)}`);
   }
 }
 
@@ -2841,6 +3006,8 @@ function checkThrowAim(): void {
   sim.armShotAim(shot);
   sim.applyFrameLook(shot);
   if (Math.abs(sim.yaw - lockedYaw) > 1e-6) fail('throw hold did not freeze the camera');
+  if (Math.abs(sim.shotAim.bendRight) > 0.01) fail('throw hold began with a curve');
+  sim.applyFrameLook(shot);
   if (sim.shotAim.bendRight < 0.15 * sim.tunables.arcBendSpeed) fail('throw hold did not bend');
   sim.step(1 / 60, shot);
   sim.updateAimPresentation(shot, 1 / 60);
@@ -3869,6 +4036,194 @@ function checkWideCamera(): void {
   if (!sim.zoomOutLatched) fail('V did not toggle the wide view when zoom hold is off');
 }
 
+/**
+ * Scripted swim. Random sticks, a full loop, straight up and down, a barrel
+ * roll, the wall, and a catch while inverted. An upside-down body has to
+ * right itself inside a second, ascend/descend never flips, and neither the
+ * facing nor the chase camera may jump.
+ */
+function checkOrientationSoak(): void {
+  const dt = 1 / 60;
+  const world = new THREE.Vector3(0, 1, 0);
+  const maxFace = (10 * Math.PI) / 180;
+  const maxCam = (10 * Math.PI) / 180;
+
+  for (const pitchDeg of [-170, -120, -90, -45, 0, 45, 89, 91, 120, 170]) {
+    for (const yaw of [0, Math.PI / 2, Math.PI]) {
+      const sim = new Simulation(defaultTunables());
+      sim.kickoffLock = 0;
+      sim.tunables.camRecenter = false;
+      const human = sim.getHuman();
+      human.position.set(0, 0, 0);
+      human.velocity.set(0, 0, 0);
+      sim.pitch = (pitchDeg * Math.PI) / 180;
+      sim.yaw = yaw;
+      const rise = blankIntent();
+      rise.up = 1;
+      sim.step(dt, rise);
+      const upVel = human.velocity.dot(world);
+      if (upVel <= 0.15) fail(`ascend flipped to ${upVel.toFixed(3)} at pitch ${pitchDeg}`);
+      human.velocity.set(0, 0, 0);
+      const drop = blankIntent();
+      drop.up = -1;
+      sim.step(dt, drop);
+      const downVel = human.velocity.dot(world);
+      if (downVel >= -0.15) fail(`descend flipped to ${downVel.toFixed(3)} at pitch ${pitchDeg} yaw ${yaw.toFixed(2)}`);
+    }
+  }
+
+  const recover = new Simulation(defaultTunables());
+  recover.kickoffLock = 0;
+  const floater = recover.getHuman();
+  floater.position.set(0, 0, 6);
+  floater.velocity.set(0, 0, 0);
+  floater.facing.set(0, 0, 1);
+  floater.up.set(0, -1, 0);
+  let uprightFrame = -1;
+  for (let i = 1; i <= 90; i++) {
+    recover.step(dt, blankIntent());
+    if (uprightFrame < 0 && floater.up.dot(world) > 0.5) uprightFrame = i;
+  }
+  if (uprightFrame < 0 || uprightFrame > 60) {
+    fail(`stayed inverted (${uprightFrame} frames, up.y ${floater.up.y.toFixed(2)})`);
+  }
+
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.tunables.camRecenter = false;
+  sim.setSoloOpponent(false);
+  for (const p of sim.players) {
+    if (p.id !== sim.humanId) p.active = false;
+  }
+  const human = sim.getHuman();
+  human.position.set(0, 2, 8);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  const chase = new ChaseRig();
+  const prevFace = new THREE.Vector3();
+  const prevLook = new THREE.Vector3();
+  const prevUp = new THREE.Vector3();
+  let primed = false;
+  let maxFaceStep = 0;
+  let maxLookStep = 0;
+  let maxRollStep = 0;
+  const poseUp = authoritativeUp(false);
+  const watch = (label: string) => {
+    const stepF = angle(prevFace, human.facing);
+    const pose = sim.getCameraPose(blankIntent());
+    chase.step(pose.position, pose.target, poseUp, sim.tunables.camLag, dt);
+    const look = pose.target.clone().sub(chase.position);
+    if (look.lengthSq() < 1e-8) fail(`camera lost its look during ${label}`);
+    look.normalize();
+    if (primed) {
+      maxFaceStep = Math.max(maxFaceStep, stepF);
+      maxLookStep = Math.max(maxLookStep, angle(prevLook, look));
+      maxRollStep = Math.max(maxRollStep, angle(prevUp, chase.up));
+      if (stepF > maxFace) fail(`facing jumped ${deg(stepF).toFixed(1)}° during ${label}`);
+      if (angle(prevLook, look) > maxCam) fail(`camera look jumped ${deg(angle(prevLook, look)).toFixed(1)}° during ${label}`);
+      if (angle(prevUp, chase.up) > maxCam) fail(`camera roll jumped ${deg(angle(prevUp, chase.up)).toFixed(1)}° during ${label}`);
+    }
+    prevFace.copy(human.facing);
+    prevLook.copy(look);
+    prevUp.copy(chase.up);
+    primed = true;
+    if (chase.position.length() > ARENA_RADIUS - CAMERA.wallClearance + 0.2) {
+      fail(`camera left the shell during ${label}`);
+    }
+  };
+  const reseat = () => {
+    const pose = sim.getCameraPose(blankIntent());
+    chase.snap(pose.position, pose.target, poseUp);
+    prevFace.copy(human.facing);
+    const look = pose.target.clone().sub(chase.position);
+    if (look.lengthSq() > 1e-8) look.normalize();
+    prevLook.copy(look);
+    prevUp.copy(chase.up);
+    primed = true;
+  };
+
+  let seed = 7;
+  const rnd = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+  for (let i = 0; i < 180; i++) {
+    const intent = blankIntent();
+    intent.move.set(rnd() * 2 - 1, 0, rnd() * 2 - 1);
+    intent.up = rnd() > 0.66 ? 1 : rnd() < 0.33 ? -1 : 0;
+    sim.yaw += (rnd() - 0.5) * 0.08;
+    sim.pitch = THREE.MathUtils.clamp(sim.pitch + (rnd() - 0.5) * 0.06, -2.6, 2.6);
+    const beforeY = human.velocity.y;
+    sim.step(dt, intent);
+    if (intent.up !== 0 && intent.move.lengthSq() < 1e-6) {
+      const delta = human.velocity.y - beforeY;
+      if (intent.up > 0 && delta < -0.02) fail('random ascend reduced world up speed');
+      if (intent.up < 0 && delta > 0.02) fail('random descend increased world up speed');
+    }
+    watch('random');
+  }
+
+  sim.pitch = 0;
+  for (let i = 0; i < 240; i++) {
+    const intent = blankIntent();
+    intent.move.set(0, 0, 1);
+    intent.up = i < 80 ? 1 : i > 160 ? -1 : 0;
+    sim.pitch += (2 * Math.PI) / 240;
+    sim.step(dt, intent);
+    watch('loop');
+  }
+
+  human.up.set(0, -1, 0);
+  let recovered = -1;
+  for (let i = 1; i <= 70; i++) {
+    const intent = blankIntent();
+    intent.move.set(0, 0, 1);
+    sim.step(dt, intent);
+    if (recovered < 0 && human.up.dot(world) > 0.45) recovered = i;
+    watch('barrel');
+  }
+  if (recovered < 0 || recovered > 60) fail(`barrel roll stayed inverted (${recovered} frames)`);
+
+  const shell = ARENA_RADIUS - PLAYER.radius - 0.15;
+  human.position.set(0, 0, shell);
+  human.velocity.set(0, 0, 8);
+  sim.yaw = 0;
+  sim.pitch = 0.2;
+  reseat();
+  for (let i = 0; i < 90; i++) {
+    const intent = blankIntent();
+    intent.move.set(0, 0, 1);
+    sim.step(dt, intent);
+    watch('wall');
+  }
+
+  human.position.set(0, 1, 4);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, -1, 0);
+  reseat();
+  human.hasBall = false;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.position.set(0, 1.1, 4.6);
+  sim.ball.velocity.set(0, 0, 0);
+  for (let i = 0; i < 40; i++) {
+    const intent = blankIntent();
+    intent.claim = i < 3;
+    intent.up = 1;
+    const beforeY = human.velocity.y;
+    sim.step(dt, intent);
+    if (human.velocity.y - beforeY < -0.02) fail('pickup while inverted flipped ascend');
+    watch('pickup');
+  }
+  if (human.up.dot(world) < 0.2) fail(`still inverted after the pickup (up.y ${human.up.y.toFixed(2)})`);
+
+  if (maxFaceStep > maxFace) fail(`soak facing step ${deg(maxFaceStep).toFixed(1)}°`);
+  if (maxLookStep > maxCam) fail(`soak camera step ${deg(maxLookStep).toFixed(1)}°`);
+  if (maxRollStep > maxCam) fail(`soak roll step ${deg(maxRollStep).toFixed(1)}°`);
+}
+
 export function runRotationChecks(): void {
   checkRotateToward();
   checkUpPole();
@@ -3882,6 +4237,7 @@ export function runRotationChecks(): void {
   checkShapeMath();
   checkArcDefault();
   checkHoldLookOrder();
+  checkHoldStartsStraight();
   checkPowerMeter();
   checkTeammateLock();
   checkPractice();
@@ -3891,6 +4247,7 @@ export function runRotationChecks(): void {
   checkCatchReadyPass();
   checkDeflect();
   checkKick();
+  checkKickStrike();
   checkTeammatePassReachesPlayer();
   checkOpponentInterceptsPass();
   checkTackleStillStrips();
@@ -3932,6 +4289,7 @@ export function runRotationChecks(): void {
   checkGoalBoundArc();
   checkPreviewMatchesFlight();
   checkVerticalLook();
+  checkOrientationSoak();
   checkCamera(false, false);
   checkCamera(false, true);
   checkCamera(true, false);

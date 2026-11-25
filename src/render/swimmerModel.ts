@@ -1149,6 +1149,10 @@ const _palmWant = new THREE.Vector3();
  * the quaternion the mixer just wrote.
  */
 function kickAngle(player: PlayerState, sim: Simulation): number {
+  const visual = sim.kickVisual.playerId === player.id;
+  if (visual && !sim.kickVisual.swinging && sim.kickVisual.power > 0.02) {
+    return -0.95 * THREE.MathUtils.clamp(sim.kickVisual.power, 0, 1);
+  }
   const humanKick = player.role === 'human' && sim.charge.kind === 'kick' && sim.charge.active;
   const aiKick = player.windupKind === 'kick' && player.windup > 0.01;
   const charging = humanKick || aiKick;

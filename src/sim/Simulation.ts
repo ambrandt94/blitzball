@@ -34,6 +34,7 @@ import {
   damp,
   goalCenter,
   lookBasis,
+  rotateBy,
   rotateToward,
   pullInsideSphere,
   stabilizeUp,
@@ -50,6 +51,7 @@ import {
   segmentScores,
 } from './goal';
 import { cappedBend, clampAimMarker, quadraticPoint, quadraticVelocity, shapedControl } from './shotArc';
+import { KICK_SWEET, KICK_SWING_TIME, kickFootPoint, kickFootSpeed, kickQuality } from './kick';
 import { throwPoseSeconds } from '../render/throwPose';
 import { PULL_FULL_TRAVEL, TARGET_DISTANCE_SPEED } from './shotPower';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
@@ -74,6 +76,7 @@ function makePlayer(
     velocity: new THREE.Vector3(),
     facing,
     up: new THREE.Vector3(0, 1, 0),
+    turnOmega: 0,
     sprinting: false,
     hasBall: false,
     throwArm: 'right',
@@ -133,6 +136,26 @@ export class Simulation {
     bendRight: 0,
     bendUp: 0,
   };
+  /** Leg swing that strikes a free ball. Separate from the aimed drop-kick. */
+  private strike = {
+    active: false,
+    u: 0,
+    power: 0,
+    playerId: -1,
+    squared: false,
+    aim: new THREE.Vector3(),
+    struck: false,
+    bestDist: Infinity,
+    bestU: 0,
+  };
+  private kickCharging = false;
+  private kickCharge = 0;
+  private kickSquared = false;
+  private kickRecover = 0;
+  /** The look sample that opened the hold is the curve origin, not a bend. */
+  private holdLookPending = false;
+  /** What the view uses to cock and swing the kicking leg. */
+  readonly kickVisual = { playerId: -1, power: 0, swinging: false };
   /** Ghost trail samples while charging (beginner aid) or aiming an arc. */
   chargeGhost: THREE.Vector3[] = [];
   /**
@@ -784,6 +807,7 @@ export class Simulation {
 
     if (live) this.updatePossession(human, intent, motion);
     this.tickKickSwing(motion);
+    this.tickStrike(motion);
     this.tickAiKick(motion);
     this.updateBall(motion);
     if (live) {
@@ -843,9 +867,8 @@ export class Simulation {
    * mouse-down. Each invert toggle multiplies one axis, once.
    */
   /**
-   * Start the shot hold before mouse look is consumed. The press and the
-   * drag land in the same sample; applying look first turns the camera and
-   * the arc never sees that delta.
+   * Start the shot hold before mouse look is consumed. The sample that opens
+   * the hold is the curve's origin: it does not bend the arc or turn the camera.
    */
   armShotAim(intent: InputIntent): void {
     if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
@@ -857,7 +880,10 @@ export class Simulation {
     const kick = intent.strafe && intent.kickHeld;
     const shoot = intent.shootHeld && !kick;
     if (!kick && !shoot) return;
-    if (!this.shotAim.active) this.beginShotAim();
+    if (!this.shotAim.active) {
+      this.beginShotAim();
+      this.holdLookPending = true;
+    }
     this.charge.kind = kick ? 'kick' : 'shoot';
   }
 
@@ -867,6 +893,14 @@ export class Simulation {
     // While a shot is held the view stays put so the marker doesn't swim,
     // and the same mouse deltas bend the Bezier control point instead.
     if (this.shotAim.active) {
+      if (this.holdLookPending) {
+        this.holdLookPending = false;
+        if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') {
+          this.refreshShotTarget();
+          this.updateChargeGhost(this.getHuman());
+        }
+        return;
+      }
       const mode = this.tunables.powerMode;
       if (mode === 'target') {
         // Horizontal bends the arc. Vertical, and the wheel, slide the landing spot.
@@ -950,11 +984,14 @@ export class Simulation {
     const aimDir = this.tmp.faceTarget;
     if (isHuman) {
       const basis = this.cameraBasis();
+      // Horizon frame: strafe and look-forward stay camera-relative, but
+      // ascend/descend is always the stable world up. basis.up rolls past
+      // vertical and would swim downward when the player asked to rise.
       wish
         .copy(basis.right)
         .multiplyScalar(moveLocal.x)
         .add(basis.forward.clone().multiplyScalar(moveLocal.z))
-        .add(basis.up.clone().multiplyScalar(intent.up));
+        .add(basis.worldUp.clone().multiplyScalar(intent.up));
       aimDir.copy(basis.forward);
     } else {
       wish.set(moveLocal.x, intent.up !== 0 ? intent.up : moveLocal.y, moveLocal.z);
@@ -1153,15 +1190,24 @@ export class Simulation {
       else target.normalize();
     }
 
-    let rate = this.tunables.bodyTurnRate;
-    if (player.hasBall) rate *= PLAYER.carrierTurnMult;
+    let speedCap = Math.max(0.2, this.tunables.bodyTurnRate);
+    if (player.hasBall) speedCap *= PLAYER.carrierTurnMult;
+    const smooth = Math.max(0.04, this.tunables.turnSmooth);
     this.tmp.prevFacing.copy(player.facing);
-    rotateToward(player.facing, target, rate, dt);
+    const dot = THREE.MathUtils.clamp(player.facing.dot(target), -1, 1);
+    const theta = Math.acos(dot);
+    const response = theta < 1e-4 ? 0 : Math.min(speedCap, theta / smooth);
+    const follow = 1 - Math.exp(-dt / smooth);
+    player.turnOmega += (response - player.turnOmega) * follow;
+    if (player.turnOmega < 0) player.turnOmega = 0;
+    const step = Math.min(theta, player.turnOmega * dt);
+    player.turnOmega = dt > 0 ? step / dt : 0;
+    rotateBy(player.facing, target, step);
     transportUp(player.up, this.tmp.prevFacing, player.facing);
     this.alignBodyUp(player, dt);
   }
 
-  /** Pitch with facing. Twist eases toward world up and freezes near the pole instead of flipping. */
+  /** Pitch with facing. Twist eases back to the horizon, and holds still only at the pole. */
   private alignBodyUp(player: PlayerState, dt: number): void {
     stabilizeUp(player.up, player.facing, authoritativeUp(this.tunables.goalAxisUp), 6, dt);
   }
@@ -1305,10 +1351,12 @@ export class Simulation {
         this.chargeGhost = [];
       } else if (intent.pass) {
         this.releasePass(human, 0.45);
+      } else if (!intent.strafe) {
+        this.updateLooseKick(human, intent, dt);
       }
     } else {
       if (!this.kickSwing.active && (this.shotAim.active || this.charge.active)) this.clearShotAim();
-      if (intent.kickHeld) this.tryVolley(human);
+      this.updateLooseKick(human, intent, dt);
       // While squared up, E toggles catch-ready instead of grabbing.
       if (intent.claim && !(intent.strafe && !human.hasBall)) this.tryClaim(human);
     }
@@ -1629,6 +1677,7 @@ export class Simulation {
     this.shotAim.bendUp = 0;
     this.shotAim.lockId = null;
     this.shotAimManual = false;
+    this.holdLookPending = false;
     this.power.reset();
     this.charge = { active: false, kind: null, amount: 0 };
     this.chargeGhost = [];
@@ -2161,6 +2210,145 @@ export class Simulation {
     return out.copy(player.position).addScaledVector(forward, 0.62).addScaledVector(player.up, -0.1);
   }
 
+  /**
+   * Charge while C or B is held, swing on release. Squared-up with the ball
+   * stays on the aimed drop-kick and never comes through here.
+   */
+  private updateLooseKick(human: PlayerState, intent: InputIntent, dt: number): void {
+    if (this.kickSwing.active || this.strike.active) return;
+    if (this.kickRecover > 0) return;
+    if (intent.kickHeld) {
+      this.kickCharging = true;
+      this.kickSquared = intent.strafe;
+      const fill = Math.max(0.18, this.tunables.kickWindup + 0.22);
+      this.kickCharge = Math.min(1, this.kickCharge + dt / fill);
+      this.kickVisual.playerId = human.id;
+      this.kickVisual.power = this.kickCharge;
+      this.kickVisual.swinging = false;
+      return;
+    }
+    if (!this.kickCharging) return;
+    const power = Math.max(0.35, this.kickCharge);
+    const squared = this.kickSquared;
+    this.kickCharging = false;
+    this.kickCharge = 0;
+    this.kickSquared = false;
+    this.startStrike(human, power, squared);
+  }
+
+  /** Release a held ball onto the foot path and swing. A whiff recovers briefly. */
+  private startStrike(human: PlayerState, power: number, squared: boolean): void {
+    this.strike.active = true;
+    this.strike.u = 0;
+    this.strike.power = power;
+    this.strike.playerId = human.id;
+    this.strike.squared = squared;
+    this.strike.struck = false;
+    this.strike.bestDist = Infinity;
+    this.strike.bestU = 0;
+    const aim = this.strike.aim;
+    if (squared) {
+      aim.copy(this.cameraBasis().forward);
+      if (aim.lengthSq() < 1e-8) aim.copy(human.facing);
+    } else {
+      aim.copy(human.facing);
+    }
+    if (aim.lengthSq() < 1e-8) aim.set(0, 0, 1);
+    else aim.normalize();
+    if (human.hasBall) {
+      const meet = kickFootPoint(this.tmp.predictPos, human.position, human.facing, human.up, KICK_SWEET);
+      this.releaseAtHand(human, aim);
+      this.releaseBall(human.velocity);
+      this.ball.position.copy(meet);
+      this.ball.velocity.copy(human.velocity);
+      this.ball.arc = null;
+      this.ball.claimLock = 0.05;
+    }
+    this.kickVisual.playerId = human.id;
+    this.kickVisual.power = power;
+    this.kickVisual.swinging = true;
+    this.playPose(human, 'kick', KICK_SWING_TIME + 0.08);
+    this.match.statusMessage = power > 0.75 ? 'Winding up…' : 'Kick!';
+  }
+
+  private tickStrike(dt: number): void {
+    if (!this.strike.active) {
+      if (this.kickRecover > 0) this.kickRecover = Math.max(0, this.kickRecover - dt);
+      return;
+    }
+    const player = this.players[this.strike.playerId];
+    if (!player || !player.active) {
+      this.strike.active = false;
+      this.kickVisual.swinging = false;
+      return;
+    }
+    const duration = KICK_SWING_TIME;
+    const prev = this.strike.u;
+    this.strike.u = Math.min(1, prev + dt / duration);
+    const sweet = KICK_SWEET;
+    const width = Math.max(0.04, this.tunables.kickSweet);
+    const window = Math.max(width * 1.8, 0.16);
+    const open = sweet - window;
+    const close = sweet + window;
+    const inWindow = this.strike.u >= open && this.strike.u <= close;
+    if (!this.strike.struck && this.ball.possession === 'free' && (inWindow || (prev < close && this.strike.u > close))) {
+      const sampleU = THREE.MathUtils.clamp(this.strike.u, open, close);
+      const foot = kickFootPoint(this.tmp.predictPos, player.position, player.facing, player.up, sampleU);
+      const dist = foot.distanceTo(this.ball.position);
+      if (dist < this.strike.bestDist) {
+        this.strike.bestDist = dist;
+        this.strike.bestU = sampleU;
+      } else if (this.strike.bestDist <= Math.max(0.2, this.tunables.kickReach)) {
+        // The foot is past its closest point. That moment is the contact.
+        kickFootPoint(this.tmp.predictPos, player.position, player.facing, player.up, this.strike.bestU);
+        this.connectStrike(player, this.tmp.predictPos, this.strike.bestU);
+      }
+    }
+    if (
+      !this.strike.struck &&
+      this.strike.u >= close &&
+      this.strike.bestDist <= Math.max(0.2, this.tunables.kickReach)
+    ) {
+      kickFootPoint(this.tmp.predictPos, player.position, player.facing, player.up, this.strike.bestU);
+      this.connectStrike(player, this.tmp.predictPos, this.strike.bestU);
+    }
+    if (this.strike.u < 1) return;
+    this.strike.active = false;
+    this.kickVisual.swinging = false;
+    this.kickVisual.playerId = -1;
+    this.kickVisual.power = 0;
+    if (!this.strike.struck) {
+      this.kickRecover = 0.34;
+      this.match.statusMessage = 'Whiff';
+    }
+  }
+
+  private connectStrike(player: PlayerState, foot: THREE.Vector3, u: number): void {
+    this.strike.struck = true;
+    const width = Math.max(0.04, this.tunables.kickSweet);
+    const quality = kickQuality(u, KICK_SWEET, width);
+    const clean = quality > 0.72;
+    const dir = this.tmp.aim.copy(player.facing);
+    if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1);
+    else dir.normalize();
+    if (this.strike.squared && this.strike.aim.lengthSq() > 1e-6) {
+      dir.lerp(this.strike.aim, 0.6).normalize();
+    }
+    const swing = kickFootSpeed(u, KICK_SWING_TIME);
+    const charge = 0.4 + 0.6 * THREE.MathUtils.clamp(this.strike.power, 0, 1);
+    const kickSpeed = swing * 0.9 + Math.max(4, this.tunables.kickPower) * charge;
+    const scale = 0.16 + 0.84 * quality;
+    this.ball.arc = null;
+    this.ball.position.copy(foot);
+    // The foot's own speed is what timing changes. The swimmer's momentum always carries.
+    this.ball.velocity.copy(player.velocity).addScaledVector(dir, kickSpeed * scale);
+    this.ball.claimLock = 0.4;
+    this.ball.lastOwnerId = player.id;
+    this.kickRecover = clean ? 0.12 : 0.22;
+    this.playPose(player, 'kick', 0.28);
+    this.match.statusMessage = clean ? 'Clean strike!' : 'Scuffed kick';
+  }
+
   private tickKickSwing(dt: number): void {
     if (!this.kickSwing.active) return;
     const player = this.players[this.kickSwing.playerId];
@@ -2213,36 +2401,6 @@ export class Simulation {
     this.charge.kind = null;
     this.charge.amount = 0;
     this.match.statusMessage = power > 0.7 ? 'Big kick!' : 'Kick!';
-  }
-
-  /** First-time kick. The ball never becomes yours. Spread grows with how fast you arrive. */
-  private tryVolley(player: PlayerState): void {
-    if (this.ball.possession !== 'free' || this.ball.claimLock > 0 || this.kickSwing.active) return;
-    if (player.selfCatchLock && this.ball.lastOwnerId === player.id) return;
-    const forward = this.lookForward(player);
-    const reach = PLAYER.radius + BALL.radius + 1.35;
-    const cone = Math.max(0.05, this.tunables.volleyCone);
-    if (!inCatchCone(player.position, forward, this.ball.position, reach, cone)) return;
-    const aim = forward.clone();
-    if (aim.lengthSq() < 1e-8) aim.copy(player.facing);
-    if (aim.lengthSq() < 1e-8) aim.set(0, 0, 1);
-    aim.normalize();
-    const approach = player.velocity.length();
-    const spread =
-      Math.max(0, this.tunables.volleySpread) * Math.min(1.4, approach / Math.max(6, this.tunables.playerMaxSpeed));
-    const side = this.tmp.side.copy(player.up).cross(aim);
-    if (side.lengthSq() < 1e-8) side.set(1, 0, 0);
-    else side.normalize();
-    const lift = this.tmp.upHint.copy(aim).cross(side).normalize();
-    aim.addScaledVector(side, Math.sin((Math.random() * 2 - 1) * spread));
-    aim.addScaledVector(lift, Math.sin((Math.random() * 2 - 1) * spread * 0.65));
-    aim.normalize();
-    const speed = Math.max(this.shotSpeedMin() * Math.max(1, this.tunables.kickSpeed) * 0.8, 14);
-    this.ball.arc = null;
-    this.ball.velocity.copy(aim).multiplyScalar(speed).addScaledVector(player.velocity, 0.2);
-    this.ball.claimLock = 0.4;
-    this.playPose(player, 'kick', 0.32);
-    this.match.statusMessage = 'Volley!';
   }
 
   /** Field AI shot or pass. Same Bezier as a human throw, with a kick dropping to the foot first. */
