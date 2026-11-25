@@ -25,8 +25,10 @@ export const PLAYER = {
   carrierSpeedMult: 0.82,
   carrierTurnMult: 0.72,
   turnRate: 12,
-  /** How fast the body slerps toward swim velocity (1/seconds). */
-  bodyTurnRate: 9,
+  /** Max facing rate while swimming, in radians per second. */
+  bodyTurnRate: 2.8,
+  /** Seconds to ease the turn rate up and down. Higher resists a whip. */
+  turnSmooth: 0.2,
   /** Below this speed the body eases back to aim instead of velocity. */
   bodyIdleSpeed: 3.6,
   /** Paddle cycles per second at full sprint. */

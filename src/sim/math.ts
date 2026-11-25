@@ -93,8 +93,11 @@ export function rotateToward(current: THREE.Vector3, target: THREE.Vector3, lamb
 
 /**
  * Keep `previous` perpendicular to `forward` and ease it toward `preferred`
- * along the short arc. Near the pole (`preferred` parallel to `forward`) the
- * twist is left alone so it does not flip.
+ * along the short arc, including when the body is upside down.
+ *
+ * Near the pole the rejected up is too small to trust, and it flips as
+ * `forward` crosses that pole. Leave the twist alone there. Everywhere else,
+ * roll back toward upright at the capped rate so an inversion cannot stick.
  */
 export function stabilizeUp(
   previous: THREE.Vector3,
@@ -119,14 +122,93 @@ export function stabilizeUp(
   // ~8° of the pole: the rejected up is too small to define a twist.
   if (_hint.lengthSq() < 0.02) return;
   _hint.normalize();
-  // Projecting world up flips 180° as forward crosses the pole. Following
-  // that hint, even slowly, rolls the body and the camera the wrong way.
-  // Keep the twist we already have and only ease upright on the same side.
-  if (previous.dot(_hint) < 0.15) return;
-  rotateToward(previous, _hint, lambda, dt);
+  const maxStep = Math.max(0, lambda) * Math.max(0, dt);
+  rotateBy(previous, _hint, maxStep);
   previous.addScaledVector(fwd, -previous.dot(fwd));
   if (previous.lengthSq() < 1e-8) previous.copy(_hint);
   else previous.normalize();
+}
+
+/** Rotate `current` toward `target` by at most `radians`, along the short arc. */
+export function rotateBy(current: THREE.Vector3, target: THREE.Vector3, radians: number): void {
+  if (!(radians > 0)) return;
+  if (target.lengthSq() < 1e-8 || current.lengthSq() < 1e-8) return;
+  _aimed.copy(target).normalize();
+  current.normalize();
+  const dot = THREE.MathUtils.clamp(current.dot(_aimed), -1, 1);
+  const theta = Math.acos(dot);
+  if (theta < 1e-5) {
+    current.copy(_aimed);
+    return;
+  }
+  const step = Math.min(theta, radians);
+  const t = step / theta;
+  if (dot < -0.9995) {
+    _axis.set(0, 1, 0);
+    if (Math.abs(current.dot(_axis)) > 0.9) _axis.set(1, 0, 0);
+    _axis.cross(current).normalize();
+    _q.setFromAxisAngle(_axis, Math.PI * t);
+    current.applyQuaternion(_q).normalize();
+    return;
+  }
+  _q.setFromUnitVectors(current, _aimed);
+  _qFrom.identity().slerp(_q, t);
+  current.applyQuaternion(_qFrom).normalize();
+}
+
+/**
+ * Up on the picture: world up projected off the view. Too close to the pole
+ * that projection flips, so `fallback` (the up we already have) is kept.
+ * Returns whether the horizon itself was stable enough to follow.
+ */
+export function screenUp(
+  forward: THREE.Vector3,
+  worldUp: THREE.Vector3,
+  fallback: THREE.Vector3,
+  out: THREE.Vector3,
+): boolean {
+  const fwd = _fromF.copy(forward);
+  if (fwd.lengthSq() < 1e-8) {
+    out.copy(fallback);
+    return false;
+  }
+  fwd.normalize();
+  out.copy(worldUp).addScaledVector(fwd, -worldUp.dot(fwd));
+  if (out.lengthSq() < 0.04) {
+    out.copy(fallback).addScaledVector(fwd, -fallback.dot(fwd));
+    if (out.lengthSq() < 1e-8) out.set(0, 1, 0).addScaledVector(fwd, -fwd.y);
+    if (out.lengthSq() < 1e-8) out.set(1, 0, 0);
+    else out.normalize();
+    return false;
+  }
+  out.normalize();
+  return true;
+}
+
+/** Error `x` and velocity `v` of a critically damped spring toward 0. */
+export function critDampScalar(x: number, v: number, omega: number, dt: number): { x: number; v: number } {
+  const w = Math.max(0, omega);
+  if (!(dt > 0) || w === 0) return { x, v };
+  const exp = Math.exp(-w * dt);
+  const b = v + w * x;
+  const x1 = (x + b * dt) * exp;
+  const v1 = (b - w * (x + b * dt)) * exp;
+  return { x: x1, v: v1 };
+}
+
+/** Critically damped spring of `current` toward `target`. `vel` is world units per second. */
+export function critDampVec(
+  current: THREE.Vector3,
+  vel: THREE.Vector3,
+  target: THREE.Vector3,
+  omega: number,
+  dt: number,
+): void {
+  const px = critDampScalar(current.x - target.x, vel.x, omega, dt);
+  const py = critDampScalar(current.y - target.y, vel.y, omega, dt);
+  const pz = critDampScalar(current.z - target.z, vel.z, omega, dt);
+  current.set(target.x + px.x, target.y + py.x, target.z + pz.x);
+  vel.set(px.v, py.v, pz.v);
 }
 
 /**

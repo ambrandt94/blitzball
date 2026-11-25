@@ -34,6 +34,7 @@ import {
   damp,
   goalCenter,
   lookBasis,
+  rotateBy,
   rotateToward,
   pullInsideSphere,
   stabilizeUp,
@@ -74,6 +75,7 @@ function makePlayer(
     velocity: new THREE.Vector3(),
     facing,
     up: new THREE.Vector3(0, 1, 0),
+    turnOmega: 0,
     sprinting: false,
     hasBall: false,
     throwArm: 'right',
@@ -950,11 +952,14 @@ export class Simulation {
     const aimDir = this.tmp.faceTarget;
     if (isHuman) {
       const basis = this.cameraBasis();
+      // Horizon frame: strafe and look-forward stay camera-relative, but
+      // ascend/descend is always the stable world up. basis.up rolls past
+      // vertical and would swim downward when the player asked to rise.
       wish
         .copy(basis.right)
         .multiplyScalar(moveLocal.x)
         .add(basis.forward.clone().multiplyScalar(moveLocal.z))
-        .add(basis.up.clone().multiplyScalar(intent.up));
+        .add(basis.worldUp.clone().multiplyScalar(intent.up));
       aimDir.copy(basis.forward);
     } else {
       wish.set(moveLocal.x, intent.up !== 0 ? intent.up : moveLocal.y, moveLocal.z);
@@ -1153,15 +1158,24 @@ export class Simulation {
       else target.normalize();
     }
 
-    let rate = this.tunables.bodyTurnRate;
-    if (player.hasBall) rate *= PLAYER.carrierTurnMult;
+    let speedCap = Math.max(0.2, this.tunables.bodyTurnRate);
+    if (player.hasBall) speedCap *= PLAYER.carrierTurnMult;
+    const smooth = Math.max(0.04, this.tunables.turnSmooth);
     this.tmp.prevFacing.copy(player.facing);
-    rotateToward(player.facing, target, rate, dt);
+    const dot = THREE.MathUtils.clamp(player.facing.dot(target), -1, 1);
+    const theta = Math.acos(dot);
+    const response = theta < 1e-4 ? 0 : Math.min(speedCap, theta / smooth);
+    const follow = 1 - Math.exp(-dt / smooth);
+    player.turnOmega += (response - player.turnOmega) * follow;
+    if (player.turnOmega < 0) player.turnOmega = 0;
+    const step = Math.min(theta, player.turnOmega * dt);
+    player.turnOmega = dt > 0 ? step / dt : 0;
+    rotateBy(player.facing, target, step);
     transportUp(player.up, this.tmp.prevFacing, player.facing);
     this.alignBodyUp(player, dt);
   }
 
-  /** Pitch with facing. Twist eases toward world up and freezes near the pole instead of flipping. */
+  /** Pitch with facing. Twist eases back to the horizon, and holds still only at the pole. */
   private alignBodyUp(player: PlayerState, dt: number): void {
     stabilizeUp(player.up, player.facing, authoritativeUp(this.tunables.goalAxisUp), 6, dt);
   }

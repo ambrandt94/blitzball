@@ -172,6 +172,7 @@ export function defaultTunables(): Tunables {
     showChargeGhost: true,
     showDebugStats: true,
     bodyTurnRate: PLAYER.bodyTurnRate,
+    turnSmooth: PLAYER.turnSmooth,
     bodyIdleSpeed: PLAYER.bodyIdleSpeed,
     swimAnimRate: PLAYER.swimAnimRate,
     swimAnimAmount: PLAYER.swimAnimAmount,
@@ -391,7 +392,8 @@ export class DevPanel {
       this.range('Cruise speed', 'playerMaxSpeed', 8, 40, 0.5);
       this.range('Sprint mult', 'sprintMult', 1, 2, 0.01);
       this.range('Strafe speed', 'strafeSpeedMult', 0.25, 1, 0.01);
-      this.range('Body turn rate', 'bodyTurnRate', 2, 16, 0.5);
+      this.range('Turn speed', 'bodyTurnRate', 1, 8, 0.1);
+      this.range('Turn smoothing', 'turnSmooth', 0.04, 0.55, 0.01);
       this.range('Idle face speed', 'bodyIdleSpeed', 0.4, 12, 0.1);
       this.bool('Paddle anim', 'swimAnim');
       this.range('Paddle rate', 'swimAnimRate', 0.2, 4, 0.1);
@@ -424,7 +426,7 @@ export class DevPanel {
       this.camRange('Shoulder offset', 'shoulderOffset', 0, 4, 0.05);
       this.camRange('Shoulder ease', 'shoulderTransition', 1, 18, 0.1);
       this.camRange('FOV', 'camFov', 35, 100, 1);
-      this.camRange('Follow lag', 'camLag', 1, 24, 0.5);
+      this.camRange('Camera lag', 'camLag', 1, 24, 0.5);
       this.camChoice('Look ahead', 'lookAhead', [
         { value: 'aim', label: 'Aim' },
         { value: 'move', label: 'Movement' },
