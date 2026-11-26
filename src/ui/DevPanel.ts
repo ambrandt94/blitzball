@@ -1566,33 +1566,6 @@ export class DevPanel {
     this.mount.append(button);
   }
 
-  private tackleReset(): void {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'add-bot';
-    button.textContent = 'Reset tackle';
-    button.addEventListener('click', () => {
-      const fresh = {
-        tackleStaggerChance: 0.5,
-        tackleMomentumKill: 0.6,
-        tackleKnockoutChance: 0.4,
-        tackleAutograbChance: 0.35,
-        grabReach: 2.4,
-        diveSpeed: 26,
-        diveCooldown: 0.75,
-      };
-      for (const [key, value] of Object.entries(fresh) as [keyof Tunables, number][]) {
-        (this.tunables as unknown as Record<string, number>)[key] = value;
-        const input = this.root.querySelector<HTMLInputElement>(`input[data-key="${key}"]`);
-        if (!input) continue;
-        input.value = String(value);
-        const readout = input.parentElement?.querySelector('.value');
-        if (readout) readout.textContent = value.toFixed(2);
-      }
-    });
-    this.mount.append(button);
-  }
-
   private waterReset(): void {
     const button = document.createElement('button');
     button.type = 'button';
