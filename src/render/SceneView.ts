@@ -22,7 +22,8 @@ import { createCatchBeacon } from './catchBeacon';
 import { blendLimbPose, swimLimbPose } from './limbs';
 import { buildGoalFrame } from './goalFrame';
 import type { Body } from '../characters/cfRuntime';
-import { buildOutfit, forgeRuntime, initForge, recipeForOutfit } from '../characters/forge';
+import { buildOutfit, forgeRuntime, initForge, recipeForLook, recipeForOutfit } from '../characters/forge';
+import type { PlayerProfile } from '../ui/playerProfile';
 import type { OutfitId } from '../characters/outfits';
 import { loadCharacterSettings, type CharacterSettings } from '../ui/characterSettings';
 import { defaultIndicatorSettings, type IndicatorSettings } from '../ui/indicatorSettings';
@@ -291,6 +292,18 @@ export class SceneView {
     for (const group of this.playerMeshes.values()) void this.dress(group);
   }
 
+  private playerLook: PlayerProfile | null = null;
+
+  /** The human swimmer from the splash flow. Rebuilds that one body. */
+  setPlayerLook(look: PlayerProfile): void {
+    this.playerLook = look;
+    for (const group of this.playerMeshes.values()) {
+      if (group.userData.marker !== 'you') continue;
+      delete group.userData.outfit;
+      void this.dress(group);
+    }
+  }
+
   private outfitFor(group: THREE.Group): OutfitId {
     const team = group.userData.team === 1 ? 1 : 0;
     if (group.userData.marker === 'you') return this.characters.human;
@@ -315,8 +328,12 @@ export class SceneView {
     const outfit = this.outfitFor(group);
     const team = group.userData.team === 1 ? 1 : 0;
     const playerId = typeof group.userData.playerId === 'number' ? group.userData.playerId : 0;
-    if (group.userData.outfit === outfit && swimmerRig(group)) return;
-    if (group.userData.building === outfit) return;
+    const yours = group.userData.marker === 'you' && this.playerLook;
+    const lookKey = yours
+      ? `${this.playerLook!.outfit}|${this.playerLook!.tone}|${this.playerLook!.hair}|${this.playerLook!.hairColor}|${this.playerLook!.teamColor}`
+      : outfit;
+    if (group.userData.outfit === lookKey && swimmerRig(group)) return;
+    if (group.userData.building === lookKey) return;
     const cf = forgeRuntime();
     if (!cf) {
       if (this.swimmerTemplate && !swimmerRig(group)) {
@@ -325,12 +342,15 @@ export class SceneView {
       }
       return;
     }
-    group.userData.building = outfit;
+    group.userData.building = lookKey;
     this.pendingBuilds += 1;
     this.showBoot('Suiting up…');
     try {
-      const built: Body = await buildOutfit(cf, outfit, team === 1 ? '#f2642a' : '#1c6fe0');
-      if (group.userData.building !== outfit) {
+      const teamHex = yours ? this.playerLook!.teamColor : team === 1 ? '#f2642a' : '#1c6fe0';
+      const built: Body = yours
+        ? await cf.build(recipeForLook(cf, this.playerLook!))
+        : await buildOutfit(cf, outfit, teamHex);
+      if (group.userData.building !== lookKey) {
         built.dispose();
         return;
       }
@@ -340,8 +360,10 @@ export class SceneView {
         built.dispose();
         return;
       }
-      group.userData.outfit = outfit;
-      group.userData.forgeRecipe = recipeForOutfit(cf, outfit, team === 1 ? '#f2642a' : '#1c6fe0');
+      group.userData.outfit = lookKey;
+      group.userData.forgeRecipe = yours
+        ? recipeForLook(cf, this.playerLook!)
+        : recipeForOutfit(cf, outfit, teamHex);
       this.markGameplay(group);
     } catch (err) {
       console.warn('forge build failed', err);

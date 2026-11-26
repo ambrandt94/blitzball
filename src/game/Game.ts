@@ -7,6 +7,10 @@ import { BLITZBALL_OUTFITS } from '../characters/outfits';
 import { loadCharacterSettings, saveCharacterSettings } from '../ui/characterSettings';
 import { loadIndicatorSettings, saveIndicatorSettings } from '../ui/indicatorSettings';
 import { DevPanel, defaultTunables } from '../ui/DevPanel';
+import { FrontDoor } from '../ui/frontDoor';
+import { cleanIndicatorSettings } from '../ui/indicatorSettings';
+import { matchRoster } from '../ui/matchPresets';
+import type { PlayMode, PlayerProfile } from '../ui/playerProfile';
 import type { InputIntent } from './types';
 
 /** Keep one-frame button edges until a physics step actually consumes them. */
@@ -57,6 +61,7 @@ export class Game {
   private view: SceneView;
   private input: InputManager;
   private dev: DevPanel;
+  private front: FrontDoor | null = null;
   private canvas: HTMLCanvasElement;
   private accum = 0;
   private paused = false;
@@ -91,6 +96,12 @@ export class Game {
     this.view = new SceneView(this.canvas);
     this.input = new InputManager(this.canvas);
     this.sim = new Simulation(this.tunables);
+    const params = new URLSearchParams(location.search);
+    const devQuery = params.has('dev');
+    const shotName = params.get('shot');
+    const shotLaunch =
+      shotName === 'wide' || shotName === 'inside' || shotName === 'ball' || shotName === 'windup' || shotName === 'bank' || shotName === 'play';
+    if (!devQuery && !shotLaunch) this.tunables.showDebugStats = false;
     this.dev = new DevPanel(
       document.getElementById('dev-panel')!,
       this.tunables,
@@ -152,7 +163,23 @@ export class Game {
     this.scaleEase = createScaleEase(this.tunables.timeScale);
     this.applyHelp();
     this.view.setCharacters(loadCharacterSettings());
-    this.view.setIndicators(loadIndicatorSettings());
+    this.view.setIndicators(devQuery || shotLaunch ? loadIndicatorSettings() : cleanIndicatorSettings());
+    this.front = new FrontDoor({
+      onStart: (profile) => this.beginPlay(profile),
+      onResume: () => this.resumeFromMenu(),
+      onPause: () => this.openPause(),
+    });
+    this.input.onUnlock = () => {
+      if (this.front?.isFlowOpen()) return;
+      this.openPause();
+    };
+    if (!devQuery && !shotLaunch) {
+      this.dev.setVisible(false);
+      this.input.setSuspended(true);
+      this.paused = true;
+      this.hideHud(true);
+      this.front.openFlow();
+    }
     const shot = new URLSearchParams(location.search).get('shot');
     if (shot === 'wide' || shot === 'inside' || shot === 'ball' || shot === 'windup' || shot === 'bank' || shot === 'play') {
       this.shotMode = shot;
@@ -319,8 +346,72 @@ export class Game {
   }
 
   private togglePause(): void {
-    this.paused = !this.paused;
-    this.dev.setPaused(this.paused);
+    if (this.front?.isFlowOpen()) return;
+    if (this.paused || this.front?.isPauseOpen()) this.resumeFromMenu();
+    else this.openPause();
+  }
+
+  private openPause(): void {
+    if (!this.front || this.front.isFlowOpen() || this.front.isPauseOpen()) return;
+    this.paused = true;
+    this.dev.setPaused(true);
+    this.input.setSuspended(true);
+    this.front.showPause({
+      resume: () => this.resumeFromMenu(),
+      mode: () => {},
+      character: () => {},
+      menu: () => {
+        this.front?.hidePause();
+        this.paused = true;
+        this.input.setSuspended(true);
+        this.hideHud(true);
+        this.front?.openFlow();
+      },
+    });
+  }
+
+  private resumeFromMenu(): void {
+    this.front?.hidePause();
+    this.front?.closeFlow();
+    this.input.setSuspended(false);
+    this.paused = false;
+    this.dev.setPaused(false);
+    this.hideHud(false);
+  }
+
+  private beginPlay(profile: PlayerProfile): void {
+    this.applyPlayMode(profile.mode);
+    this.view.setPlayerLook(profile);
+    this.sim.resetKickoff();
+    this.front?.closeFlow();
+    this.front?.hidePause();
+    this.input.setSuspended(false);
+    this.paused = false;
+    this.dev.setPaused(false);
+    this.hideHud(false);
+  }
+
+  private applyPlayMode(mode: PlayMode): void {
+    if (mode === 'match') {
+      this.tunables.defenseActive = true;
+      this.tunables.soloOpponent = false;
+      this.sim.applyRoster(matchRoster('3v3', true));
+      return;
+    }
+    if (mode === 'practice') {
+      this.tunables.defenseActive = false;
+      this.tunables.soloOpponent = false;
+      this.sim.applyRoster({ home: [], away: [], preset: 'custom', withGoalies: false });
+      return;
+    }
+    this.tunables.defenseActive = false;
+    this.tunables.soloOpponent = true;
+    this.sim.applyRoster({ home: [], away: ['chaser'], preset: 'custom', withGoalies: false });
+  }
+
+  private hideHud(hidden: boolean): void {
+    const hud = document.getElementById('hud');
+    if (hud) hud.hidden = hidden;
   }
 
   private updateHud(): void {

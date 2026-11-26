@@ -61,6 +61,11 @@ export class InputManager {
   private justPressed = new Set<string>();
   private mouseDelta = { x: 0, y: 0 };
   private pointerLocked = false;
+  /** Menus eat keys and refuse pointer lock until play resumes. */
+  private suspended = false;
+  private ignoreUnlock = false;
+  /** Fired when the browser drops pointer lock, usually Esc. */
+  onUnlock: (() => void) | null = null;
   private lmbDown = false;
   private lmbPressed = false;
   private rmbDown = false;
@@ -184,7 +189,7 @@ export class InputManager {
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
-    if (this.typingTarget(e)) return;
+    if (this.suspended || this.typingTarget(e)) return;
     // Repeats still count. Pointer lock can leave a dev-panel control focused,
     // and the first keydown is then dropped; the repeats are the only signal
     // that the key is physically down.
@@ -262,7 +267,18 @@ export class InputManager {
     if (!document.fullscreenElement) this.unlockKeyboard();
   };
 
+  setSuspended(on: boolean): void {
+    this.suspended = on;
+    if (!on) return;
+    this.releaseKeys();
+    if (this.pointerLocked) {
+      this.ignoreUnlock = true;
+      document.exitPointerLock();
+    }
+  }
+
   private onClick = (): void => {
+    if (this.suspended) return;
     this.canvas.focus();
     if (!this.pointerLocked) {
       this.clickGate.noteLockRequest();
@@ -274,7 +290,14 @@ export class InputManager {
     const locked = document.pointerLockElement === this.canvas;
     this.clickGate.setLocked(locked);
     this.pointerLocked = locked;
-    if (!locked) this.releaseKeys();
+    if (!locked) {
+      this.releaseKeys();
+      if (this.ignoreUnlock) {
+        this.ignoreUnlock = false;
+        return;
+      }
+      this.onUnlock?.();
+    }
     if (!locked || this.clickGate.suppress) {
       this.lmbDown = false;
       this.lmbPressed = false;

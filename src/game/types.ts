@@ -271,6 +271,8 @@ export interface Tunables {
   waterStyle: WaterStyle;
   /** v2 look. Clearer keeps swimmers upright through the lens. */
   waterPreset: WaterPreset;
+  /** Named water colour. `custom` is whatever was saved from the sliders. */
+  waterLook: string;
   /** Off uses the shader's flat tint instead of a background render. */
   waterRefraction: boolean;
   /** High is a full refraction target. Low is half res. Basic skips the shader. */
