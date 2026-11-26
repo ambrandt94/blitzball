@@ -12,6 +12,8 @@ export const CAMERA_FIELDS = [
   'shoulderTransition',
   'camFov',
   'camLag',
+  'camStiffness',
+  'camSwivel',
   'lookAhead',
   'camRecenter',
   'camRecenterDelay',
@@ -36,6 +38,8 @@ export function defaultCameraFields(): CameraValues & { cameraPreset: CameraPres
     shoulderTransition: CAMERA.shoulderTransition,
     camFov: CAMERA.fov,
     camLag: CAMERA.lag,
+    camStiffness: CAMERA.stiffness,
+    camSwivel: CAMERA.swivel,
     lookAhead: 'aim',
     camRecenter: false,
     camRecenterDelay: 0.75,
@@ -54,6 +58,8 @@ const PRESETS: Record<Exclude<CameraPresetId, 'custom'>, CameraValues> = {
     shoulderTransition: 8,
     camFov: 70,
     camLag: 18,
+    camStiffness: 0.95,
+    camSwivel: 10,
     lookAhead: 'aim',
     camRecenter: false,
     camRecenterDelay: 0.75,
@@ -70,6 +76,8 @@ const PRESETS: Record<Exclude<CameraPresetId, 'custom'>, CameraValues> = {
     shoulderTransition: 5,
     camFov: 74,
     camLag: 5,
+    camStiffness: 0.55,
+    camSwivel: 4,
     lookAhead: 'move',
     camRecenter: false,
     camRecenterDelay: 1,
@@ -85,6 +93,8 @@ const PRESETS: Record<Exclude<CameraPresetId, 'custom'>, CameraValues> = {
     shoulderTransition: 7,
     camFov: 64,
     camLag: 9,
+    camStiffness: 0.75,
+    camSwivel: 7,
     lookAhead: 'ball',
     camRecenter: false,
     camRecenterDelay: 0.75,
@@ -100,6 +110,8 @@ const PRESETS: Record<Exclude<CameraPresetId, 'custom'>, CameraValues> = {
     shoulderTransition: 3.5,
     camFov: 46,
     camLag: 3.5,
+    camStiffness: 0.45,
+    camSwivel: 3,
     lookAhead: 'move',
     camRecenter: true,
     camRecenterDelay: 0.55,
@@ -148,7 +160,10 @@ export function parseCameraSettings(raw: string | null | undefined): CameraSave 
   if (!PRESET_IDS.includes(record.preset as CameraPresetId)) return null;
   const out = { preset: record.preset as CameraPresetId, ...cameraPresetValues('default') } as CameraSave;
   for (const key of CAMERA_FIELDS) {
-    if (!(key in record)) return null;
+    if (!(key in record)) {
+      if (key === 'camStiffness' || key === 'camSwivel') continue;
+      return null;
+    }
     const value = record[key];
     if (key === 'lookAhead') {
       if (value !== 'aim' && value !== 'move' && value !== 'ball') return null;

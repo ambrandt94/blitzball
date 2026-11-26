@@ -22,6 +22,8 @@ function orEdges(pending: InputIntent, fresh: InputIntent): InputIntent {
     aimCancel: pending.aimCancel || fresh.aimCancel,
     burst: pending.burst || fresh.burst,
     resetBall: pending.resetBall || fresh.resetBall,
+    level: pending.level || fresh.level,
+    ballCamToggle: pending.ballCamToggle || fresh.ballCamToggle,
     callForPass: pending.callForPass || fresh.callForPass,
   };
 }
@@ -40,6 +42,8 @@ function withoutEdges(intent: InputIntent): InputIntent {
     aimCancel: false,
     burst: false,
     resetBall: false,
+    level: false,
+    ballCamToggle: false,
     zoomTogglePressed: false,
     middleZoomPressed: false,
     toggleDev: false,
