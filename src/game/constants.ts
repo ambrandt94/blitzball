@@ -223,6 +223,10 @@ export const CAMERA = {
   lookAhead: 6,
   /** Offset follow rate (1/seconds). High enough that look stays with the mouse. */
   lag: 14,
+  /** 1 sticks the boom to the player. Position does not lag. */
+  stiffness: 0.9,
+  /** How fast the picture catches the aim, in 1/seconds. A half-turn is under half a second. */
+  swivel: 8,
   zoomOutDistance: 34,
   zoomOutHeight: 8,
   fov: 62,

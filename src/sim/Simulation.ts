@@ -29,7 +29,6 @@ import { GoalieAI, goalieSkill01, goalieSwimSpeed } from '../ai/GoalieAI';
 import { TeammateAI } from '../ai/TeammateAI';
 import {
   authoritativeUp,
-  chaseCameraPosition,
   clampMagnitude,
   damp,
   goalCenter,
@@ -37,8 +36,8 @@ import {
   rotateBy,
   rotateToward,
   pullInsideSphere,
-  screenUp,
-  stabilizeUp,
+  chaseBoom,
+  clampLookPitch,
   transportUp,
 } from './math';
 import { fumbleChance, inCatchCone, inCatchVolume, segmentHitsCatch, segmentHitsCone } from './catch';
@@ -250,17 +249,14 @@ export class Simulation {
   private ballPreWall = new THREE.Vector3();
   yaw = 0;
   pitch = 0;
-  /**
-   * Authoritative look. Yaw/pitch rebuild this when something assigns them.
-   * Mouse look turns it in place so the frame stays continuous through vertical.
-   */
-  private aimForward = new THREE.Vector3(0, 0, 1);
-  private aimUp = new THREE.Vector3(0, 1, 0);
-  private lookSynced = false;
-  private lookSyncedYaw = 0;
-  private lookSyncedPitch = 0;
-  private lookSyncedGoal = false;
-  private lookQuat = new THREE.Quaternion();
+  /** Picture axes. They ease toward the clamped yaw/pitch and stay upright. */
+  private viewForward = new THREE.Vector3(0, 0, 1);
+  private viewUp = new THREE.Vector3(0, 1, 0);
+  private viewReady = false;
+  private appliedYaw = 0;
+  private appliedPitch = 0;
+  /** Mouse and ball cam ease. A direct yaw/pitch write snaps. */
+  private easeLook = false;
   zoomOutLatched = false;
   humanId = 0;
   /** Seconds remaining before play is live (kickoff / after goal). */
@@ -722,9 +718,25 @@ export class Simulation {
     this.noteLookEdit();
   }
 
-  /** Yaw and pitch were written directly. The next basis rebuilds from them. */
+  /** Yaw and pitch were written directly. The next basis snaps to them. */
   noteLookEdit(): void {
-    this.lookSynced = false;
+    this.easeLook = false;
+    this.viewReady = false;
+  }
+
+  /** Point the body at the horizon around world up. Heading stays. */
+  levelPlayer(): void {
+    const human = this.getHuman();
+    const worldUp = authoritativeUp(this.tunables.goalAxisUp);
+    const flat = this.tmp.camFwd.copy(human.facing).addScaledVector(worldUp, -human.facing.dot(worldUp));
+    if (flat.lengthSq() > 1e-6) human.facing.copy(flat).normalize();
+    const up = this.tmp.camUp.copy(worldUp).addScaledVector(human.facing, -worldUp.dot(human.facing));
+    if (up.lengthSq() < 1e-6) human.up.copy(worldUp);
+    else human.up.copy(up).normalize();
+    this.pitch = 0;
+    this.easeLook = false;
+    this.viewReady = false;
+    this.match.statusMessage = 'Level';
   }
 
   getHuman(): PlayerState {
@@ -747,6 +759,14 @@ export class Simulation {
       if (this.kickoffLock <= 0) this.match.statusMessage = 'Play on';
       else this.match.statusMessage = `Face-off… ${this.kickoffLock.toFixed(1)}s`;
     }
+
+    if (intent.level) this.levelPlayer();
+    if (intent.ballCamToggle) {
+      this.tunables.ballCam = !this.tunables.ballCam;
+      this.match.statusMessage = this.tunables.ballCam ? 'Ball cam' : 'Free cam';
+    }
+    this.steerBallCam(dt);
+    this.easeView(dt);
 
     if (intent.resetBall) {
       this.releaseBall();
@@ -944,136 +964,66 @@ export class Simulation {
       }
       return;
     }
-    // Level flight keeps the old yaw-around-world, pitch-around-horizon step,
-    // so a flat mouse delta still changes yaw and pitch by exactly that much.
-    // Near vertical that step inverts: cos(pitch) flips the heading, and the
-    // world-up horizon is 180° from the continuous frame. Turn on the camera's
-    // own axes there instead.
-    this.turnLook(intent.lookDelta.x * sx, -intent.lookDelta.y * sy);
+    // Yaw around world up, pitch clamped so the camera cannot roll over.
+    // Ball cam owns the angles while it is on. A throw keeps the aim cam.
+    if (this.tunables.ballCam && !this.shotAim.active) return;
+    // The aim itself is immediate. ChaseRig is what lags the picture a little.
+    this.easeLook = false;
+    this.viewReady = false;
+    this.yaw += intent.lookDelta.x * sx;
+    this.pitch = clampLookPitch(this.pitch - intent.lookDelta.y * sy);
   }
 
-  /** Rebuild the stored look after a direct yaw/pitch write. */
-  private pullLookFromEuler(): void {
-    const goal = this.tunables.goalAxisUp;
-    if (
-      this.lookSynced &&
-      this.lookSyncedYaw === this.yaw &&
-      this.lookSyncedPitch === this.pitch &&
-      this.lookSyncedGoal === goal
-    ) {
-      return;
-    }
-    const basis = lookBasis(this.yaw, this.pitch, goal);
-    this.aimForward.copy(basis.forward);
-    this.aimUp.copy(basis.up);
-    this.lookSyncedYaw = this.yaw;
-    this.lookSyncedPitch = this.pitch;
-    this.lookSyncedGoal = goal;
-    this.lookSynced = true;
-  }
-
-  /**
-   * `yawDelta` > 0 turns toward screen-right. `pitchDelta` > 0 looks toward
-   * the top of the picture (mouse up).
-   */
-  private turnLook(yawDelta: number, pitchDelta: number): void {
-    this.pullLookFromEuler();
-    const goal = this.tunables.goalAxisUp;
-    const worldUp = authoritativeUp(goal);
-    const along = this.aimForward.dot(worldUp);
-    const pole = THREE.MathUtils.smoothstep(Math.abs(along), 0.86, 0.97);
-    const reference = lookBasis(this.yaw, this.pitch, goal);
-    const aligned =
-      this.aimForward.dot(reference.forward) > 0.995 && this.aimUp.dot(reference.up) > 0.995;
-    if (aligned && pole <= 0.001) {
-      this.yaw += yawDelta;
-      this.pitch += pitchDelta;
-      this.lookSynced = false;
-      this.pullLookFromEuler();
-      return;
-    }
-    if (Math.abs(yawDelta) > 1e-8 || Math.abs(pitchDelta) > 1e-8) {
-      const right = this.tmp.camRight.crossVectors(this.aimForward, this.aimUp);
-      if (right.lengthSq() > 1e-8) {
-        right.normalize();
-        this.turnToward(right, yawDelta);
-      }
-      this.turnToward(this.aimUp, pitchDelta);
-      // A mouse sample may right a few degrees. The per-frame ease does the rest.
-      this.rightLookHorizon(1 - pole, 0.08);
-      this.commitLook();
-    }
-  }
-
-  /** Positive radians move the look toward `toward` and carry `lookUp` with it. */
-  private turnToward(toward: THREE.Vector3, radians: number): void {
-    if (!(Math.abs(radians) > 1e-8)) return;
-    const axis = this.tmp.predictVel.crossVectors(this.aimForward, toward);
-    if (axis.lengthSq() < 1e-12) return;
-    axis.normalize();
-    this.lookQuat.setFromAxisAngle(axis, radians);
-    this.aimForward.applyQuaternion(this.lookQuat).normalize();
-    this.aimUp.applyQuaternion(this.lookQuat);
-    this.aimUp.addScaledVector(this.aimForward, -this.aimUp.dot(this.aimForward));
-    if (this.aimUp.lengthSq() < 1e-8) {
-      this.aimUp.copy(authoritativeUp(this.tunables.goalAxisUp));
-      this.aimUp.addScaledVector(this.aimForward, -this.aimUp.dot(this.aimForward));
-    }
-    if (this.aimUp.lengthSq() < 1e-8) this.aimUp.set(1, 0, 0);
-    else this.aimUp.normalize();
-  }
-
-  /**
-   * Ease the horizon back while it cannot flip the picture. `weight` is 0 at
-   * the pole, where the world-up projection reverses and a correction rolls 180°.
-   */
-  private rightLookHorizon(weight: number, maxRadians: number): void {
-    if (!(weight > 1e-3) || !(maxRadians > 0)) return;
+  /** Pull yaw and pitch toward the ball. The view eases, it does not snap. */
+  private steerBallCam(dt: number): void {
+    if (!this.tunables.ballCam || this.shotAim.active) return;
+    const human = this.getHuman();
+    const to = this.tmp.predictPos.copy(this.ball.position).sub(human.position);
+    if (to.lengthSq() < 0.36) return;
     const worldUp = authoritativeUp(this.tunables.goalAxisUp);
-    const stable = screenUp(this.aimForward, worldUp, this.aimUp, this.tmp.aim);
-    if (!stable) return;
-    // Opposite the current up means the correction itself is the inversion.
-    if (this.tmp.aim.dot(this.aimUp) < 0.2) return;
-    rotateBy(this.aimUp, this.tmp.aim, maxRadians * weight);
-    this.aimUp.addScaledVector(this.aimForward, -this.aimUp.dot(this.aimForward));
-    if (this.aimUp.lengthSq() < 1e-8) this.aimUp.copy(this.tmp.aim);
-    else this.aimUp.normalize();
-  }
-
-  /** Remember yaw/pitch for the next direct-write check without rebuilding the frame. */
-  private commitLook(): void {
-    const goal = this.tunables.goalAxisUp;
-    const worldUp = authoritativeUp(goal);
-    const along = THREE.MathUtils.clamp(this.aimForward.dot(worldUp), -1, 1);
-    const flat = this.tmp.camFwd.copy(this.aimForward).addScaledVector(worldUp, -along);
-    let yaw = this.yaw;
+    const along = THREE.MathUtils.clamp(to.dot(worldUp) / to.length(), -1, 1);
+    const wantPitch = clampLookPitch(Math.asin(along));
+    const flat = to.addScaledVector(worldUp, -to.dot(worldUp));
+    const swivel = Math.max(1, this.tunables.camSwivel);
+    const alpha = 1 - Math.exp(-swivel * Math.max(0, dt));
     if (flat.lengthSq() > 1e-6) {
-      const worldForward = this.tmp.predictPos.set(0, 0, 1);
-      if (Math.abs(worldUp.z) >= 0.9) worldForward.set(0, 1, 0);
-      worldForward.addScaledVector(worldUp, -worldForward.dot(worldUp)).normalize();
-      const worldRight = this.tmp.predictVel.crossVectors(worldForward, worldUp).normalize();
       flat.normalize();
-      yaw = Math.atan2(flat.dot(worldRight), flat.dot(worldForward));
+      const horizon = lookBasis(this.yaw, 0, this.tunables.goalAxisUp);
+      const yawErr = Math.atan2(horizon.right.dot(flat), horizon.forward.dot(flat));
+      this.yaw += yawErr * alpha;
     }
-    this.yaw = yaw;
-    this.pitch = Math.asin(along);
-    this.lookSyncedYaw = this.yaw;
-    this.lookSyncedPitch = this.pitch;
-    this.lookSyncedGoal = goal;
-    this.lookSynced = true;
+    this.pitch += (wantPitch - this.pitch) * alpha;
+    this.pitch = clampLookPitch(this.pitch);
+    this.appliedYaw = this.yaw;
+    this.appliedPitch = this.pitch;
+    this.easeLook = true;
   }
 
-  /** Once per frame. Rights the horizon after the mouse is done, still without a snap. */
-  private easeLookHorizon(dt: number): void {
-    this.pullLookFromEuler();
-    const goal = this.tunables.goalAxisUp;
-    const worldUp = authoritativeUp(goal);
-    const pole = THREE.MathUtils.smoothstep(Math.abs(this.aimForward.dot(worldUp)), 0.86, 0.97);
-    if (pole > 0.98) return;
-    const reference = lookBasis(this.yaw, this.pitch, goal);
-    if (this.aimForward.dot(reference.forward) > 0.999 && this.aimUp.dot(reference.up) > 0.999) return;
-    this.rightLookHorizon(1 - pole, 2.2 * Math.max(0, dt));
-    this.commitLook();
+  /** Ease the picture toward the clamped yaw/pitch. Direct writes snap instead. */
+  private easeView(dt: number): void {
+    this.pitch = clampLookPitch(this.pitch);
+    const desired = lookBasis(this.yaw, this.pitch, this.tunables.goalAxisUp);
+    const external = this.appliedYaw !== this.yaw || this.appliedPitch !== this.pitch;
+    if (!this.viewReady || (!this.easeLook && external)) {
+      this.viewForward.copy(desired.forward);
+      this.viewUp.copy(desired.up);
+      this.viewReady = true;
+      this.appliedYaw = this.yaw;
+      this.appliedPitch = this.pitch;
+      this.easeLook = false;
+      return;
+    }
+    this.easeLook = false;
+    this.appliedYaw = this.yaw;
+    this.appliedPitch = this.pitch;
+    const swivel = Math.max(1, this.tunables.camSwivel);
+    const prev = this.tmp.prevFacing.copy(this.viewForward);
+    rotateToward(this.viewForward, desired.forward, swivel, dt);
+    transportUp(this.viewUp, prev, this.viewForward);
+    rotateToward(this.viewUp, desired.up, swivel, dt);
+    this.viewUp.addScaledVector(this.viewForward, -this.viewUp.dot(this.viewForward));
+    if (this.viewUp.lengthSq() < 1e-8) this.viewUp.copy(desired.up);
+    else this.viewUp.normalize();
   }
 
   /** Mouse-wheel aim range. Call once per rendered frame, not per physics step. */
@@ -1104,9 +1054,10 @@ export class Simulation {
   }
 
   private cameraBasis(): { forward: THREE.Vector3; right: THREE.Vector3; up: THREE.Vector3; worldUp: THREE.Vector3 } {
-    this.pullLookFromEuler();
-    const forward = this.aimForward.clone();
-    const up = this.aimUp.clone();
+    const external = this.appliedYaw !== this.yaw || this.appliedPitch !== this.pitch;
+    if (!this.viewReady || (!this.easeLook && external)) this.easeView(0);
+    const forward = this.viewForward.clone();
+    const up = this.viewUp.clone();
     const right = new THREE.Vector3().crossVectors(forward, up);
     if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
     else right.normalize();
@@ -1362,18 +1313,6 @@ export class Simulation {
     player.turnOmega = dt > 0 ? step / dt : 0;
     rotateBy(player.facing, target, step);
     transportUp(player.up, this.tmp.prevFacing, player.facing);
-    this.alignBodyUp(player, dt);
-  }
-
-  /**
-   * Pitch with facing. Twist eases back to the horizon, and fades out as the
-   * body points straight up or down so the righting roll cannot fight the dive.
-   */
-  private alignBodyUp(player: PlayerState, dt: number): void {
-    const worldUp = authoritativeUp(this.tunables.goalAxisUp);
-    const vertical = Math.abs(player.facing.dot(worldUp));
-    const upright = 1 - THREE.MathUtils.smoothstep(vertical, 0.55, 0.92);
-    stabilizeUp(player.up, player.facing, worldUp, 6 * upright, dt);
   }
 
   private playPose(player: PlayerState, pose: ActionPose, seconds: number): void {
@@ -3416,35 +3355,33 @@ export class Simulation {
       (zoom ? CAMERA.zoomOutHeight : this.tunables.camHeight + catch01 * (CAMERA.catchHeight - CAMERA.chaseHeight)) +
       0.3 * shoulder01;
     const shellLimit = this.tunables.camShell ? ARENA_RADIUS - CAMERA.wallClearance : ARENA_RADIUS * 8;
-    const position = chaseCameraPosition(
+    const position = chaseBoom(
       new THREE.Vector3(),
       human.position,
       basis.forward,
       basis.worldUp,
       dist,
       height,
+      this.tunables.camPitch,
       shellLimit,
-      basis.right,
-      this.shoulderLateral * (1 - catch01),
     );
-    const pitch = this.tunables.camPitch;
-    if (Math.abs(pitch) > 1e-4) {
-      const offset = position.clone().sub(human.position);
-      offset.applyAxisAngle(basis.right, pitch);
-      const end = human.position.clone().add(offset);
-      if (this.tunables.camShell) pullInsideSphere(position, human.position, end, shellLimit);
-      else position.copy(end);
+    if (Math.abs(this.shoulderLateral) > 1e-4) {
+      position.addScaledVector(basis.right, this.shoulderLateral * (1 - catch01));
+      if (this.tunables.camShell && position.lengthSq() > shellLimit * shellLimit) {
+        pullInsideSphere(position, human.position, position, shellLimit);
+      }
     }
     // On-ball aim looks down the throw. Off-ball, look just past the hands so
     // the reach and the ball in front of it share the frame.
     const shoulderAhead = THREE.MathUtils.lerp(CAMERA.lookAhead * 0.35, CAMERA.lookAhead * 2.4, shoulder01);
     const ahead = THREE.MathUtils.lerp(shoulderAhead, CAMERA.catchLookAhead, catch01);
+    const level = 1 - Math.min(1, Math.abs(basis.forward.dot(basis.worldUp)) / 0.9);
     const target = human.position
       .clone()
       .addScaledVector(basis.forward, ahead)
-      .addScaledVector(basis.worldUp, 0.4 * (1 - shoulder01 * 0.65) * (1 - catch01 * 0.75));
-    if (!zoom && this.tunables.ballCam) {
-      target.lerp(this.ball.position, 0.82);
+      .addScaledVector(basis.worldUp, 0.4 * level * (1 - shoulder01 * 0.65) * (1 - catch01 * 0.75));
+    if (!zoom && this.tunables.ballCam && !this.shotAim.active) {
+      target.lerp(this.ball.position, 0.9);
     } else if (!zoom && this.tunables.lookAhead === 'move' && human.velocity.lengthSq() > 4) {
       target.addScaledVector(human.velocity.clone().normalize(), follow * 0.35);
     } else if (!zoom && this.tunables.lookAhead === 'ball') {
@@ -3453,23 +3390,10 @@ export class Simulation {
       if (len > 0.5) target.addScaledVector(toBall, Math.min(1, (follow * 0.45) / len));
     }
     const chaseFov = THREE.MathUtils.clamp(this.tunables.camFov, 30, 110);
-    // Against the shell the boom slides off the behind-ray and the picture can
-    // look sideways from the aim. Move the camera, not the target, onto the
-    // aim ray so the swimmer stays in frame and the stick matches the screen.
-    if (this.tunables.camShell) {
-      const aimed = basis.forward;
-      const view = this.tmp.predictPos.copy(target).sub(position);
-      const span = view.length();
-      if (span > 1e-4 && view.dot(aimed) < 0.86 * span) {
-        const back = this.tmp.predictVel.copy(target).addScaledVector(aimed, -Math.max(span, 4));
-        pullInsideSphere(position, target, back, shellLimit);
-      }
-    }
     return {
       position,
       target,
-      // Control up, not world up. World up is parallel to the look at the pole,
-      // and leveling to it there rolls the picture over.
+      // Clamped pitch keeps this up on the world-up side of the view.
       up: basis.up.clone(),
       fov: zoom ? chaseFov + (CAMERA.zoomOutFov - CAMERA.fov) : chaseFov,
     };
@@ -3480,7 +3404,6 @@ export class Simulation {
    * rendered frame, after look and physics, so the marker matches this picture.
    */
   updateAimPresentation(intent: InputIntent, dt: number, worldDt = dt): void {
-    this.easeLookHorizon(Math.max(0, dt));
     this.noteCatchStance(intent);
     this.strafing = intent.strafe;
     this.updateShoulder(Math.max(0, dt));

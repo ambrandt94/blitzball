@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { critDampScalar, critDampVec, screenUp } from '../sim/math';
+import { critDampScalar, critDampVec } from '../sim/math';
 
 const _view = new THREE.Vector3();
 const _back = new THREE.Vector3();
@@ -10,9 +10,8 @@ const _basis = new THREE.Matrix4();
 const _desired = new THREE.Quaternion();
 
 /**
- * Chase camera. Position and look point ride critically damped springs.
- * Orientation slerps on the short arc toward a horizon-up basis, and never
- * copies a lookAt result in one frame.
+ * Chase camera. Position stays on the boom (stiffness). Rotation eases toward
+ * the supplied upright basis and never picks a new up of its own.
  */
 export class ChaseRig {
   readonly position = new THREE.Vector3();
@@ -35,24 +34,28 @@ export class ChaseRig {
   }
 
   /**
-   * Advance toward the desired pose. `omega` is the spring rate (1/seconds);
-   * higher catches up faster. Returns the largest orientation step, in radians.
+   * `stiffness` is 0..1 (1 sticks to the boom). `swivel` is the orientation
+   * rate in 1/seconds. A half-turn at the default rate finishes in under half
+   * a second and is capped so it cannot snap.
    */
   step(
     desiredPos: THREE.Vector3,
     desiredLook: THREE.Vector3,
-    worldUp: THREE.Vector3,
-    omega: number,
+    cameraUp: THREE.Vector3,
+    stiffness: number,
+    swivel: number,
     dt: number,
   ): number {
-    const rate = Math.max(0.5, omega);
+    const stick = THREE.MathUtils.clamp(stiffness, 0, 1);
+    const posRate = 10 + stick * 50;
+    const turn = Math.max(1, swivel);
     if (!this.ready) {
-      this.snap(desiredPos, desiredLook, worldUp);
+      this.snap(desiredPos, desiredLook, cameraUp);
       return 0;
     }
-    critDampVec(this.position, this.posVel, desiredPos, rate, dt);
-    critDampVec(this.look, this.lookVel, desiredLook, rate, dt);
-    return this.aimQuaternion(this.position, this.look, worldUp, false, rate, dt);
+    critDampVec(this.position, this.posVel, desiredPos, posRate, dt);
+    critDampVec(this.look, this.lookVel, desiredLook, posRate, dt);
+    return this.aimQuaternion(this.position, this.look, cameraUp, false, turn, dt);
   }
 
   private aimQuaternion(
@@ -67,12 +70,14 @@ export class ChaseRig {
     if (_view.lengthSq() < 1e-10) _view.set(0, 0, -1);
     else _view.normalize();
     _back.copy(_view).negate();
-    const stable = screenUp(_view, worldUp, this.up, _up);
-    if (!stable) {
+    // Use the supplied up. Rebuilding it from world up is what rolled the
+    // picture over once the look went steep.
+    _up.copy(worldUp).addScaledVector(_view, -worldUp.dot(_view));
+    if (_up.lengthSq() < 1e-6) {
       _up.copy(this.up).addScaledVector(_view, -this.up.dot(_view));
       if (_up.lengthSq() < 1e-8) _up.set(0, 1, 0);
-      else _up.normalize();
     }
+    _up.normalize();
     // Local +Z points back at the camera so Three's -Z looks toward `look`.
     _x.crossVectors(_up, _back);
     if (_x.lengthSq() < 1e-8) return 0;
@@ -98,7 +103,8 @@ export class ChaseRig {
     const sprung = critDampScalar(theta, -this.angleVel, omega, dt);
     const remain = Math.max(0, sprung.x);
     let applied = theta - remain;
-    const cap = 8 * (Math.PI / 180);
+    // About 10° per frame, so a half-turn takes roughly 0.3–0.5 s and never pops.
+    const cap = 10 * (Math.PI / 180);
     if (applied > cap) applied = cap;
     this.angleVel = dt > 0 ? applied / dt : 0;
     this.quaternion.slerp(_desired, applied / theta);

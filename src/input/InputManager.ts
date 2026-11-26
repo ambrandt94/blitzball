@@ -8,22 +8,35 @@ const KEYS = {
   back: ['KeyS', 'ArrowDown'],
   left: ['KeyA', 'ArrowLeft'],
   right: ['KeyD', 'ArrowRight'],
-  up: ['KeyE'],
-  down: ['KeyQ'],
+  up: ['Space'],
+  down: ['ControlLeft', 'ControlRight'],
   sprint: ['ShiftLeft', 'ShiftRight'],
   claim: ['KeyX'],
   drop: ['KeyZ'],
-  tackle: ['Space'],
+  tackle: ['KeyQ'],
   pass: ['KeyF'],
   kick: ['KeyC'],
   callForPass: ['KeyG'],
   zoom: ['KeyV'],
-  reset: ['KeyR'],
+  reset: [] as string[],
+  level: ['KeyR'],
+  ballCam: ['KeyB'],
   toggleDev: ['Backquote'],
   pause: ['KeyP'],
   step: ['BracketRight'],
   help: ['KeyH'],
+  fullscreen: ['F11'],
 };
+
+/**
+ * Keys the page should swallow while the canvas is focused or pointer-locked.
+ * Ctrl+W, Ctrl+T, and Ctrl+N are in this set, but a normal tab still ignores
+ * preventDefault for those. Fullscreen keyboard lock is what actually catches them.
+ */
+export function browserKeyBlocked(code: string, ctrl: boolean): boolean {
+  if (code === 'Space' || code === 'ControlLeft' || code === 'ControlRight') return true;
+  return ctrl;
+}
 
 function deadzone(v: number, dz = INPUT.stickDeadzone): number {
   if (Math.abs(v) < dz) return 0;
@@ -55,9 +68,11 @@ export class InputManager {
 
   constructor(canvas: HTMLElement) {
     this.canvas = canvas;
+    canvas.tabIndex = 0;
     window.addEventListener('keydown', this.onKeyDown, true);
     window.addEventListener('keyup', this.onKeyUp, true);
     window.addEventListener('blur', this.onBlur);
+    document.addEventListener('visibilitychange', this.onVisibility);
     canvas.addEventListener('click', this.onClick);
     document.addEventListener('pointerlockchange', this.onPointerLock);
     // While a button is held, some Chrome builds report movementX/Y as 0 on
@@ -75,12 +90,26 @@ export class InputManager {
     canvas.addEventListener('auxclick', this.onAuxClick, { capture: true });
     document.addEventListener('auxclick', this.onAuxClick, { capture: true });
     canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    // Ctrl+wheel zooms the browser. The listener has to be non-passive or
+    // preventDefault is ignored. Window capture covers the locked pointer too.
+    window.addEventListener('wheel', this.onCtrlWheel, { capture: true, passive: false });
+    canvas.addEventListener('selectstart', this.blockSelect);
+    canvas.addEventListener('dragstart', this.blockSelect);
+    document.addEventListener('selectstart', this.onSelectStart, true);
+    document.addEventListener('fullscreenchange', this.onFullscreenChange);
+    const fullscreen = document.getElementById('fullscreen-btn');
+    if (fullscreen instanceof HTMLButtonElement) {
+      fullscreen.addEventListener('click', () => {
+        void this.toggleFullscreen();
+      });
+    }
   }
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown, true);
     window.removeEventListener('keyup', this.onKeyUp, true);
     window.removeEventListener('blur', this.onBlur);
+    document.removeEventListener('visibilitychange', this.onVisibility);
     this.canvas.removeEventListener('click', this.onClick);
     document.removeEventListener('pointerlockchange', this.onPointerLock);
     document.removeEventListener('pointerrawupdate', this.onPointerRaw, true);
@@ -92,16 +121,41 @@ export class InputManager {
     this.canvas.removeEventListener('auxclick', this.onAuxClick, { capture: true });
     document.removeEventListener('auxclick', this.onAuxClick, { capture: true });
     this.canvas.removeEventListener('wheel', this.onWheel);
+    window.removeEventListener('wheel', this.onCtrlWheel, { capture: true });
+    this.canvas.removeEventListener('selectstart', this.blockSelect);
+    this.canvas.removeEventListener('dragstart', this.blockSelect);
+    document.removeEventListener('selectstart', this.onSelectStart, true);
+    document.removeEventListener('fullscreenchange', this.onFullscreenChange);
   }
 
   private onWheel = (e: WheelEvent): void => {
+    if (e.ctrlKey && this.capturesBrowserKeys()) e.preventDefault();
     if (!this.pointerLocked) return;
     this.wheel += e.deltaY;
     e.preventDefault();
   };
 
+  /** Ctrl+wheel over the page, including while the pointer is locked. */
+  private onCtrlWheel = (e: WheelEvent): void => {
+    if (!e.ctrlKey || !this.capturesBrowserKeys()) return;
+    e.preventDefault();
+  };
+
   private onContextMenu = (e: Event): void => {
-    if (e.target === this.canvas || this.pointerLocked) e.preventDefault();
+    const mouse = e as MouseEvent;
+    if (e.target === this.canvas || this.pointerLocked || (mouse.ctrlKey && this.capturesBrowserKeys())) {
+      e.preventDefault();
+    }
+  };
+
+  private blockSelect = (e: Event): void => {
+    e.preventDefault();
+  };
+
+  private onSelectStart = (e: Event): void => {
+    if (this.pointerLocked || document.activeElement === this.canvas || e.target === this.canvas) {
+      e.preventDefault();
+    }
   };
 
   private onAuxClick = (e: MouseEvent): void => {
@@ -109,30 +163,93 @@ export class InputManager {
     if (e.target === this.canvas || this.pointerLocked) e.preventDefault();
   };
 
+  /** Canvas focus or pointer lock. Dev-panel text fields are left to the browser. */
+  private capturesBrowserKeys(): boolean {
+    if (this.pointerLocked) return true;
+    return document.activeElement === this.canvas;
+  }
+
   private onKeyDown = (e: KeyboardEvent): void => {
     if (this.typingTarget(e)) return;
     // Repeats still count. Pointer lock can leave a dev-panel control focused,
     // and the first keydown is then dropped; the repeats are the only signal
     // that the key is physically down.
+    if (this.capturesBrowserKeys() && browserKeyBlocked(e.code, e.ctrlKey)) e.preventDefault();
     this.keys.add(e.code);
     if (e.repeat) return;
     this.justPressed.add(e.code);
-    if (KEYS.up.includes(e.code) || e.code === 'Space') e.preventDefault();
+    if (e.code === 'F11' && this.capturesBrowserKeys()) {
+      e.preventDefault();
+      void this.toggleFullscreen();
+    }
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {
     this.keys.delete(e.code);
+    if (!this.typingTarget(e) && this.capturesBrowserKeys() && browserKeyBlocked(e.code, e.ctrlKey)) {
+      e.preventDefault();
+    }
   };
 
-  private onBlur = (): void => {
+  private releaseKeys(): void {
     this.keys.clear();
+    this.justPressed.clear();
     this.lmbDown = false;
     this.rmbDown = false;
     this.mmbPressed = false;
     this.clickGate.pointerUp();
+  }
+
+  private onBlur = (): void => {
+    this.releaseKeys();
+  };
+
+  private onVisibility = (): void => {
+    if (document.hidden) this.releaseKeys();
+  };
+
+  private async toggleFullscreen(): Promise<void> {
+    const root = document.getElementById('app') ?? document.documentElement;
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        return;
+      }
+      await root.requestFullscreen();
+      await this.lockKeyboard();
+    } catch {
+      // The browser can deny fullscreen. The button stays available.
+    }
+  }
+
+  private async lockKeyboard(): Promise<void> {
+    const kb = (
+      navigator as Navigator & {
+        keyboard?: { lock?: (keyCodes?: string[]) => Promise<void>; unlock?: () => void };
+      }
+    ).keyboard;
+    if (!kb?.lock || !document.fullscreenElement) return;
+    try {
+      // No key list captures every key, including Ctrl+W / T / N, in Chromium.
+      await kb.lock();
+    } catch {
+      // Safari and Firefox have no keyboard lock. Fullscreen still works.
+    }
+  }
+
+  private unlockKeyboard(): void {
+    const kb = (navigator as Navigator & { keyboard?: { unlock?: () => void } }).keyboard;
+    kb?.unlock?.();
+  }
+
+  private onFullscreenChange = (): void => {
+    const button = document.getElementById('fullscreen-btn');
+    if (button) button.textContent = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
+    if (!document.fullscreenElement) this.unlockKeyboard();
   };
 
   private onClick = (): void => {
+    this.canvas.focus();
     if (!this.pointerLocked) {
       this.clickGate.noteLockRequest();
       this.canvas.requestPointerLock();
@@ -143,6 +260,7 @@ export class InputManager {
     const locked = document.pointerLockElement === this.canvas;
     this.clickGate.setLocked(locked);
     this.pointerLocked = locked;
+    if (!locked) this.releaseKeys();
     if (!locked || this.clickGate.suppress) {
       this.lmbDown = false;
       this.lmbPressed = false;
@@ -188,7 +306,8 @@ export class InputManager {
   private onMouseDown = (e: MouseEvent): void => {
     // A drag starting here would swallow later keydowns. Aiming is not a drag.
     // Button 1 is the wide-camera toggle; cancel autoscroll even before lock.
-    if (e.button === 0 || e.button === 1 || this.pointerLocked) e.preventDefault();
+    if (e.button === 0 || e.button === 1 || this.pointerLocked || e.ctrlKey) e.preventDefault();
+    if (e.currentTarget === this.canvas) this.canvas.focus();
     if (this.pointerLocked) this.blurGameFocus();
     if (e.button === 0) {
       // The press that captures the pointer is not a shot and not a lunge.
@@ -299,6 +418,8 @@ export class InputManager {
       zoomOut: lb,
       zoomTogglePressed: rsEdge,
       resetBall: down(8),
+      level: false,
+      ballCamToggle: false,
     };
   }
 
@@ -348,6 +469,8 @@ export class InputManager {
       zoomTogglePressed: this.anyJust(KEYS.zoom),
       middleZoomPressed: this.mmbPressed,
       resetBall: this.anyJust(KEYS.reset),
+      level: this.anyJust(KEYS.level),
+      ballCamToggle: this.anyJust(KEYS.ballCam),
       toggleDev: this.anyJust(KEYS.toggleDev),
       // Wheel-up (negative deltaY) lengthens the aim. ~3 units per notch.
       aimRangeDelta: -this.wheel * 0.03,

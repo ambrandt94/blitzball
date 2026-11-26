@@ -309,7 +309,45 @@ export function transportUp(up: THREE.Vector3, fromForward: THREE.Vector3, toFor
   up.normalize();
 }
 
-/** Yaw around `worldUp`, then pitch. Continuous past vertical, including inverted flight. */
+/** Camera pitch stops here so the horizon cannot roll through vertical. */
+export const LOOK_PITCH_LIMIT = (85 * Math.PI) / 180;
+
+export function clampLookPitch(pitch: number): number {
+  return THREE.MathUtils.clamp(pitch, -LOOK_PITCH_LIMIT, LOOK_PITCH_LIMIT);
+}
+
+/**
+ * Chase boom behind `forward`, raised along `up`, then pitched by `angle`.
+ * If that point leaves the sphere, slide it toward the player along the same
+ * line. The look direction does not change, so the frame cannot flip.
+ */
+export function chaseBoom(
+  out: THREE.Vector3,
+  player: THREE.Vector3,
+  forward: THREE.Vector3,
+  up: THREE.Vector3,
+  distance: number,
+  height: number,
+  angle: number,
+  limit: number,
+): THREE.Vector3 {
+  const fwd = _fromF.copy(forward);
+  if (fwd.lengthSq() < 1e-8) fwd.set(0, 0, 1);
+  else fwd.normalize();
+  const camUp = _toF.copy(up);
+  if (camUp.lengthSq() < 1e-8) camUp.set(0, 1, 0);
+  else camUp.normalize();
+  const right = _axis.crossVectors(fwd, camUp);
+  if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
+  else right.normalize();
+  const boom = _chase.copy(fwd).multiplyScalar(-Math.max(0.2, distance)).addScaledVector(camUp, height);
+  if (Math.abs(angle) > 1e-5) boom.applyAxisAngle(right, angle);
+  out.copy(player).add(boom);
+  if (!(limit > 0) || out.lengthSq() <= limit * limit) return out;
+  return pullInsideSphere(out, player, out, limit);
+}
+
+/** Yaw around `worldUp`, then pitch. Pitch past ±90° is not used for the chase camera. */
 export function lookBasis(
   yaw: number,
   pitch: number,
