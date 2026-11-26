@@ -29,7 +29,7 @@ export const HAIR_STYLES = [
   { id: 'buzz_cut', label: 'Buzz' },
   { id: 'short_crop', label: 'Crop' },
   { id: 'arc_bob', label: 'Bob' },
-  { id: 'ponytail', label: 'Ponytail' },
+  { id: 'ponytail_high', label: 'Ponytail' },
   { id: 'long_straight', label: 'Long' },
 ] as const;
 
@@ -94,7 +94,12 @@ export function parsePlayerProfile(raw: string | null): PlayerProfile | null {
       ? record.mode
       : base.mode;
   const tone = typeof record.tone === 'number' && record.tone >= 0 && record.tone <= 4 ? Math.round(record.tone) : base.tone;
-  const hair = HAIR_STYLES.some((style) => style.id === record.hair) ? (record.hair as string) : base.hair;
+  const hair =
+    record.hair === 'ponytail' || record.hair === 'ponytail_high'
+      ? 'ponytail_high'
+      : HAIR_STYLES.some((style) => style.id === record.hair)
+        ? (record.hair as string)
+        : base.hair;
   const hairColor = HAIR_COLORS.some((color) => color.id === record.hairColor) ? (record.hairColor as string) : base.hairColor;
   const teamColor = TEAM_COLORS.some((color) => color.id === record.teamColor) ? (record.teamColor as string) : base.teamColor;
   const name = typeof record.name === 'string' && record.name.trim() ? record.name.trim().slice(0, 18) : base.name;

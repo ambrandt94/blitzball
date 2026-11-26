@@ -32,16 +32,31 @@ export function recipeForOutfit(cf: CFRuntime, outfit: OutfitId, teamHex: string
   return recipe;
 }
 
+const HAIR_IDS: Record<string, string> = { ponytail: 'ponytail_high' };
+
+/** Older saves used a short name. The runtime style is ponytail_high. */
+export function hairStyleId(id: string): string {
+  return HAIR_IDS[id] ?? id;
+}
+
 /** Human look from the splash flow: skin, hair, and a team-tinted kit piece. */
 export function recipeForLook(
   cf: CFRuntime,
   look: { outfit: OutfitId; teamColor: string; tone: number; hair: string; hairColor: string },
 ): Recipe {
   let recipe = cf.normalize(cf.blankRecipe('human'));
+  const patch = { tone: look.tone, hair: hairStyleId(look.hair), hairColor: look.hairColor };
   try {
-    recipe = cf.edit(recipe, { tone: look.tone, hair: look.hair, hairColor: look.hairColor }).recipe;
+    recipe = cf.edit(recipe, patch);
   } catch {
-    // An unknown style leaves the blank human. The suit still equips.
+    // One bad field must not drop the others. The suit still equips after this.
+    for (const [key, value] of Object.entries(patch)) {
+      try {
+        recipe = cf.edit(recipe, { [key]: value });
+      } catch {
+        // Leave that field at the blank human default.
+      }
+    }
   }
   for (const [slot, id] of OUTFIT_PIECES[look.outfit]) {
     recipe = cf.equip(recipe, slot, id).recipe;

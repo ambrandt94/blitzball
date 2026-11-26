@@ -5,6 +5,8 @@
 import { resolvePowerMode, POWER_MODE_HOLD_VERSION, type PowerModeStore } from './powerMode';
 import { WATER_LOOKS, cycleWaterLook } from './waterLooks';
 import { parsePlayerProfile, defaultPlayerProfile } from './playerProfile';
+import { recipeForLook } from '../characters/forge';
+import type { CFRuntime, Recipe } from '../characters/cfRuntime';
 
 function fail(message: string): never {
   throw new Error(message);
@@ -54,5 +56,33 @@ const unknown = parsePlayerProfile('{"mode":"nope","outfit":"onepiece"}');
 if (!unknown || unknown.mode !== 'match') fail('an unknown mode falls back to a match');
 const debug = parsePlayerProfile(JSON.stringify({ ...defaultPlayerProfile(), mode: 'debug' }));
 if (!debug || debug.mode !== 'debug') fail('debug should be a selectable mode');
+const pony = parsePlayerProfile(JSON.stringify({ ...defaultPlayerProfile(), hair: 'ponytail' }));
+if (!pony || pony.hair !== 'ponytail_high') fail('an older ponytail save should use the runtime style');
+
+const edits: Record<string, unknown>[] = [];
+const fake = {
+  blankRecipe: () => ({ tone: 0, hair: 'auto', hairColor: 'auto', outfit: {}, dye: {} }),
+  normalize: (recipe: Recipe) => recipe,
+  edit: (recipe: Recipe, patch: Record<string, unknown>) => {
+    edits.push(patch);
+    return { ...recipe, ...patch };
+  },
+  equip: (recipe: Recipe, slot: string, id: string) => ({ recipe: { ...recipe, outfit: { ...(recipe.outfit ?? {}), [slot]: { id } } } }),
+  dye: (recipe: Recipe, id: string, region: string, value?: string) => ({
+    recipe: { ...recipe, dye: { ...(recipe.dye ?? {}), [id]: { ...(recipe.dye?.[id] ?? {}), [region]: value ?? '' } } },
+  }),
+} as unknown as CFRuntime;
+const built = recipeForLook(fake, {
+  outfit: 'onepiece',
+  teamColor: '#e2b43a',
+  tone: 4,
+  hair: 'ponytail',
+  hairColor: 'blonde',
+});
+if (built.tone !== 4 || built.hair !== 'ponytail_high' || built.hairColor !== 'blonde') {
+  fail('skin, hair, and hair colour should stay on the recipe');
+}
+if (built.dye?.['blitzball/onepiece']?.team !== '#e2b43a') fail('team colour should dye the suit');
+if (edits.length === 0 || edits[0]?.tone !== 4) fail('edit should receive the skin tone');
 
 console.log('welcome checks passed');
