@@ -21,6 +21,7 @@
         position: relative;
         width: 100%;
         height: 100%;
+        user-select: none;
       }
       #boot {
         position: absolute;
@@ -38,6 +39,15 @@
       }
       canvas {
         display: block;
+        outline: none;
+        user-select: none;
+      }
+      #dev-panel,
+      #dev-panel input,
+      #dev-panel textarea,
+      #dev-panel select {
+        user-select: text;
+      }
         width: 100%;
         height: 100%;
       }
@@ -84,7 +94,7 @@
         margin: 0;
         padding: 7px 10px;
         list-style: none;
-        max-width: 280px;
+        max-width: 340px;
         background: rgba(6, 16, 32, 0.72);
         border: 1px solid rgba(140, 180, 255, 0.22);
         border-radius: 8px;
@@ -108,6 +118,25 @@
       }
       #hints[hidden] {
         display: none;
+      }
+      #fullscreen-btn {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        z-index: 4;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(140, 180, 255, 0.28);
+        background: rgba(6, 16, 32, 0.72);
+        color: #d7e8ff;
+        font: inherit;
+        font-size: 0.68rem;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+      }
+      #fullscreen-btn:focus-visible {
+        outline: 1px solid rgba(180, 210, 255, 0.8);
+        outline-offset: 2px;
       }
       #help-hint {
         position: absolute;
@@ -458,16 +487,17 @@
         <div id="possession" class="free">Ball free</div>
         <div id="debug-stats"></div>
         <ul id="hints">
-          <li><kbd>WASD</kbd> swim · <kbd>E</kbd>/<kbd>Q</kbd> up/down</li>
+          <li><kbd>WASD</kbd> swim · <kbd>Space</kbd>/<kbd>Ctrl</kbd> up/down</li>
           <li><kbd>Mouse</kbd> look · <kbd>RMB</kbd> square up</li>
           <li>Hold <kbd>LMB</kbd> throw · drag to curve</li>
           <li><kbd>C</kbd> kick</li>
-          <li><kbd>Space</kbd> tackle</li>
+          <li><kbd>Q</kbd> tackle</li>
           <li><kbd>X</kbd> claim · <kbd>Z</kbd> drop · <kbd>F</kbd> pass</li>
           <li><kbd>G</kbd> call pass · <kbd>V</kbd> zoom · <kbd>R</kbd> reset</li>
           <li><kbd>P</kbd> pause · <kbd>]</kbd> step · <kbd>H</kbd> hide</li>
-          <li>Pad: <kbd>RT</kbd> throw · <kbd>B</kbd> kick · <kbd>RB</kbd> tackle</li>
+          <li>Pad: <kbd>D-pad</kbd> up/down · <kbd>RT</kbd> throw · <kbd>RB</kbd> tackle</li>
         </ul>
+        <button id="fullscreen-btn" type="button">Fullscreen</button>
         <div id="help-hint" hidden>H: help</div>
         <div id="tackle-meter" aria-hidden="true"><div class="fill" id="tackle-fill"></div></div>
         <div id="charge">
