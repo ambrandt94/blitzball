@@ -684,12 +684,14 @@ export class DevPanel {
 
     this.section('Camera', 'camera', () => {
       this.cameraPresetRow();
-      this.camRange('Follow distance', 'camDistance', 2, 24, 0.1);
+      this.camRange('Distance', 'camDistance', 2, 24, 0.1);
       this.camRange('Height', 'camHeight', 0, 10, 0.05);
-      this.camRange('Pitch offset', 'camPitch', -0.45, 0.45, 0.01);
+      this.camRange('Angle', 'camPitch', -0.45, 0.45, 0.01);
       this.camRange('Shoulder offset', 'shoulderOffset', 0, 4, 0.05);
       this.camRange('Shoulder ease', 'shoulderTransition', 1, 18, 0.1);
       this.camRange('FOV', 'camFov', 35, 100, 1);
+      this.camRange('Stiffness', 'camStiffness', 0.05, 1, 0.01);
+      this.camRange('Swivel speed', 'camSwivel', 1, 20, 0.1);
       this.camRange('Camera lag', 'camLag', 1, 24, 0.5);
       this.camChoice('Look ahead', 'lookAhead', [
         { value: 'aim', label: 'Aim' },

@@ -804,6 +804,8 @@ export class SceneView {
       zoomTogglePressed: false,
       middleZoomPressed: false,
       resetBall: false,
+      level: false,
+      ballCamToggle: false,
       toggleDev: false,
       aimRangeDelta: 0,
       callForPass: false,
@@ -813,7 +815,14 @@ export class SceneView {
     this.worldUp.copy(authoritativeUp(sim.tunables.goalAxisUp));
     // Level to the control up. World up flips the horizon once the look is
     // steep, and the stick then disagrees with the picture.
-    this.chase.step(pose.position, pose.target, pose.up, sim.tunables.camLag, cameraDt);
+    this.chase.step(
+      pose.position,
+      pose.target,
+      pose.up,
+      sim.tunables.camStiffness,
+      sim.tunables.camSwivel,
+      cameraDt,
+    );
     this.camera.position.copy(this.chase.position);
     this.camera.quaternion.copy(this.chase.quaternion);
     this.camera.up.copy(this.chase.up);

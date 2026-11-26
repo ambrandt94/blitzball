@@ -227,6 +227,10 @@ export interface Tunables {
   camFov: number;
   /** How quickly the chase camera catches its pose (1/seconds). Higher is stiffer. */
   camLag: number;
+  /** 0..1. 1 keeps the camera on the boom with no position lag. */
+  camStiffness: number;
+  /** Picture catch-up rate, in 1/seconds. */
+  camSwivel: number;
   /** Where the chase look-ahead points when ball cam is off. */
   lookAhead: LookAheadMode;
   /** After the mouse rests, ease the view back behind the body. */
@@ -470,5 +474,9 @@ export interface InputIntent {
   /** Ask the teammate to pass now, or to cut harder if they don't have it. */
   callForPass: boolean;
   resetBall: boolean;
+  /** R. Level the body to world up and keep the heading. */
+  level: boolean;
+  /** B. Toggle the ball camera. */
+  ballCamToggle: boolean;
   toggleDev: boolean;
 }

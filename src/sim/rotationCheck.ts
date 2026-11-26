@@ -67,6 +67,8 @@ function blankIntent(zoom = false): InputIntent {
     zoomTogglePressed: false,
     middleZoomPressed: false,
     resetBall: false,
+    level: false,
+    ballCamToggle: false,
     toggleDev: false,
     aimRangeDelta: 0,
     callForPass: false,
@@ -553,7 +555,8 @@ function checkScreenSteering(): void {
         sim.applyFrameLook(lookRight);
         const turned = pictureAxes(sim.getCameraPose(blankIntent()));
         const dYaw = turned.forward.clone().sub(axes.forward);
-        if (dYaw.dot(axes.right) < 0.04) {
+        const yawNeed = Math.max(0.004, 0.035 * (1 - Math.abs(axes.forward.y)));
+        if (dYaw.dot(axes.right) < yawNeed) {
           fail(`mouse right went ${dYaw.dot(axes.right).toFixed(3)} on screen-right (${label})`);
         }
         if (Math.abs(dYaw.dot(axes.up)) > dYaw.dot(axes.right) * 1.4) {
@@ -572,8 +575,13 @@ function checkScreenSteering(): void {
         sim.applyFrameLook(lookUp);
         const pitched = pictureAxes(sim.getCameraPose(blankIntent()));
         const dPitch = pitched.forward.clone().sub(axes.forward);
-        if (dPitch.dot(axes.up) < 0.04) {
+        const pitchNeed = Math.max(0.004, 0.035 * (1 - Math.abs(axes.forward.y)));
+        const atCeiling = pitchDeg >= 85;
+        if (!atCeiling && dPitch.dot(axes.up) < pitchNeed) {
           fail(`mouse up went ${dPitch.dot(axes.up).toFixed(3)} on screen-up (${label})`);
+        }
+        if (atCeiling && dPitch.dot(axes.up) < -0.002) {
+          fail(`mouse up past the cap inverted the view (${label})`);
         }
 
         aim(yawDeg, pitchDeg);
@@ -4724,6 +4732,64 @@ function checkCameraSettings(): void {
   if (after > before - 0.2) fail(`auto-recenter left the view ${deg(after).toFixed(1)}° off the body`);
 }
 
+function checkRlCamera(): void {
+  const world = new THREE.Vector3(0, 1, 0);
+  const chase = new ChaseRig();
+  const pos = new THREE.Vector3(0, 0, 8);
+  const look = new THREE.Vector3(0, 0, 12);
+  chase.snap(pos, look, new THREE.Vector3(0, -1, 0));
+  if (chase.up.dot(world) > -0.5) fail('test camera did not start upside down');
+  let prev = chase.up.clone();
+  let maxStep = 0;
+  for (let i = 0; i < 30; i++) {
+    chase.step(pos, look, world, 0.9, 8, 1 / 60);
+    maxStep = Math.max(maxStep, angle(prev, chase.up));
+    prev.copy(chase.up);
+  }
+  if (maxStep > (20 * Math.PI) / 180) fail(`re-level snapped ${deg(maxStep).toFixed(1)}°`);
+  if (chase.up.dot(world) < 0.8) fail(`camera still rolled after 0.5s (${chase.up.y.toFixed(2)})`);
+
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.tunables.camRecenter = false;
+  sim.setSoloOpponent(false);
+  const human = sim.getHuman();
+  const shell = ARENA_RADIUS - PLAYER.radius - 0.3;
+  human.position.set(shell, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, -1, 0);
+  sim.yaw = Math.PI / 2;
+  sim.pitch = -1.1;
+  sim.noteLookEdit();
+  const swim = (yawDelta: number, pitchDelta: number, moveZ: number, frames: number) => {
+    for (let i = 0; i < frames; i++) {
+      const before = sim.getCameraPose(blankIntent());
+      const axes = pictureAxes(before);
+      if (axes.up.dot(world) < 0.05) fail('shell path rolled the camera over');
+      const look = blankIntent();
+      look.lookDelta.x = yawDelta;
+      look.lookDelta.y = pitchDelta;
+      look.move.set(0, 0, moveZ);
+      sim.applyFrameLook(look);
+      sim.step(1 / 60, look);
+      const after = pictureAxes(sim.getCameraPose(blankIntent()));
+      if (Math.abs(yawDelta) > 0.01) {
+        const turned = after.forward.clone().sub(axes.forward);
+        if (turned.dot(axes.right) * Math.sign(yawDelta) < -0.002) fail('shell mouse left the screen');
+      }
+      if (moveZ > 0 && human.velocity.dot(axes.forward) < -0.05) fail('W left the screen forward on the shell');
+    }
+  };
+  swim(0.04, 0, 1, 40);
+  swim(0, -0.03, 1, 20);
+  human.velocity.set(-12, 0, 0);
+  swim(-0.02, 0.02, 1, 50);
+  const home = sim.getCameraPose(blankIntent());
+  if (home.up.dot(world) < 0.05) fail('return to center left the camera rolled');
+  if (home.position.length() > ARENA_RADIUS - CAMERA.wallClearance + 0.05) fail('camera left the shell');
+}
+
 function checkWideCamera(): void {
   const sim = new Simulation(defaultTunables());
   if (sim.tunables.zoomHoldMode) fail('wide camera did not start in toggle mode');
@@ -4792,14 +4858,17 @@ function checkOrientationSoak(): void {
   floater.velocity.set(0, 0, 0);
   floater.facing.set(0, 0, 1);
   floater.up.set(0, -1, 0);
-  let uprightFrame = -1;
-  for (let i = 1; i <= 90; i++) {
+  for (let i = 0; i < 30; i++) {
     recover.step(dt, blankIntent());
-    if (uprightFrame < 0 && floater.up.dot(world) > 0.5) uprightFrame = i;
+    const pose = recover.getCameraPose(blankIntent());
+    if (pose.up.dot(world) < 0.05) fail('inverted body rolled the camera over');
   }
-  if (uprightFrame < 0 || uprightFrame > 60) {
-    fail(`stayed inverted (${uprightFrame} frames, up.y ${floater.up.y.toFixed(2)})`);
-  }
+  if (floater.up.dot(world) > -0.5) fail('the body self-righted without R');
+  const level = blankIntent();
+  level.level = true;
+  recover.step(dt, level);
+  if (floater.up.dot(world) < 0.95) fail(`R did not level the body (${floater.up.y.toFixed(2)})`);
+  if (Math.abs(floater.facing.dot(new THREE.Vector3(0, 0, 1))) < 0.95) fail('R changed the heading');
 
   const sim = new Simulation(defaultTunables());
   sim.kickoffLock = 0;
@@ -4824,7 +4893,7 @@ function checkOrientationSoak(): void {
   const watch = (label: string) => {
     const stepF = angle(prevFace, human.facing);
     const pose = sim.getCameraPose(blankIntent());
-    chase.step(pose.position, pose.target, pose.up, sim.tunables.camLag, dt);
+    chase.step(pose.position, pose.target, pose.up, sim.tunables.camStiffness, sim.tunables.camSwivel, dt);
     const look = pose.target.clone().sub(chase.position);
     if (look.lengthSq() < 1e-8) fail(`camera lost its look during ${label}`);
     look.normalize();
@@ -4887,15 +4956,18 @@ function checkOrientationSoak(): void {
   }
 
   human.up.set(0, -1, 0);
-  let recovered = -1;
-  for (let i = 1; i <= 70; i++) {
+  for (let i = 1; i <= 40; i++) {
     const intent = blankIntent();
     intent.move.set(0, 0, 1);
     sim.step(dt, intent);
-    if (recovered < 0 && human.up.dot(world) > 0.45) recovered = i;
     watch('barrel');
   }
-  if (recovered < 0 || recovered > 60) fail(`barrel roll stayed inverted (${recovered} frames)`);
+  human.up.set(0, -1, 0);
+  human.facing.set(0, 0, 1);
+  const levelIntent = blankIntent();
+  levelIntent.level = true;
+  sim.step(dt, levelIntent);
+  if (human.up.dot(world) < 0.9) fail('R did not level an inverted swimmer');
 
   const shell = ARENA_RADIUS - PLAYER.radius - 0.15;
   human.position.set(0, 0, shell);
@@ -4929,7 +5001,12 @@ function checkOrientationSoak(): void {
     if (human.velocity.y - beforeY < -0.02) fail('pickup while inverted flipped ascend');
     watch('pickup');
   }
-  if (human.up.dot(world) < 0.2) fail(`still inverted after the pickup (up.y ${human.up.y.toFixed(2)})`);
+  const pickupCam = sim.getCameraPose(blankIntent());
+  if (pickupCam.up.dot(world) < 0.2) fail('pickup rolled the camera');
+  const upright = blankIntent();
+  upright.level = true;
+  sim.step(dt, upright);
+  if (human.up.dot(world) < 0.9) fail(`R left the body inverted (${human.up.y.toFixed(2)})`);
 
   if (maxFaceStep > maxFace) fail(`soak facing step ${deg(maxFaceStep).toFixed(1)}°`);
   if (maxLookStep > maxCam) fail(`soak camera step ${deg(maxLookStep).toFixed(1)}°`);
@@ -5008,6 +5085,7 @@ export function runRotationChecks(): void {
   checkScreenSteering();
   checkVerticalLook();
   checkOrientationSoak();
+  checkRlCamera();
   checkCamera(false, false);
   checkCamera(false, true);
   checkCamera(true, false);

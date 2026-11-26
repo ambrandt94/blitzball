@@ -18,7 +18,9 @@ const KEYS = {
   kick: ['KeyC'],
   callForPass: ['KeyG'],
   zoom: ['KeyV'],
-  reset: ['KeyR'],
+  reset: [] as string[],
+  level: ['KeyR'],
+  ballCam: ['KeyB'],
   toggleDev: ['Backquote'],
   pause: ['KeyP'],
   step: ['BracketRight'],
@@ -416,6 +418,8 @@ export class InputManager {
       zoomOut: lb,
       zoomTogglePressed: rsEdge,
       resetBall: down(8),
+      level: false,
+      ballCamToggle: false,
     };
   }
 
@@ -465,6 +469,8 @@ export class InputManager {
       zoomTogglePressed: this.anyJust(KEYS.zoom),
       middleZoomPressed: this.mmbPressed,
       resetBall: this.anyJust(KEYS.reset),
+      level: this.anyJust(KEYS.level),
+      ballCamToggle: this.anyJust(KEYS.ballCam),
       toggleDev: this.anyJust(KEYS.toggleDev),
       // Wheel-up (negative deltaY) lengthens the aim. ~3 units per notch.
       aimRangeDelta: -this.wheel * 0.03,
