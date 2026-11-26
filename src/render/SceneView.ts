@@ -809,7 +809,9 @@ export class SceneView {
 
     const humanPos = sim.getHuman().position;
     this.worldUp.copy(authoritativeUp(sim.tunables.goalAxisUp));
-    this.chase.step(pose.position, pose.target, this.worldUp, sim.tunables.camLag, cameraDt);
+    // Level to the control up. World up flips the horizon once the look is
+    // steep, and the stick then disagrees with the picture.
+    this.chase.step(pose.position, pose.target, pose.up, sim.tunables.camLag, cameraDt);
     this.camera.position.copy(this.chase.position);
     this.camera.quaternion.copy(this.chase.quaternion);
     this.camera.up.copy(this.chase.up);
