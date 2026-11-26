@@ -150,14 +150,18 @@ export const SHOT_ARC = {
   aimSpeed: 22,
   /** World units of control-point bend per radian of mouse. */
   bendSpeed: 42,
-  /** Max mouse bend as a fraction of the origin→target chord. */
-  bendLimit: 0.85,
+  /** Max mouse bend as a fraction of the origin→target chord. About 35% past the old 0.85. */
+  bendLimit: 1.15,
   /**
    * How far a full bend slides the landing across the big focus ring.
    * 1 puts a max curve on that ring's edge. 0 keeps the spot on the aim ray.
    * The shift never goes past the ring.
    */
-  curveAimOffset: 1,
+  curveAimOffset: 1.35,
+  /** How fast a released stick or a recentered mouse eases back to straight, per second. */
+  curveReturnSpeed: 12.5,
+  /** Stick and mouse-offset deadzone, as a fraction of full deflection. */
+  curveDeadzone: 0.08,
   height: 0.06,
   /** Fraction of the chord, toward camera-right / the right hand. 0 throws straight. */
   handCurve: 0,

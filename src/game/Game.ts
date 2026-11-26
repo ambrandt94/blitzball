@@ -272,7 +272,7 @@ export class Game {
     // first so this sample is the curve's origin: it does not bend the arc
     // and it does not turn the camera. Later samples do. Apply it once.
     this.sim.armShotAim(fresh);
-    this.sim.applyFrameLook(fresh);
+    this.sim.applyFrameLook(fresh, dt);
     this.sim.nudgeAimDistance(fresh.aimRangeDelta);
     this.sim.noteZoomToggle(fresh);
 
