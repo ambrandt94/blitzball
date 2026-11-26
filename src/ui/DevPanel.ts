@@ -307,6 +307,13 @@ export function defaultTunables(): Tunables {
     tackleChargeTime: PLAYER.tackleChargeTime,
     tacklePopMin: PLAYER.tacklePopMin,
     tacklePopMax: PLAYER.tacklePopMax,
+    tackleStaggerChance: 0.5,
+    tackleMomentumKill: 0.6,
+    tackleKnockoutChance: 0.4,
+    tackleAutograbChance: 0.35,
+    grabReach: 2.4,
+    diveSpeed: 26,
+    diveCooldown: 0.75,
     tackleSelfStagger: PLAYER.tackleSelfStagger,
     checkKnock: PLAYER.checkKnock,
     ballDrag: BALL.drag,
@@ -667,6 +674,14 @@ export class DevPanel {
     });
 
     this.section('Tackle / Checking', 'tackle', () => {
+      this.range('Stagger chance', 'tackleStaggerChance', 0, 1, 0.01);
+      this.range('Momentum kill', 'tackleMomentumKill', 0, 1, 0.01);
+      this.range('Knock-out chance', 'tackleKnockoutChance', 0, 1, 0.01);
+      this.range('Auto-grab chance', 'tackleAutograbChance', 0, 1, 0.01);
+      this.range('Grab reach', 'grabReach', 0.8, 4.5, 0.05);
+      this.range('Dive speed', 'diveSpeed', 10, 45, 0.5);
+      this.range('Dive cooldown', 'diveCooldown', 0.1, 2, 0.05);
+      this.tackleReset();
       this.range('Light speed', 'lightBurstSpeed', 8, 40, 0.5);
       this.range('Light window', 'lightBurstDuration', 0.05, 0.35, 0.01);
       this.range('Light cooldown', 'lightBurstCooldown', 0.1, 1.2, 0.01);
@@ -1375,6 +1390,33 @@ export class DevPanel {
     if (key === 'waterFog') this.waterFogInput = input;
     row.append(lab, input);
     this.mount.append(row);
+  }
+
+  private tackleReset(): void {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'add-bot';
+    button.textContent = 'Reset tackle';
+    button.addEventListener('click', () => {
+      const fresh = {
+        tackleStaggerChance: 0.5,
+        tackleMomentumKill: 0.6,
+        tackleKnockoutChance: 0.4,
+        tackleAutograbChance: 0.35,
+        grabReach: 2.4,
+        diveSpeed: 26,
+        diveCooldown: 0.75,
+      };
+      for (const [key, value] of Object.entries(fresh) as [keyof Tunables, number][]) {
+        (this.tunables as unknown as Record<string, number>)[key] = value;
+        const input = this.root.querySelector<HTMLInputElement>(`input[data-key="${key}"]`);
+        if (!input) continue;
+        input.value = String(value);
+        const readout = input.parentElement?.querySelector('.value');
+        if (readout) readout.textContent = value.toFixed(2);
+      }
+    });
+    this.mount.append(button);
   }
 
   private waterReset(): void {

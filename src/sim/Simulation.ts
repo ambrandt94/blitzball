@@ -40,7 +40,7 @@ import {
   clampLookPitch,
   transportUp,
 } from './math';
-import { fumbleChance, inCatchCone, inCatchVolume, segmentHitsCatch, segmentHitsCone } from './catch';
+import { fumbleChance, inCatchCone, segmentHitsCone } from './catch';
 import {
   containInNet,
   inGoalPocket,
@@ -88,6 +88,7 @@ function makePlayer(
     burstTime: 0,
     burstStrong: false,
     burstCooldown: 0,
+    grabTime: 0,
     burstPuff: 0,
     burstDir: new THREE.Vector3(0, 0, 1),
     burstSpeedCap: 0,
@@ -243,6 +244,11 @@ export class Simulation {
   strafing = false;
   /** Seconds of extra reach left after a claim press. */
   private claimLatch = 0;
+  /**
+   * The click that grabbed the ball is still down. It must not also start a throw.
+   * Cleared once that button comes up.
+   */
+  private claimThrowLatch = false;
   /** Ball position at the start of this step's integration, for sweep catches and goal crossings. */
   private ballFrom = new THREE.Vector3();
   /** Ball position after integration, before the wall pulls it back. */
@@ -263,10 +269,8 @@ export class Simulation {
   kickoffLock = 0;
   /** 0..1 impact shake. The view reads it; the sim decays it. */
   cameraShake = 0;
-  /** Off-ball tackle charge. Hidden unless the button is held. */
+  /** Off-ball tackle charge. The dive replaced the hold, so this stays hidden. */
   readonly tackleCharge = { active: false, amount: 0 };
-  private tackleArmed = false;
-  private tackleHold = 0;
   /** Seconds the ball is outside the shell before the throw-in. */
   breachTime = 0;
   readonly breachPoint = new THREE.Vector3();
@@ -324,7 +328,7 @@ export class Simulation {
     this.ball = this.createBall();
     this.match = {
       score: [0, 0],
-      statusMessage: 'Swim, claim the ball, shoot the orange goal',
+      statusMessage: 'Swim, grab the ball, shoot the orange goal',
       resetTimer: 0,
       paused: false,
     };
@@ -374,6 +378,7 @@ export class Simulation {
         p.burstTime = 0;
         p.burstStrong = false;
         p.burstCooldown = 0;
+        p.grabTime = 0;
         p.burstPuff = 0;
         p.burstSpeedCap = 0;
         p.burstKnock = 0;
@@ -424,8 +429,6 @@ export class Simulation {
     this.kickoffLock = 2.2;
     this.match.statusMessage = 'Face-off…';
     this.cameraShake = 0;
-    this.tackleArmed = false;
-    this.tackleHold = 0;
     this.tackleCharge.active = false;
     this.tackleCharge.amount = 0;
     this.breachTime = 0;
@@ -869,7 +872,15 @@ export class Simulation {
       if (p.staggerTime > 0) p.staggerTime = Math.max(0, p.staggerTime - dt);
       if (p.hitFlash > 0) p.hitFlash = Math.max(0, p.hitFlash - dt * 2.4);
       if (p.burstCooldown > 0) p.burstCooldown = Math.max(0, p.burstCooldown - dt);
-      if (p.burstTime > 0) p.burstTime = Math.max(0, p.burstTime - dt);
+      if (p.grabTime > 0) p.grabTime = Math.max(0, p.grabTime - dt);
+      if (p.burstTime > 0) {
+        p.burstTime = Math.max(0, p.burstTime - dt);
+        // The dive's recovery starts once the lunge itself is over.
+        if (p.burstTime <= 0 && p.burstStrong) {
+          p.staggerTime = Math.max(p.staggerTime, 0.18);
+          p.burstStrong = false;
+        }
+      }
       if (p.burstPuff > 0) p.burstPuff = Math.max(0, p.burstPuff - dt * 3.2);
       if (p.deflectTime > 0) p.deflectTime = Math.max(0, p.deflectTime - dt);
       if (p.actionPoseTime > 0) {
@@ -1092,7 +1103,7 @@ export class Simulation {
       const basis = this.cameraBasis();
       // Strafe and swim follow the control frame. The chase pose is kept on
       // that same frame, including when the shell shoves the camera, so the
-      // stick matches the picture. Ascend stays world up: E rises and Q sinks.
+      // stick matches the picture. Ascend stays world up: Space rises and Ctrl sinks.
       wish
         .copy(basis.right)
         .multiplyScalar(moveLocal.x)
@@ -1110,21 +1121,11 @@ export class Simulation {
     // shotAim stays active through the release frame.
     const aimingShot =
       isHuman && player.hasBall && (intent.shootHeld || (this.shotAim.active && this.charge.kind !== 'kick'));
-    const tackle = intent.burst || intent.burstPower;
-    if (isHuman && player.catchReady && tackle && !player.hasBall && !aimingShot) {
-      this.tryDeflect(player);
-    } else if (isHuman) {
-      this.updateTackle(player, intent, wish, dt, aimingShot);
-    } else if (
-      player.role === 'ai' &&
-      tackle &&
-      !player.hasBall &&
-      !player.catchReady &&
-      player.burstCooldown <= 0 &&
-      this.kickoffLock <= 0 &&
-      this.match.resetTimer <= 0
-    ) {
-      this.fireTackle(player, wish, intent.burstPower ? 'power' : 'light', intent.burstPower ? 1 : 0);
+    // Off the ball, a click is a grab and a second click (or Q) is a dive.
+    // Both fire on the press. The dive does not wait out a charge.
+    if (!player.hasBall && player.aiBehavior !== 'goalie' && !aimingShot) {
+      if (intent.claim) this.startGrab(player);
+      if (intent.burst || intent.burstPower) this.startDive(player, aimDir);
     }
 
     const bursting = player.burstTime > 0 && player.burstDir.lengthSq() > 1e-6;
@@ -1134,12 +1135,10 @@ export class Simulation {
     // stays in front of the chest, but it does not take the strafe speed tax.
     // A lunge ignores that tax so the catch or tackle still closes.
     const aimLocked = isHuman && intent.strafe;
+    // Right click squares the body to the camera, on or off the ball.
+    // It does not reach for the ball.
     player.catchStance = aimLocked && !player.hasBall && !bursting && !aimingShot;
     if (!player.catchStance || player.hasBall) player.catchReady = false;
-    else if (intent.claim) {
-      player.catchReady = !player.catchReady;
-      this.match.statusMessage = player.catchReady ? 'Catch ready' : 'Squared up';
-    }
     if (!isHuman) this.trackIncomingPass(player, dt);
     player.sprinting = intent.sprint && !player.hasBall && !bursting;
     let maxSpeed = Math.max(4, this.tunables.playerMaxSpeed);
@@ -1171,110 +1170,6 @@ export class Simulation {
     clampMagnitude(player.velocity, maxSpeed * (bursting ? 1.02 : 1.15));
     player.position.addScaledVector(player.velocity, dt);
     constrainPlayerToSphere(player.position, player.velocity, PLAYER.radius);
-  }
-
-  /**
-   * Off-ball left click. A release inside the tap window is a light check.
-   * Holding fills a power tackle and the mouse-up fires it. A one-frame
-   * `burst` without the button held is the light check, so headless clicks
-   * still lunge.
-   */
-  private updateTackle(
-    player: PlayerState,
-    intent: InputIntent,
-    wish: THREE.Vector3,
-    dt: number,
-    aimingShot: boolean,
-  ): void {
-    const ready =
-      !player.hasBall &&
-      !aimingShot &&
-      !this.shotAim.active &&
-      !this.power.capturing() &&
-      player.burstCooldown <= 0 &&
-      this.kickoffLock <= 0 &&
-      this.match.resetTimer <= 0;
-
-    if (this.tackleArmed && (player.hasBall || aimingShot || this.shotAim.active)) {
-      this.clearTackleCharge();
-      return;
-    }
-
-    if (this.tackleArmed && !intent.tackleHeld) {
-      const held = this.tackleHold;
-      this.clearTackleCharge();
-      const tap = Math.max(0.04, this.tunables.tackleTapTime);
-      if (held <= tap) this.fireTackle(player, wish, 'light', 0);
-      else {
-        const span = Math.max(0.05, this.tunables.tackleChargeTime - tap);
-        const intensity = THREE.MathUtils.clamp((held - tap) / span, 0, 1);
-        this.fireTackle(player, wish, 'power', intensity);
-      }
-      return;
-    }
-
-    if (!this.tackleArmed && intent.burst && intent.tackleHeld && ready) {
-      this.tackleArmed = true;
-      this.tackleHold = 0;
-    }
-
-    if (this.tackleArmed && intent.tackleHeld) {
-      this.tackleHold += dt;
-      const full = Math.max(0.05, this.tunables.tackleChargeTime);
-      this.tackleCharge.active = true;
-      this.tackleCharge.amount = THREE.MathUtils.clamp(this.tackleHold / full, 0, 1);
-      return;
-    }
-
-    if (!this.tackleArmed && intent.burst && !intent.tackleHeld && ready) {
-      this.fireTackle(player, wish, 'light', 0);
-    }
-  }
-
-  private clearTackleCharge(): void {
-    this.tackleArmed = false;
-    this.tackleHold = 0;
-    this.tackleCharge.active = false;
-    this.tackleCharge.amount = 0;
-  }
-
-  private fireTackle(player: PlayerState, wish: THREE.Vector3, kind: 'light' | 'power', intensity: number): void {
-    const dir = player.burstDir;
-    if (wish.lengthSq() > 1e-6) dir.copy(wish).normalize();
-    else if (player.facing.lengthSq() > 1e-8) dir.copy(player.facing).normalize();
-    else dir.set(0, 0, 1);
-
-    const lightSpeed = Math.max(4, this.tunables.lightBurstSpeed);
-    const powerSpeed = Math.max(lightSpeed, this.tunables.burstSpeed);
-    const lightWindow = Math.max(0.05, this.tunables.lightBurstDuration);
-    const powerWindow = Math.max(lightWindow, this.tunables.burstDuration);
-    const lightCooldown = Math.max(0.05, this.tunables.lightBurstCooldown);
-    const powerCooldown = Math.max(lightCooldown, this.tunables.burstCooldown);
-    const lightKnock = Math.max(1, this.tunables.lightKnock);
-    const powerKnock = Math.max(lightKnock, this.tunables.checkKnock);
-    const lightPop = PLAYER.checkPop * 0.72;
-    const t = THREE.MathUtils.clamp(intensity, 0, 1);
-    const speed = kind === 'light' ? lightSpeed : THREE.MathUtils.lerp(lightSpeed, powerSpeed, Math.max(0.2, t));
-    const window = kind === 'light' ? lightWindow : THREE.MathUtils.lerp(lightWindow, powerWindow, t);
-    const cooldown = kind === 'light' ? lightCooldown : THREE.MathUtils.lerp(lightCooldown + 0.2, powerCooldown, t);
-
-    player.checkMask = 0;
-    player.burstSpeedCap = speed;
-    player.burstKnock = kind === 'light' ? lightKnock : THREE.MathUtils.lerp(lightKnock, powerKnock, t);
-    player.burstPop = kind === 'light' ? lightPop : THREE.MathUtils.lerp(lightPop, PLAYER.checkPop, t);
-    const popMin = THREE.MathUtils.clamp(this.tunables.tacklePopMin, 0, 1);
-    const popMax = THREE.MathUtils.clamp(Math.max(popMin, this.tunables.tacklePopMax), 0, 1);
-    player.burstPopChance = kind === 'light' ? 1 : THREE.MathUtils.lerp(popMin, popMax, t);
-    this.tmp.burstLaunch.copy(dir).multiplyScalar(speed);
-    player.velocity.lerp(this.tmp.burstLaunch, 0.88);
-    player.burstTime = window;
-    player.burstCooldown = cooldown;
-    player.burstPuff = kind === 'light' ? 0.55 : 0.7 + 0.3 * t;
-    if (kind === 'power') {
-      const recover = Math.max(0, this.tunables.tackleSelfStagger) * (0.35 + 0.65 * t);
-      player.staggerTime = Math.max(player.staggerTime, recover);
-    }
-    this.playPose(player, 'burst', player.burstTime + 0.06);
   }
 
   /**
@@ -1462,6 +1357,7 @@ export class Simulation {
   }
 
   private updatePossession(human: PlayerState, intent: InputIntent, dt: number): void {
+    if (this.claimThrowLatch && !intent.shootHeld && !intent.shoot) this.claimThrowLatch = false;
     // Charge shoot / pass for human
     if (human.hasBall) {
       const kickCharge = this.charge.kind === 'kick' && this.throwInProgress() && !this.kickSwing.active;
@@ -1488,6 +1384,8 @@ export class Simulation {
         this.sustainThrow(human, intent, dt);
       } else if (this.charge.active && this.charge.kind === 'kick') {
         this.finishThrowHold(human);
+      } else if (this.claimThrowLatch) {
+        // The click that just grabbed the ball is still down. It is not a throw.
       } else if (intent.shootHeld || this.power.capturing()) {
         this.sustainThrow(human, intent, dt);
       } else if (this.charge.active && this.charge.kind === 'shoot') {
@@ -1510,28 +1408,6 @@ export class Simulation {
     } else {
       if (!this.kickSwing.active && (this.shotAim.active || this.charge.active)) this.clearShotAim();
       this.updateLooseKick(human, intent, dt);
-      // While squared up, E toggles catch-ready instead of grabbing.
-      if (intent.claim && !(intent.strafe && !human.hasBall)) this.tryClaim(human);
-    }
-
-    // Tackle / strip when AI has ball
-    if (
-      this.ball.possession === 'held' &&
-      this.ball.ownerId !== null &&
-      this.ball.ownerId !== human.id &&
-      human.tackleCooldown <= 0
-    ) {
-      const owner = this.players[this.ball.ownerId];
-      if (owner) {
-        const dist = human.position.distanceTo(owner.position);
-        if (dist < PLAYER.tackleRange && intent.claim) {
-          const toOwner = owner.position.clone().sub(human.position).normalize();
-          if (this.lookForward(human).dot(toOwner) > PLAYER.claimFacingDot) {
-            this.stripBall(human, owner);
-            human.tackleCooldown = PLAYER.tackleCooldown;
-          }
-        }
-      }
     }
   }
 
@@ -1555,28 +1431,6 @@ export class Simulation {
     return { reach, radius };
   }
 
-  private pointInReach(player: PlayerState, point: THREE.Vector3): boolean {
-    const { reach, radius } = this.catchScales(player);
-    return inCatchVolume(player.position, this.lookForward(player), point, reach, radius);
-  }
-
-  private sweptReach(player: PlayerState): boolean {
-    const forward = this.lookForward(player);
-    if (player.catchReady) {
-      const radius = Math.max(0.4, this.tunables.catchReadyRadius);
-      const cone = Math.max(0.05, this.tunables.catchReadyCone);
-      return (
-        inCatchCone(player.position, forward, this.ball.position, radius, cone) ||
-        segmentHitsCone(player.position, forward, this.ballFrom, this.ball.position, radius, cone)
-      );
-    }
-    const { reach, radius } = this.catchScales(player);
-    return (
-      inCatchVolume(player.position, forward, this.ball.position, reach, radius) ||
-      segmentHitsCatch(player.position, forward, this.ballFrom, this.ball.position, reach, radius)
-    );
-  }
-
   /** Where this player is aiming. Humans aim with the camera, even before the body catches up. */
   private lookForward(player: PlayerState): THREE.Vector3 {
     if (player.role === 'human') return this.cameraBasis().forward.clone();
@@ -1584,30 +1438,80 @@ export class Simulation {
   }
 
   private tryClaim(player: PlayerState): void {
-    if (this.ball.possession === 'held' && this.ball.ownerId !== player.id) return;
-    if (!this.canTake(player) || !this.pointInReach(player, this.ball.position)) return;
-    this.takeBall(player);
+    this.startGrab(player);
+  }
+
+  /** Open a short reach in front. The click grabs immediately; it does not wait. */
+  private startGrab(player: PlayerState): void {
+    if (!player.active || player.role === 'stub' || player.hasBall) return;
+    if (player.aiBehavior === 'goalie') return;
+    if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
+    player.grabTime = Math.max(player.grabTime, PLAYER.grabWindow);
+    this.tryGrab(player);
   }
 
   /**
-   * Loose-ball pickup after the ball has moved. The mitt is a forward capsule, and the
-   * segment from the previous position is tested so a pass cannot step through it.
-   * Human wins a tie. Catch stance uses the wider mitt.
+   * Lunge along the aim. The ball is taken first if it sits in the grab cone.
+   * Otherwise an opponent in that cone is the tackle.
+   */
+  private startDive(player: PlayerState, aim: THREE.Vector3): void {
+    if (!player.active || player.role === 'stub' || player.hasBall) return;
+    if (player.aiBehavior === 'goalie') return;
+    if (player.burstCooldown > 0) return;
+    if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
+    if (player.id === this.humanId && (this.shotAim.active || this.power.capturing())) return;
+
+    const dir = player.burstDir;
+    if (aim.lengthSq() > 1e-6) dir.copy(aim).normalize();
+    else if (player.facing.lengthSq() > 1e-8) dir.copy(player.facing).normalize();
+    else dir.set(0, 0, 1);
+
+    const speed = Math.max(8, this.tunables.diveSpeed);
+    player.checkMask = 0;
+    player.burstSpeedCap = speed;
+    player.burstStrong = true;
+    player.burstKnock = Math.max(4, this.tunables.checkKnock);
+    this.tmp.burstLaunch.copy(dir).multiplyScalar(speed);
+    player.velocity.lerp(this.tmp.burstLaunch, 0.92);
+    player.burstTime = 0.32;
+    player.burstCooldown = Math.max(0.1, this.tunables.diveCooldown);
+    player.burstPuff = 1;
+    player.grabTime = Math.max(player.grabTime, PLAYER.grabWindow, player.burstTime);
+    this.playPose(player, 'burst', player.burstTime + 0.16);
+    this.tryGrab(player);
+  }
+
+  /**
+   * Forward cone used by a grab and by a dive.
+   * The swept segment is only valid after the ball has stepped, so a click
+   * tests where the ball is now.
+   */
+  private ballInGrab(player: PlayerState, swept: boolean): boolean {
+    const reach = Math.max(0.4, this.tunables.grabReach);
+    const cone = 0.72;
+    const forward = player.burstTime > 0 && player.burstDir.lengthSq() > 1e-6 ? player.burstDir : this.lookForward(player);
+    if (inCatchCone(player.position, forward, this.ball.position, reach, cone)) return true;
+    return swept && segmentHitsCone(player.position, forward, this.ballFrom, this.ball.position, reach, cone);
+  }
+
+  private tryGrab(player: PlayerState, swept = false): boolean {
+    if (this.ball.possession === 'held' && this.ball.ownerId !== player.id) return false;
+    if (!this.canTake(player) || !this.ballInGrab(player, swept)) return false;
+    this.takeBall(player);
+    return true;
+  }
+
+  /**
+   * A grab window is the only way a field player takes a loose ball.
+   * Swimming into it does not. Goalies catch on their own path.
    */
   private resolveCatches(): void {
     if (this.ball.possession !== 'free' || this.ball.claimLock > 0) return;
-    const ready = this.players.some((player) => player.catchReady);
-    if (this.ball.arc && !ready) return;
     const human = this.getHuman();
-    if (this.canTake(human) && this.sweptReach(human)) {
-      this.takeBall(human);
-      return;
-    }
-    for (const player of this.players) {
-      if (player.id === human.id || player.aiBehavior === 'goalie') continue;
-      if (!this.canTake(player) || !this.sweptReach(player)) continue;
-      this.takeBall(player);
-      return;
+    const order = [human, ...this.players.filter((player) => player.id !== human.id)];
+    for (const player of order) {
+      if (player.aiBehavior === 'goalie' || player.grabTime <= 0) continue;
+      if (this.tryGrab(player, true)) return;
     }
   }
 
@@ -1643,34 +1547,6 @@ export class Simulation {
     this.match.statusMessage = 'Fumble!';
   }
 
-  /**
-   * Catch-ready slap. The ball leaves along the aim and nobody claims it.
-   * A miss still plays the hand so the click reads.
-   */
-  private tryDeflect(player: PlayerState): void {
-    player.deflectTime = 0.18;
-    const dist = player.position.distanceTo(this.ball.position);
-    const reach = Math.max(1.2, this.tunables.catchReadyRadius);
-    if (dist > reach) return;
-    if (this.ball.possession === 'held' && this.ball.ownerId !== null && this.ball.ownerId !== player.id) {
-      const owner = this.players[this.ball.ownerId];
-      if (owner) {
-        owner.hasBall = false;
-        if (owner.actionPose === 'hold') owner.actionPose = 'none';
-      }
-    }
-    const aim = this.lookForward(player);
-    if (aim.lengthSq() < 1e-8) aim.copy(player.facing);
-    else aim.normalize();
-    this.ball.possession = 'free';
-    this.ball.ownerId = null;
-    this.ball.arc = null;
-    this.ball.velocity.copy(aim).multiplyScalar(Math.max(4, this.tunables.deflectStrength));
-    this.ball.claimLock = 0.35;
-    this.ball.position.copy(player.position).addScaledVector(aim, Math.min(Math.max(dist, 0.4), 1.15));
-    this.match.statusMessage = 'Deflect!';
-  }
-
   /** An AI receiver squares up when a pass is closing on them. */
   private trackIncomingPass(player: PlayerState, dt: number): void {
     if (!player.active || player.role === 'stub' || player.hasBall) {
@@ -1686,20 +1562,19 @@ export class Simulation {
     const window = Math.max(14, this.tunables.catchReadyRadius * 2.4);
     const speed = this.ball.velocity.length();
     const closing = dist > 1e-4 ? this.ball.velocity.dot(to) / dist : 0;
-    if (dist > window || speed < 3 || closing < 3) {
-      player.catchReady = false;
-      return;
-    }
-    player.catchReady = true;
-    player.catchStance = true;
+    if (dist > window || speed < 3 || closing < 3) return;
     to.multiplyScalar(1 / dist);
     rotateToward(player.facing, to, Math.max(2, this.tunables.bodyTurnRate), dt);
   }
 
-  /** Don't launch the ball off a chest that was about to catch it. */
+  /**
+   * A body meeting a free ball bops it. The impulse is the closing speed along
+   * the contact normal, the way a header leaves the forehead. It never claims.
+   */
   private separateBallFromPlayers(): void {
     if (this.ball.possession !== 'free' || this.ball.arc) return;
     const sep = PLAYER.radius + BALL.radius;
+    const restitution = 0.62;
     for (const player of this.players) {
       if (!player.active) continue;
       // A pass, shot, drop, or check leaves from the palm, which overlaps the
@@ -1715,39 +1590,10 @@ export class Simulation {
       if (dist >= sep || dist <= 1e-5) continue;
       const normal = delta.multiplyScalar(1 / dist);
       this.ball.position.copy(player.position).addScaledVector(normal, sep);
-      const vn = this.ball.velocity.dot(normal) - player.velocity.dot(normal);
-      if (vn >= 0) continue;
-      const forward = player.id === this.humanId ? this.cameraBasis().forward : player.facing;
-      const soft = normal.dot(forward) > 0.15;
-      this.ball.velocity.addScaledVector(normal, -vn * (soft ? 0.28 : 1.15));
+      const closing = this.ball.velocity.dot(normal) - player.velocity.dot(normal);
+      if (closing >= 0) continue;
+      this.ball.velocity.addScaledVector(normal, -(1 + restitution) * closing);
     }
-  }
-
-  /** Drift a near miss into the outstretched hands. Only while the catch stance is held. */
-  private pullCatch(human: PlayerState, dt: number): void {
-    if (!human.catchReady || this.ball.possession !== 'free' || this.ball.arc) return;
-    if (this.ball.claimLock > 0) return;
-    if (human.reclaimGrace > 0 && this.ball.lastOwnerId === human.id) return;
-    if (human.selfCatchLock && this.ball.lastOwnerId === human.id) return;
-    if (this.kickoffLock > 0 || this.match.resetTimer > 0) return;
-    const pull = Math.max(0, this.tunables.catchPull);
-    if (pull <= 0) return;
-    const reach = Math.max(0.4, this.tunables.catchReadyRadius) * 1.15;
-    const cone = Math.max(0.05, this.tunables.catchReadyCone);
-    const forward = this.lookForward(human);
-    if (!inCatchCone(human.position, forward, this.ball.position, reach, cone)) return;
-    const hands = this.tmp.holdTarget
-      .copy(human.position)
-      .addScaledVector(forward, Math.min(1.1, Math.max(0.4, this.tunables.catchReadyRadius) * 0.35))
-      .addScaledVector(human.up, 0.18);
-    const toHands = this.tmp.side.copy(hands).sub(this.ball.position);
-    const dist = toHands.length();
-    if (dist < 0.08) return;
-    toHands.multiplyScalar(1 / dist);
-    const falloff = 1 - THREE.MathUtils.smoothstep(dist, reach * 0.35, reach);
-    this.ball.velocity.addScaledVector(toHands, pull * Math.max(0.25, falloff) * dt);
-    const closing = this.ball.velocity.dot(toHands);
-    if (closing < 0) this.ball.velocity.addScaledVector(toHands, -closing * 0.45);
   }
 
   private giveBall(player: PlayerState): void {
@@ -1766,14 +1612,7 @@ export class Simulation {
     this.carryFrom.copy(this.ball.position);
     this.carryBlend = 0;
     this.playPose(player, 'claim', 0.34);
-  }
-
-  private stripBall(tacker: PlayerState, owner: PlayerState): void {
-    owner.hasBall = false;
-    owner.reclaimGrace = PLAYER.reclaimCoyote;
-    this.giveBall(tacker);
-    this.ball.claimLock = 0.05;
-    this.match.statusMessage = 'Strip!';
+    if (player.id === this.humanId && (player.grabTime > 0 || player.burstTime > 0)) this.claimThrowLatch = true;
   }
 
   /** Bar this thrower from the ball until it has cleared their mitt. */
@@ -3032,8 +2871,6 @@ export class Simulation {
       return;
     }
 
-    const human = this.getHuman();
-    this.pullCatch(human, dt);
     this.ball.velocity.multiplyScalar(Math.exp(-this.tunables.ballDrag * dt));
     this.ball.position.addScaledVector(this.ball.velocity, dt);
     this.ballPreWall.copy(this.ball.position);
@@ -3229,16 +3066,31 @@ export class Simulation {
     checker: PlayerState,
     target: PlayerState,
     dt: number,
-    reach: number,
+    _reach: number,
   ): { checker: PlayerState; target: PlayerState; dir: THREE.Vector3 } | null {
-    if (checker.burstTime <= 0) return null;
+    if (checker.hasBall || checker.burstTime <= 0) return null;
+    if (checker.aiBehavior === 'goalie') return null;
+    if (target.team === checker.team) return null;
     if ((checker.checkMask & (1 << target.id)) !== 0) return null;
-    if (!this.bodiesTouch(checker, target, dt, reach)) return null;
+    if (!this.opponentInDive(checker, target, dt)) return null;
     const dir = checker.burstDir.clone();
     if (dir.lengthSq() < 1e-6) dir.copy(target.position).sub(checker.position);
     if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1);
     else dir.normalize();
     return { checker, target, dir };
+  }
+
+  /** An opponent in the dive cone, or swept into that reach while still in front. */
+  private opponentInDive(checker: PlayerState, target: PlayerState, dt: number): boolean {
+    const reach = Math.max(0.6, this.tunables.grabReach);
+    const forward = checker.burstDir.lengthSq() > 1e-6 ? checker.burstDir : this.lookForward(checker);
+    if (inCatchCone(checker.position, forward, target.position, reach, 0.75)) return true;
+    if (!this.bodiesTouch(checker, target, dt, reach)) return false;
+    const to = target.position.clone().sub(checker.position);
+    const dist = to.length();
+    if (dist < 1e-5) return true;
+    const along = forward.clone().normalize().dot(to) / dist;
+    return along > 0.2;
   }
 
   private bodiesTouch(a: PlayerState, b: PlayerState, dt: number, reach: number): boolean {
@@ -3281,32 +3133,62 @@ export class Simulation {
 
   private applyCheck(checker: PlayerState, target: PlayerState, dir: THREE.Vector3): void {
     checker.checkMask |= 1 << target.id;
-    const knock = checker.burstKnock > 0 ? checker.burstKnock : Math.max(4, this.tunables.checkKnock);
-    const popSpeed = checker.burstPop > 0 ? checker.burstPop : PLAYER.checkPop;
-    target.velocity.copy(dir).multiplyScalar(knock * (checker.burstStrong ? 1.15 : 1));
-    target.knockTime = PLAYER.checkKnockTime;
-    target.staggerTime = PLAYER.checkStagger;
+    const tackleDir = dir.clone();
+    if (tackleDir.lengthSq() < 1e-8) tackleDir.set(0, 0, 1);
+    else tackleDir.normalize();
+
     target.hitFlash = 1;
-    target.hitBurst = 16;
+    target.hitBurst = 14;
     target.catchStance = false;
     target.catchReady = false;
+    target.knockTime = Math.max(target.knockTime, PLAYER.checkKnockTime * 0.45);
+    target.staggerTime = Math.max(target.staggerTime, PLAYER.checkStagger * 0.4);
     checker.hitFlash = 1;
     checker.hitBurst = 12;
-    checker.velocity.addScaledVector(dir, -3.2);
+    checker.velocity.addScaledVector(tackleDir, -2.2);
     if (checker.id === this.humanId || target.id === this.humanId) this.cameraShake = 1;
     if (target.id === this.humanId && this.shotAim.active) this.clearShotAim();
-    if (target.hasBall && this.ball.ownerId === target.id && Math.random() < checker.burstPopChance) {
-      const fromPalm = this.carryPalm.has(target.id);
-      if (fromPalm) this.stickBallToHand(target);
-      this.releaseBall(dir.clone().multiplyScalar(popSpeed));
-      if (!fromPalm) {
-        this.ball.position.copy(target.position).addScaledVector(dir, PLAYER.radius + BALL.radius + 0.4);
-      }
-      this.ball.claimLock = 0.45;
-      target.actionPose = 'none';
-      target.actionPoseTime = 0;
+
+    const carrierVel = target.velocity.clone();
+    const tacklerVel = checker.velocity.clone();
+    const stagger = Math.random() < THREE.MathUtils.clamp(this.tunables.tackleStaggerChance, 0, 1);
+    if (stagger) {
+      const kill = THREE.MathUtils.clamp(this.tunables.tackleMomentumKill, 0, 1);
+      target.velocity.multiplyScalar(1 - kill);
+      target.velocity.addScaledVector(tackleDir, Math.max(6, this.tunables.diveSpeed * 0.45));
+      target.staggerTime = Math.max(target.staggerTime, PLAYER.checkStagger * 1.75);
+      target.knockTime = Math.max(target.knockTime, PLAYER.checkKnockTime);
     }
-    this.match.statusMessage = checker.burstSpeedCap > this.tunables.lightBurstSpeed + 1 ? 'Power tackle!' : 'Shoulder check!';
+
+    const holds = target.hasBall && this.ball.ownerId === target.id;
+    const knockout = holds && Math.random() < THREE.MathUtils.clamp(this.tunables.tackleKnockoutChance, 0, 1);
+    if (!knockout) {
+      this.match.statusMessage = stagger ? 'Staggered!' : 'Dive!';
+      return;
+    }
+
+    const autograb =
+      !checker.hasBall && Math.random() < THREE.MathUtils.clamp(this.tunables.tackleAutograbChance, 0, 1);
+    if (autograb) {
+      target.hasBall = false;
+      if (target.actionPose === 'hold') target.actionPose = 'none';
+      this.giveBall(checker);
+      this.ball.claimLock = 0.08;
+      this.match.statusMessage = 'Stolen!';
+      return;
+    }
+
+    const fly = tacklerVel.clone().addScaledVector(carrierVel, 0.45).addScaledVector(tackleDir, 8);
+    const fromPalm = this.carryPalm.has(target.id);
+    if (fromPalm) this.stickBallToHand(target);
+    this.releaseBall(fly);
+    if (!fromPalm) {
+      this.ball.position.copy(target.position).addScaledVector(tackleDir, PLAYER.radius + BALL.radius + 0.4);
+    }
+    this.ball.claimLock = 0.45;
+    target.actionPose = 'none';
+    target.actionPoseTime = 0;
+    this.match.statusMessage = 'Knocked loose!';
   }
 
   private checkGoals(): void {

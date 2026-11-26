@@ -1349,30 +1349,76 @@ function checkCatch(): void {
   sim.ball.lastOwnerId = null;
   sim.ball.claimLock = 0;
   sim.ball.velocity.set(0, 0, 0);
-  sim.ball.position.set(0.55, 0.35, 2.2);
-  const idle = blankIntent();
-  for (let i = 0; i < 6; i++) sim.step(1 / 60, idle);
-  if (!human.hasBall) fail('swim pickup missed a ball in front of the chest');
+  sim.ball.position.set(0, 0, 0.9);
+  human.velocity.set(0, 0, 8);
+  const bump = blankIntent();
+  bump.move.set(0, 0, 1);
+  sim.step(1 / 60, bump);
+  if (human.hasBall) fail('swimming into the ball claimed it');
+  if (sim.ball.velocity.z < 4) fail(`a body did not bop the ball (${sim.ball.velocity.z.toFixed(2)})`);
 
-  human.hasBall = false;
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.grabTime = 0;
+  sim.ball.velocity.set(0, 0, 0);
   sim.ball.possession = 'free';
   sim.ball.ownerId = null;
   sim.ball.claimLock = 0;
-  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.position.set(0.55, 0.35, 2.2);
+  const idle = blankIntent();
+  for (let i = 0; i < 6; i++) sim.step(1 / 60, idle);
+  if (human.hasBall) fail('standing near the ball claimed it');
+  const grab = blankIntent();
+  grab.claim = true;
+  grab.shoot = true;
+  grab.shootHeld = true;
+  sim.step(1 / 60, grab);
+  if (!human.hasBall) fail('grab missed a ball in front of the chest');
+  if (sim.shotAim.active) fail('the grab click started a throw');
+
+  human.position.set(0, 0, 0);
+  human.velocity.set(0, 0, 0);
+  human.hasBall = false;
+  human.grabTime = 0;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
   sim.ball.position.set(0, 0, -1.6);
-  for (let i = 0; i < 8; i++) sim.step(1 / 60, idle);
+  sim.ball.velocity.set(0, 0, 0);
+  sim.ball.claimLock = 0;
+  const behind = blankIntent();
+  behind.claim = true;
+  sim.step(1 / 60, behind);
   if (human.hasBall) fail('grabbed a ball behind the swimmer');
 
   sim.ball.position.set(2.3, 0, 0.2);
   sim.ball.claimLock = 0;
-  for (let i = 0; i < 8; i++) sim.step(1 / 60, idle);
+  const side = blankIntent();
+  side.claim = true;
+  sim.step(1 / 60, side);
   if (human.hasBall) fail('grabbed a ball out to the side');
 
+  human.position.set(0, 0, 0);
+  human.hasBall = false;
+  human.grabTime = 0;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
   sim.ball.position.set(0.15, 0.1, 5.4);
   sim.ball.velocity.set(0, 0, -360);
   sim.ball.claimLock = 0;
   sim.step(1 / 60, idle);
-  if (!human.hasBall) fail('a pass tunneled through the mitt');
+  if (human.hasBall) fail('a pass was caught without a grab');
+  human.position.set(0, 0, 0);
+  human.hasBall = false;
+  human.grabTime = 0;
+  sim.ball.possession = 'free';
+  sim.ball.ownerId = null;
+  sim.ball.position.set(0.15, 0.1, 5.4);
+  sim.ball.velocity.set(0, 0, -360);
+  sim.ball.claimLock = 0;
+  const reach = blankIntent();
+  reach.claim = true;
+  sim.step(1 / 60, reach);
+  if (!human.hasBall) fail('a grab let a pass tunnel through the reach');
 
   const wide = new Simulation(defaultTunables());
   wide.kickoffLock = 0;
@@ -1389,20 +1435,17 @@ function checkCatch(): void {
   wide.ball.lastOwnerId = null;
   wide.ball.claimLock = 0;
   wide.ball.velocity.set(0, 0, 0);
-  wide.ball.position.set(0, 0, 5.2);
-  for (let i = 0; i < 6; i++) wide.step(1 / 60, blankIntent());
-  if (swimmer.hasBall) fail('normal mitt reached a ball that belongs to the catch stance');
-
+  wide.ball.position.set(0, 0, 1.5);
   const squared = blankIntent();
   squared.strafe = true;
-  wide.ball.claimLock = 0;
-  wide.step(1 / 60, squared);
-  if (swimmer.hasBall) fail('square up caught a ball without catch-ready');
+  for (let i = 0; i < 6; i++) wide.step(1 / 60, squared);
+  if (swimmer.hasBall) fail('aiming at the ball claimed it');
   const stance = blankIntent();
   stance.strafe = true;
   stance.claim = true;
+  wide.ball.claimLock = 0;
   wide.step(1 / 60, stance);
-  if (!swimmer.hasBall) fail('catch-ready did not take the ball in front of the hands');
+  if (!swimmer.hasBall) fail('a grab while aiming missed the ball in front');
 
   const pull = new Simulation(defaultTunables());
   pull.kickoffLock = 0;
@@ -1421,18 +1464,11 @@ function checkCatch(): void {
   pull.ball.velocity.set(0, 0, 0);
   pull.ball.position.set(2.15, 0, 3.2);
   const still = blankIntent();
+  still.strafe = true;
+  const before = pull.ball.position.x;
   for (let i = 0; i < 20; i++) pull.step(1 / 60, still);
-  if (reacher.hasBall || pull.ball.position.x < 1.9) fail('the ball drifted in without the catch stance');
-  const armCatch = blankIntent();
-  armCatch.strafe = true;
-  armCatch.claim = true;
-  pull.step(1 / 60, armCatch);
-  const reaching = blankIntent();
-  reaching.strafe = true;
-  for (let i = 0; i < 45; i++) pull.step(1 / 60, reaching);
-  if (!reacher.hasBall && pull.ball.position.x > 1.55) {
-    fail(`catch stance did not draw the ball in (${pull.ball.position.x.toFixed(2)})`);
-  }
+  if (reacher.hasBall) fail('holding aim claimed a ball off to the side');
+  if (pull.ball.position.x < before - 0.15) fail('aiming pulled the ball into the hands');
 }
 
 /**
@@ -1611,24 +1647,18 @@ function checkCatchReadyPass(): void {
   sim.ball.velocity.set(0, 0, -16);
   const arm = blankIntent();
   arm.strafe = true;
-  arm.claim = true;
-  sim.step(1 / 60, arm);
-  if (!human.catchReady) fail('E while squared up did not enter catch-ready');
-  if (human.hasBall) fail('catch-ready grabbed a pass that was still out of the cone');
-  const hold = blankIntent();
-  hold.strafe = true;
-  let caught = false;
-  for (let i = 0; i < 80; i++) {
-    sim.step(1 / 60, hold);
-    if (human.hasBall) {
-      caught = true;
-      break;
-    }
-  }
-  if (!caught || sim.ball.ownerId !== human.id) fail('catch-ready missed a slow pass');
+  for (let i = 0; i < 30; i++) sim.step(1 / 60, arm);
+  if (human.hasBall) fail('aiming caught a pass that was not grabbed');
+  sim.ball.position.set(0, 0.15, 1.4);
+  sim.ball.velocity.set(0, 0, -8);
+  sim.ball.claimLock = 0;
+  const grabPass = blankIntent();
+  grabPass.claim = true;
+  sim.step(1 / 60, grabPass);
+  if (!human.hasBall || sim.ball.ownerId !== human.id) fail('grab missed a pass in reach');
 }
 
-/** A slap in catch-ready sends the ball along the aim and does not take it. */
+/** A dive takes a ball in reach before it looks for a body. Aiming does not slap it. */
 function checkDeflect(): void {
   const sim = new Simulation(defaultTunables());
   sim.kickoffLock = 0;
@@ -1645,28 +1675,13 @@ function checkDeflect(): void {
   sim.ball.lastOwnerId = null;
   sim.ball.claimLock = 0;
   sim.ball.arc = null;
-  sim.ball.position.set(0, 0.2, 20);
-  sim.ball.velocity.set(0, 0, 0);
-  const arm = blankIntent();
-  arm.strafe = true;
-  arm.claim = true;
-  sim.step(1 / 60, arm);
-  if (!human.catchReady) fail('deflect setup did not enter catch-ready');
-  sim.ball.position.set(0, 0.15, 2.1);
-  sim.ball.velocity.set(1, 0, -6);
-  sim.ball.claimLock = 0;
-  sim.ball.possession = 'free';
-  const slap = blankIntent();
-  slap.strafe = true;
-  slap.burst = true;
-  sim.step(1 / 60, slap);
-  if (human.hasBall || sim.ball.possession !== 'free' || sim.ball.ownerId !== null) {
-    fail('deflect claimed the ball');
-  }
-  if (sim.ball.velocity.z < sim.tunables.deflectStrength * 0.8) {
-    fail(`deflect did not send the ball along the aim (${sim.ball.velocity.z.toFixed(1)})`);
-  }
-  if (human.velocity.z > sim.tunables.burstSpeed * 0.4) fail('deflect lunged like a shoulder check');
+  sim.ball.position.set(0, 0.15, 1.6);
+  sim.ball.velocity.set(0, 0, -2);
+  const dive = blankIntent();
+  dive.burst = true;
+  sim.step(1 / 60, dive);
+  if (!human.hasBall) fail('dive missed a ball sitting in reach');
+  if (human.burstTime <= 0) fail('dive did not lunge');
 }
 
 function checkTeammatePassReachesPlayer(): void {
@@ -1772,6 +1787,12 @@ function checkOpponentInterceptsPass(): void {
   intent.callForPass = true;
   let released = false;
   for (let i = 0; i < 240; i++) {
+    if (released) {
+      // Defense is holding its spot. A grab is still a choice: the window is open
+      // while the pass arrives, and the thrower's lock must not block it.
+      defense.facing.set(0, 0, 1);
+      defense.grabTime = PLAYER.grabWindow;
+    }
     const held = mate.hasBall;
     sim.step(1 / 60, intent);
     const poss: string = sim.ball.possession;
@@ -1809,10 +1830,13 @@ function checkTackleStillStrips(): void {
   sim.ball.claimLock = 0;
   sim.ball.velocity.set(0, 0, 0);
   sim.ball.position.copy(defense.position).add(new THREE.Vector3(0, 0.1, -0.4));
+  sim.tunables.tackleKnockoutChance = 1;
+  sim.tunables.tackleAutograbChance = 1;
+  sim.tunables.tackleStaggerChance = 1;
   const intent = blankIntent();
-  intent.claim = true;
+  intent.burst = true;
   sim.step(1 / 60, intent);
-  if (!human.hasBall || defense.hasBall) fail('tackle did not strip the carrier');
+  if (!human.hasBall || defense.hasBall) fail('dive did not take the ball off the carrier');
 }
 
 function checkArcShotLeavesThrower(): void {
@@ -1916,17 +1940,25 @@ function checkNormalCatchRegression(): void {
   sim.ball.velocity.set(0, 0, 0);
   sim.ball.position.set(0.25, 0.15, 2.3);
   for (let i = 0; i < 8; i++) sim.step(1 / 60, blankIntent());
-  if (!human.hasBall) fail('normal catch missed a ball in front of the chest');
+  if (human.hasBall) fail('standing in front of the ball claimed it');
+  const grab = blankIntent();
+  grab.claim = true;
+  sim.step(1 / 60, grab);
+  if (!human.hasBall) fail('grab missed a ball in front of the chest');
 
+  human.position.set(0, 0, 0);
   human.hasBall = false;
+  human.grabTime = 0;
   sim.ball.possession = 'free';
   sim.ball.ownerId = null;
   sim.ball.lastOwnerId = null;
   sim.ball.claimLock = 0;
   sim.ball.velocity.set(0, 0, 0);
   sim.ball.position.set(0, 0.1, -1.8);
-  for (let i = 0; i < 8; i++) sim.step(1 / 60, blankIntent());
-  if (human.hasBall) fail('normal catch took a ball behind the swimmer');
+  const behind = blankIntent();
+  behind.claim = true;
+  sim.step(1 / 60, behind);
+  if (human.hasBall) fail('grab took a ball behind the swimmer');
 
   // A pass from someone else still sticks. The thrower is not this catcher.
   const incoming = new Simulation(defaultTunables());
@@ -1945,8 +1977,17 @@ function checkNormalCatchRegression(): void {
   incoming.ball.claimLock = 0;
   incoming.ball.velocity.set(0, 0, -28);
   incoming.ball.position.set(0.1, 0.1, 6);
-  for (let i = 0; i < 20; i++) incoming.step(1 / 60, blankIntent());
-  if (!catcher.hasBall) fail('normal catch missed a pass thrown by someone else');
+  let caughtPass = false;
+  for (let i = 0; i < 20; i++) {
+    const intent = blankIntent();
+    if (incoming.ball.position.z < incoming.tunables.grabReach + 0.3) intent.claim = true;
+    incoming.step(1 / 60, intent);
+    if (catcher.hasBall) {
+      caughtPass = true;
+      break;
+    }
+  }
+  if (!caughtPass) fail('grab missed a pass thrown by someone else');
 }
 
 function checkCatchPose(): void {
@@ -2801,10 +2842,10 @@ function checkBurst(): void {
   sim.step(1 / 60, burst);
   if (human.burstCooldown <= 0) fail('burst did not start a cooldown');
   if (human.actionPose !== 'burst') fail(`burst pose was ${human.actionPose}`);
-  if (human.velocity.z < sim.tunables.burstSpeed * 0.5) {
+  if (human.velocity.z < sim.tunables.diveSpeed * 0.5) {
     fail(`look burst was not along the camera (${human.velocity.z.toFixed(2)})`);
   }
-  if (human.velocity.length() > sim.tunables.burstSpeed * 1.05) {
+  if (human.velocity.length() > sim.tunables.diveSpeed * 1.08) {
     fail(`burst exceeded its cap (${human.velocity.length().toFixed(2)})`);
   }
 
@@ -2822,8 +2863,11 @@ function checkBurst(): void {
   sim.step(1 / 60, side);
   const right = lookBasis(0, 0, false).right;
   const along = human.velocity.dot(right);
-  if (along < sim.tunables.burstSpeed * 0.45) {
-    fail(`burst did not follow swim input (${along.toFixed(2)})`);
+  if (human.velocity.z < sim.tunables.diveSpeed * 0.45) {
+    fail(`dive did not lunge forward (${human.velocity.z.toFixed(2)})`);
+  }
+  if (Math.abs(along) > sim.tunables.diveSpeed * 0.35) {
+    fail(`dive followed the stick (${along.toFixed(2)})`);
   }
 
   human.position.set(0, 0, -8);
@@ -2841,7 +2885,7 @@ function checkBurst(): void {
   lunge.burst = true;
   lunge.strafe = true;
   sim.step(1 / 60, lunge);
-  if (human.velocity.dot(new THREE.Vector3(0, 0, 1)) < sim.tunables.burstSpeed * 0.45) {
+  if (human.velocity.dot(new THREE.Vector3(0, 0, 1)) < sim.tunables.diveSpeed * 0.45) {
     fail('strafe burst did not lunge along look');
   }
   if (human.facing.dot(new THREE.Vector3(0, 0, 1)) < 0.8) fail('burst broke catch-stance facing');
@@ -3039,6 +3083,10 @@ function checkShoulderCheck(): void {
   sim.setSoloOpponent(false);
   sim.kickoffLock = 0;
   sim.tunables.defenseActive = false;
+  sim.tunables.tackleKnockoutChance = 1;
+  sim.tunables.tackleAutograbChance = 0;
+  sim.tunables.tackleStaggerChance = 1;
+  sim.tunables.tackleMomentumKill = 0.6;
   const human = sim.getHuman();
   const enemy = sim.players.find((p) => p.team === 1 && p.role === 'ai');
   if (!enemy) fail('missing a carrier to check');
@@ -3070,11 +3118,11 @@ function checkShoulderCheck(): void {
   if (enemy.staggerTime <= 0) fail('checked swimmer was not staggered');
   if (human.hitFlash <= 0 || enemy.hitFlash <= 0) fail('check did not flash both swimmers');
   if (sim.cameraShake <= 0) fail('a landed check did not shake the camera');
-  if (human.burstCooldown < sim.tunables.lightBurstCooldown * 0.7) {
-    fail(`light check cooldown was ${human.burstCooldown.toFixed(2)}`);
+  if (human.burstCooldown < sim.tunables.diveCooldown * 0.7) {
+    fail(`dive cooldown was ${human.burstCooldown.toFixed(2)}`);
   }
-  if (human.burstCooldown > sim.tunables.lightBurstCooldown + 0.08) {
-    fail('a tap used the power-tackle cooldown');
+  if (human.burstCooldown > sim.tunables.diveCooldown + 0.08) {
+    fail('a dive used a longer cooldown than the slider');
   }
   const gap = human.position.distanceTo(enemy.position);
   if (gap < PLAYER.radius * 2 - 0.05) fail(`check left the bodies overlapping (${gap.toFixed(3)})`);
@@ -3104,14 +3152,13 @@ function checkShoulderCheck(): void {
   again.burst = true;
   again.move.set(0, 0, 1);
   friendly.step(1 / 60, again);
-  const friendlyBall: string = friendly.ball.possession;
-  if (pal.hasBall || friendlyBall !== 'free') fail('friendly check left the ball with a teammate');
-  if (pal.staggerTime <= 0) fail('friendly fire did not stagger the teammate');
+  if (!pal.hasBall || friendly.ball.possession !== 'held') fail('a dive tackled a teammate');
 
   const hit = new Simulation(defaultTunables());
   hit.setSoloOpponent(false);
   hit.kickoffLock = 0;
   hit.tunables.defenseActive = false;
+  hit.tunables.tackleStaggerChance = 1;
   const swimmer = hit.getHuman();
   const foe = hit.players.find((p) => p.team === 1 && p.role === 'ai');
   if (!foe) fail('missing checker');
@@ -3146,19 +3193,6 @@ function checkShoulderCheck(): void {
   }
 }
 
-function holdTackle(sim: Simulation, seconds: number, move = new THREE.Vector3(0, 0, 1)): void {
-  const press = blankIntent();
-  press.burst = true;
-  press.tackleHeld = true;
-  press.move.copy(move);
-  sim.step(1 / 60, press);
-  const held = blankIntent();
-  held.tackleHeld = true;
-  held.move.copy(move);
-  const frames = Math.max(0, Math.round(seconds * 60) - 1);
-  for (let i = 0; i < frames; i++) sim.step(1 / 60, held);
-}
-
 function checkTackleCharge(): void {
   const sim = new Simulation(defaultTunables());
   const human = solo(sim);
@@ -3173,147 +3207,125 @@ function checkTackleCharge(): void {
   sim.ball.possession = 'free';
   sim.ball.ownerId = null;
 
-  holdTackle(sim, 0.08);
-  if (!sim.tackleCharge.active || sim.tackleCharge.amount <= 0) fail('tackle charge did not show');
-  if (sim.tackleCharge.amount > sim.tunables.tackleTapTime / sim.tunables.tackleChargeTime + 0.08) {
-    fail(`a tap filled the bar to ${sim.tackleCharge.amount.toFixed(2)}`);
+  const dive = blankIntent();
+  dive.burst = true;
+  sim.step(1 / 60, dive);
+  if (sim.tackleCharge.active) fail('a dive still charged the old tackle bar');
+  if (human.burstTime <= 0) fail('a dive did not lunge on the click');
+  if (human.velocity.length() < sim.tunables.diveSpeed * 0.7) {
+    fail(`dive was too slow (${human.velocity.length().toFixed(2)})`);
   }
-  if (human.burstTime > 0) fail('the check lunged before release');
-  sim.step(1 / 60, blankIntent());
-  if (sim.tackleCharge.active) fail('the charge bar stayed up after release');
-  if (human.burstTime <= 0) fail('a short click did not shoulder-check');
-  if (human.staggerTime > 0) fail('a tap staggered the checker');
-  if (human.burstCooldown > sim.tunables.lightBurstCooldown + 0.02) fail('a tap took the power cooldown');
-  const tapSpeed = human.velocity.length();
-  if (tapSpeed > sim.tunables.lightBurstSpeed * 1.08) fail(`tap lunged at ${tapSpeed.toFixed(2)}`);
-  if (tapSpeed < sim.tunables.lightBurstSpeed * 0.7) fail(`tap was too weak (${tapSpeed.toFixed(2)})`);
-
-  const wait = blankIntent();
-  for (let i = 0; i < 40; i++) sim.step(1 / 60, wait);
   const blocked = blankIntent();
-  blocked.tackleHeld = true;
   blocked.burst = true;
-  human.burstCooldown = sim.tunables.lightBurstCooldown;
+  const cooling = human.burstCooldown;
   sim.step(1 / 60, blocked);
-  if (sim.tackleCharge.active) fail('a check on cooldown started a charge');
+  if (human.burstCooldown > cooling + 0.02) fail('a dive on cooldown started another lunge');
 
-  human.burstCooldown = 0;
-  human.burstTime = 0;
-  human.velocity.set(0, 0, 0);
-  holdTackle(sim, sim.tunables.tackleChargeTime);
-  if (sim.tackleCharge.amount < 0.95) fail(`full charge only reached ${sim.tackleCharge.amount.toFixed(2)}`);
-  sim.step(1 / 60, blankIntent());
-  if (sim.tackleCharge.active) fail('power release left the bar up');
-  const powerSpeed = human.velocity.length();
-  if (powerSpeed < sim.tunables.burstSpeed * 0.75) fail(`power tackle was ${powerSpeed.toFixed(2)}`);
-  if (human.staggerTime < sim.tunables.tackleSelfStagger * 0.5) fail('power tackle did not self-stagger');
-  if (human.burstCooldown < sim.tunables.burstCooldown * 0.7) {
-    fail(`power cooldown was ${human.burstCooldown.toFixed(2)}`);
+  const pin = (knockout: number, autograb: number, stagger: number, kill = 0.6) => {
+    const world = new Simulation(defaultTunables());
+    world.setSoloOpponent(false);
+    world.kickoffLock = 0;
+    world.tunables.defenseActive = false;
+    world.tunables.tackleKnockoutChance = knockout;
+    world.tunables.tackleAutograbChance = autograb;
+    world.tunables.tackleStaggerChance = stagger;
+    world.tunables.tackleMomentumKill = kill;
+    const you = solo(world);
+    const foe = world.players.find((p) => p.team === 1 && p.role === 'ai');
+    if (!foe) fail('missing a dive target');
+    you.position.set(0, 0, 0);
+    you.velocity.set(0, 0, 0);
+    you.facing.set(0, 0, 1);
+    you.up.set(0, 1, 0);
+    world.yaw = 0;
+    world.pitch = 0;
+    foe.position.set(0, 0, 2.2);
+    foe.velocity.set(0, 0, -20);
+    foe.active = true;
+    foe.hasBall = true;
+    world.ball.possession = 'held';
+    world.ball.ownerId = foe.id;
+    world.ball.position.set(0, 0.15, 1.7);
+    const press = blankIntent();
+    press.burst = true;
+    world.step(1 / 60, press);
+    return { world, you, foe };
+  };
+
+  const staggered = pin(0, 0, 1, 0.6);
+  if (!staggered.foe.hasBall) fail('a stagger roll knocked the ball out');
+  if (staggered.foe.staggerTime < PLAYER.checkStagger) fail('stagger was not stronger than a normal hit');
+
+  const ride = (kill: number) => {
+    const world = new Simulation(defaultTunables());
+    world.setSoloOpponent(false);
+    world.kickoffLock = 0;
+    world.tunables.defenseActive = false;
+    world.tunables.tackleStaggerChance = 1;
+    world.tunables.tackleKnockoutChance = 0;
+    world.tunables.tackleMomentumKill = kill;
+    const swimmer = solo(world);
+    const diver = world.players.find((p) => p.team === 1 && p.role === 'ai');
+    if (!diver) fail('missing a diver');
+    swimmer.position.set(0, 0, 0);
+    swimmer.velocity.set(0, 0, 16);
+    swimmer.facing.set(0, 0, 1);
+    swimmer.up.set(0, 1, 0);
+    world.yaw = 0;
+    world.pitch = 0;
+    diver.position.set(0, 0, 1.5);
+    diver.burstTime = 0.3;
+    diver.burstDir.set(0, 0, -1);
+    diver.active = true;
+    world.ball.position.set(20, 20, 20);
+    world.ball.claimLock = 5;
+    world.step(1 / 60, blankIntent());
+    return swimmer.velocity.z;
+  };
+  const killed = ride(0.6);
+  const keptSpeed = ride(0);
+  if (killed > keptSpeed - 4) {
+    fail(`momentum kill ${killed.toFixed(2)} did not shed the run ${keptSpeed.toFixed(2)}`);
   }
 
-  const lightHit = new Simulation(defaultTunables());
-  lightHit.setSoloOpponent(false);
-  lightHit.kickoffLock = 0;
-  lightHit.tunables.defenseActive = false;
-  const tapper = solo(lightHit);
-  const lightFoe = lightHit.players.find((p) => p.team === 1 && p.role === 'ai');
-  if (!lightFoe) fail('missing a light-check target');
-  tapper.position.set(0, 0, 0);
-  tapper.velocity.set(0, 0, 0);
-  tapper.facing.set(0, 0, 1);
-  tapper.up.set(0, 1, 0);
-  lightHit.yaw = 0;
-  lightHit.pitch = 0;
-  lightFoe.position.set(0, 0, 0.85);
-  lightFoe.velocity.set(0, 0, 0);
-  lightFoe.active = true;
-  lightFoe.hasBall = true;
-  lightHit.ball.possession = 'held';
-  lightHit.ball.ownerId = lightFoe.id;
-  lightHit.ball.position.set(0, 0.15, 1.5);
-  const tap = blankIntent();
-  tap.burst = true;
-  tap.move.set(0, 0, 1);
-  lightHit.step(1 / 60, tap);
-  const lightLoose: string = lightHit.ball.possession;
-  if (lightFoe.hasBall || lightLoose !== 'free') fail('a tap did not pop the ball');
-  const lightKnock = lightFoe.velocity.length();
-
-  const powerHit = new Simulation(defaultTunables());
-  powerHit.setSoloOpponent(false);
-  powerHit.kickoffLock = 0;
-  powerHit.tunables.defenseActive = false;
-  powerHit.tunables.tacklePopMin = 1;
-  powerHit.tunables.tacklePopMax = 1;
-  const charger = solo(powerHit);
-  const powerFoe = powerHit.players.find((p) => p.team === 1 && p.role === 'ai');
-  if (!powerFoe) fail('missing a power-tackle target');
-  charger.position.set(0, 0, 0);
-  charger.velocity.set(0, 0, 0);
-  charger.facing.set(0, 0, 1);
-  charger.up.set(0, 1, 0);
-  powerHit.yaw = 0;
-  powerHit.pitch = 0;
-  powerFoe.position.set(0, 0, 0.85);
-  powerFoe.velocity.set(0, 0, 0);
-  powerFoe.active = true;
-  powerFoe.hasBall = true;
-  powerHit.ball.possession = 'held';
-  powerHit.ball.ownerId = powerFoe.id;
-  powerHit.ball.position.set(0, 0.15, 1.5);
-  holdTackle(powerHit, powerHit.tunables.tackleChargeTime);
-  powerHit.step(1 / 60, blankIntent());
-  const powerLoose: string = powerHit.ball.possession;
-  if (powerFoe.hasBall || powerLoose !== 'free') fail('a full power tackle did not pop the ball');
-  if (powerFoe.velocity.length() < lightKnock + 4) {
-    fail(`power knock ${powerFoe.velocity.length().toFixed(2)} was not above the tap ${lightKnock.toFixed(2)}`);
+  const loose = pin(1, 0, 0, 0);
+  if (loose.foe.hasBall || loose.world.ball.possession !== 'free') fail('knock-out did not free the ball');
+  if (loose.you.hasBall) fail('a missed auto-grab still gave the tackler the ball');
+  if (loose.world.ball.velocity.z < 6) {
+    fail(`loose ball did not take the dive (${loose.world.ball.velocity.z.toFixed(2)})`);
   }
-  if (powerFoe.staggerTime <= 0) fail('power tackle did not stagger the target');
-  const pal = powerHit.players.find((p) => p.team === 0 && p.role === 'ai');
-  if (!pal) fail('missing a teammate for friendly fire');
-  charger.burstCooldown = 0;
-  charger.burstTime = 0;
-  charger.staggerTime = 0;
-  charger.position.set(0, 0, 0);
-  charger.velocity.set(0, 0, 0);
-  pal.position.set(0, 0, 0.85);
-  pal.velocity.set(0, 0, 0);
+
+  const stolen = pin(1, 1, 1, 0.6);
+  if (!stolen.you.hasBall || stolen.foe.hasBall) fail('auto-grab did not give the dive the ball');
+  if (stolen.foe.staggerTime < 0.5) fail('stagger and knock-out did not both land');
+
+  const kept = pin(0, 1, 0, 0);
+  if (!kept.foe.hasBall) fail('a missed knock-out still freed the ball');
+
+  const mate = new Simulation(defaultTunables());
+  mate.setSoloOpponent(false);
+  mate.kickoffLock = 0;
+  mate.tunables.defenseActive = false;
+  mate.tunables.tackleKnockoutChance = 1;
+  mate.tunables.tackleAutograbChance = 1;
+  const diver = solo(mate);
+  const pal = mate.players.find((p) => p.team === 0 && p.role === 'ai');
+  if (!pal) fail('missing a teammate');
+  diver.position.set(0, 0, 0);
+  diver.facing.set(0, 0, 1);
+  diver.up.set(0, 1, 0);
+  mate.yaw = 0;
+  mate.pitch = 0;
+  pal.position.set(0, 0, 1.1);
   pal.active = true;
   pal.hasBall = true;
-  powerHit.ball.possession = 'held';
-  powerHit.ball.ownerId = pal.id;
-  powerHit.ball.position.set(0, 0.15, 1.5);
-  holdTackle(powerHit, powerHit.tunables.tackleChargeTime);
-  powerHit.step(1 / 60, blankIntent());
-  const friendLoose: string = powerHit.ball.possession;
-  if (pal.hasBall || friendLoose !== 'free') fail('power tackle did not check a teammate');
-
-  const whiff = new Simulation(defaultTunables());
-  whiff.setSoloOpponent(false);
-  whiff.kickoffLock = 0;
-  whiff.tunables.defenseActive = false;
-  whiff.tunables.tacklePopMin = 0;
-  whiff.tunables.tacklePopMax = 0;
-  const swimmer = solo(whiff);
-  const holder = whiff.players.find((p) => p.team === 1 && p.role === 'ai');
-  if (!holder) fail('missing a carrier who keeps the ball');
-  swimmer.position.set(0, 0, 0);
-  swimmer.velocity.set(0, 0, 0);
-  swimmer.facing.set(0, 0, 1);
-  swimmer.up.set(0, 1, 0);
-  whiff.yaw = 0;
-  whiff.pitch = 0;
-  holder.position.set(0, 0, 0.85);
-  holder.velocity.set(0, 0, 0);
-  holder.active = true;
-  holder.hasBall = true;
-  whiff.ball.possession = 'held';
-  whiff.ball.ownerId = holder.id;
-  whiff.ball.position.set(0, 0.15, 1.5);
-  holdTackle(whiff, whiff.tunables.tackleChargeTime);
-  whiff.step(1 / 60, blankIntent());
-  if (!holder.hasBall || whiff.ball.possession !== 'held') fail('a zero pop chance still stripped the ball');
-  if (holder.staggerTime <= 0 || holder.velocity.length() < 4) fail('a missed pop did not knock the carrier');
+  mate.ball.possession = 'held';
+  mate.ball.ownerId = pal.id;
+  mate.ball.position.set(0, 0.15, 1.6);
+  const atPal = blankIntent();
+  atPal.burst = true;
+  mate.step(1 / 60, atPal);
+  if (!pal.hasBall) fail('a dive took the ball from a teammate');
 }
 
 function checkDrillOpponent(): void {
@@ -3776,6 +3788,8 @@ function checkCarryPalm(): void {
   checkSim.setSoloOpponent(false);
   checkSim.kickoffLock = 0;
   checkSim.tunables.defenseActive = false;
+  checkSim.tunables.tackleKnockoutChance = 1;
+  checkSim.tunables.tackleAutograbChance = 0;
   const you = checkSim.getHuman();
   const enemy = checkSim.players.find((p) => p.team === 1 && p.role === 'ai');
   if (!enemy) fail('missing a carrier to check');

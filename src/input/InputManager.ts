@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { INPUT } from '../game/constants';
+import { INPUT, PLAYER } from '../game/constants';
 import type { InputIntent } from '../game/types';
 import { PrimaryClickGate } from './primaryClickGate';
 
@@ -38,6 +38,18 @@ export function browserKeyBlocked(code: string, ctrl: boolean): boolean {
   return ctrl;
 }
 
+/**
+ * A click is always a grab, on this frame. A second click inside the window
+ * is also a dive. The first click does not wait to find out.
+ */
+export function classifyGrabClick(
+  nowMs: number,
+  lastMs: number,
+  windowMs = PLAYER.grabDouble * 1000,
+): { grab: true; dive: boolean } {
+  return { grab: true, dive: lastMs >= 0 && nowMs - lastMs <= windowMs && nowMs - lastMs >= 0 };
+}
+
 function deadzone(v: number, dz = INPUT.stickDeadzone): number {
   if (Math.abs(v) < dz) return 0;
   const sign = Math.sign(v);
@@ -62,9 +74,11 @@ export class InputManager {
   /** Set when pointerrawupdate already recorded this frame's motion. */
   private sawPointerDelta = false;
   private canvas: HTMLElement;
-  private padButtons = { a: false, b: false, x: false, y: false, rb: false, rt: false, rs: false };
-  private rbPending = false;
-  private rbTime = 0;
+  private padButtons = { a: false, b: false, x: false, y: false, rb: false, rt: false, rs: false, l3: false };
+  private lastGrabMs = -1;
+  private lastPadGrabMs = -1;
+  private grabEdge = false;
+  private diveEdge = false;
 
   constructor(canvas: HTMLElement) {
     this.canvas = canvas;
@@ -315,6 +329,11 @@ export class InputManager {
       if (accept) {
         this.lmbDown = true;
         this.lmbPressed = true;
+        const now = performance.now();
+        const click = classifyGrabClick(now, this.lastGrabMs);
+        this.grabEdge = click.grab;
+        if (click.dive) this.diveEdge = true;
+        this.lastGrabMs = now;
       }
     }
     if (e.button === 1 && this.pointerLocked) this.mmbPressed = true;
@@ -347,7 +366,7 @@ export class InputManager {
     return codes.some((c) => this.justPressed.has(c));
   }
 
-  private readGamepad(frameDt: number): Partial<InputIntent> | null {
+  private readGamepad(_frameDt: number): Partial<InputIntent> | null {
     const pads = navigator.getGamepads?.() ?? [];
     const pad = pads.find((p) => p && p.connected);
     if (!pad) return null;
@@ -377,24 +396,18 @@ export class InputManager {
     const yEdge = y && !this.padButtons.y;
     const rtEdge = rt && !this.padButtons.rt;
     const rsEdge = rs && !this.padButtons.rs;
-    let burst = false;
-    let burstPower = false;
-    if (rb && !this.padButtons.rb) {
-      this.rbPending = true;
-      this.rbTime = 0;
+    const l3 = down(9);
+    const l3Edge = l3 && !this.padButtons.l3;
+    const rbEdge = rb && !this.padButtons.rb;
+    // X grabs. A second X inside the window, Y, or RB dives. Y used to drop;
+    // dropping the ball on a pad is the left stick click.
+    let burst = yEdge || rbEdge;
+    if (xEdge) {
+      const now = performance.now();
+      if (classifyGrabClick(now, this.lastPadGrabMs).dive) burst = true;
+      this.lastPadGrabMs = now;
     }
-    if (rb && this.rbPending) {
-      this.rbTime += frameDt;
-      if (this.rbTime >= 0.28) {
-        burstPower = true;
-        this.rbPending = false;
-      }
-    }
-    if (!rb && this.padButtons.rb && this.rbPending) {
-      burst = true;
-      this.rbPending = false;
-    }
-    this.padButtons = { a, b, x, y, rb, rt, rs };
+    this.padButtons = { a, b, x, y, rb, rt, rs, l3 };
 
     return {
       move: new THREE.Vector3(lx, 0, -ly),
@@ -406,14 +419,14 @@ export class InputManager {
       sprint: down(10),
       strafe: lt,
       claim: aEdge || xEdge,
-      drop: yEdge,
+      drop: l3Edge,
       kick: bEdge,
       kickHeld: b,
       shoot: rtEdge,
       shootHeld: rt,
       burst,
-      burstPower,
-      tackleHeld: rb,
+      burstPower: false,
+      tackleHeld: false,
       passHeld: false,
       zoomOut: lb,
       zoomTogglePressed: rsEdge,
@@ -453,7 +466,7 @@ export class InputManager {
       up: (this.anyDown(KEYS.up) ? 1 : 0) - (this.anyDown(KEYS.down) ? 1 : 0),
       sprint: this.anyDown(KEYS.sprint),
       strafe: this.rmbDown,
-      claim: this.anyJust(KEYS.claim),
+      claim: this.anyJust(KEYS.claim) || this.grabEdge,
       drop: this.anyJust(KEYS.drop),
       pass: this.anyJust(KEYS.pass),
       shoot: this.lmbPressed,
@@ -462,8 +475,9 @@ export class InputManager {
       kickHeld: this.anyDown(KEYS.kick),
       burstPower: false,
       aimCancel: this.rmbPressed,
-      burst: this.anyJust(KEYS.tackle),
-      tackleHeld: this.anyDown(KEYS.tackle),
+      // Q is a dive, the same lunge as a double-click. It is not a charge.
+      burst: this.anyJust(KEYS.tackle) || this.diveEdge,
+      tackleHeld: false,
       passHeld: this.anyDown(KEYS.pass),
       zoomOut: this.anyDown(KEYS.zoom),
       zoomTogglePressed: this.anyJust(KEYS.zoom),
@@ -511,6 +525,8 @@ export class InputManager {
     };
     this.justPressed.clear();
     this.lmbPressed = false;
+    this.grabEdge = false;
+    this.diveEdge = false;
     this.rmbPressed = false;
     this.mmbPressed = false;
     this.sawPointerDelta = false;
