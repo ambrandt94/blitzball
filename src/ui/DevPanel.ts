@@ -366,6 +366,8 @@ export function defaultTunables(): Tunables {
     waterTint: waterColors.tint,
     waterDeep: waterColors.deep,
     waterFog: waterColors.fog,
+    waterClarity: waterColors.clarity,
+    waterFogStart: waterColors.fogStart,
     stadiumDetail: 'high',
     crowdDensity: 'high',
     arenaRadius: ARENA_RADIUS,
@@ -725,8 +727,10 @@ export class DevPanel {
       this.range('Caustic speed', 'causticFps', CAUSTIC_FPS_MIN, CAUSTIC_FPS_MAX, 0.05);
       this.range('Scroll speed', 'causticScroll', CAUSTIC_SCROLL_MIN, CAUSTIC_SCROLL_MAX, 0.005);
       this.bool('Light bands', 'showLightBands');
+      this.range('Water clarity', 'waterClarity', 0, 1, 0.01);
+      this.range('Fog start distance', 'waterFogStart', 0, 40, 0.5);
       this.waterColor('Water tint', 'waterTint');
-      this.waterColor('Deep color', 'waterDeep');
+      this.waterColor('Deep water color', 'waterDeep');
       this.waterColor('Fog color', 'waterFog');
       this.waterReset();
     });
@@ -1270,6 +1274,7 @@ export class DevPanel {
     input.min = String(min);
     input.max = String(max);
     input.step = String(step);
+    input.dataset.key = key;
     input.value = String(this.tunables[key]);
     if (key === 'timeScale') input.dataset.timeScale = '1';
     const value = document.createElement('span');
@@ -1280,7 +1285,17 @@ export class DevPanel {
       const n = parseFloat(input.value);
       (this.tunables as unknown as Record<string, unknown>)[key] = n;
       value.textContent = n.toFixed(2);
-      if (key === 'arenaRadius' || key === 'waterPixelScale' || key === 'causticFps' || key === 'causticScroll') this.onChange(key);
+      if (
+        key === 'arenaRadius' ||
+        key === 'waterPixelScale' ||
+        key === 'causticFps' ||
+        key === 'causticScroll' ||
+        key === 'waterClarity' ||
+        key === 'waterFogStart'
+      ) {
+        this.onChange(key);
+      }
+      if (key === 'waterClarity' || key === 'waterFogStart') saveWaterColors(this.waterColors());
       if (key === 'curveAimOffset') saveCurveAimOffset(n);
       if (key === 'snapAimStrength') {
         const clamped = Math.min(1, Math.max(0, n));
@@ -1307,7 +1322,19 @@ export class DevPanel {
       tint: this.tunables.waterTint,
       deep: this.tunables.waterDeep,
       fog: this.tunables.waterFog,
+      clarity: this.tunables.waterClarity,
+      fogStart: this.tunables.waterFogStart,
     };
+  }
+
+  private syncWaterFogSliders(): void {
+    for (const key of ['waterClarity', 'waterFogStart'] as const) {
+      const input = this.root.querySelector<HTMLInputElement>(`input[data-key="${key}"]`);
+      if (!input) continue;
+      input.value = String(this.tunables[key]);
+      const readout = input.parentElement?.querySelector('.value');
+      if (readout) readout.textContent = Number(this.tunables[key]).toFixed(2);
+    }
   }
 
   private syncWaterColorInputs(): void {
@@ -1352,13 +1379,16 @@ export class DevPanel {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'add-bot';
-    button.textContent = 'Reset water colors';
+    button.textContent = 'Reset water';
     button.addEventListener('click', () => {
       const colors = colorsForPreset('Clearer');
       this.tunables.waterTint = colors.tint;
       this.tunables.waterDeep = colors.deep;
       this.tunables.waterFog = colors.fog;
+      this.tunables.waterClarity = colors.clarity;
+      this.tunables.waterFogStart = colors.fogStart;
       this.syncWaterColorInputs();
+      this.syncWaterFogSliders();
       saveWaterColors(colors);
       this.onChange('waterTint');
     });

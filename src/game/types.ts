@@ -263,10 +263,14 @@ export interface Tunables {
   showLightBands: boolean;
   /** Mid water colour. `#2E8A84` is the Clearer body. */
   waterTint: string;
-  /** Darkest water step. */
+  /** Deep water the distance falloff blends toward. */
   waterDeep: string;
-  /** Inside distance haze. */
+  /** Kept with the palette. The falloff target is `waterDeep`. */
   waterFog: string;
+  /** 1 is clear water. 0 is the thickest fog. */
+  waterClarity: number;
+  /** Metres that stay untinted before the falloff begins. */
+  waterFogStart: number;
   /** Instanced colosseum. Off hides it. Low drops towers, banners, and halos. */
   stadiumDetail: StadiumDetail;
   /** Instanced spectator billboards. */

@@ -1,14 +1,19 @@
 import * as THREE from 'three';
+import { WATER_FOG_CAP, WATER_FOG_DENSITY_MAX, fogDensityFromClarity } from './waterSettings';
 
 /**
- * Inside the sphere the water is three hard steps (sphere_palette.json).
- * Outside the play volume, the stands pick up a cyan posterize instead of
- * the deep fog, so the crowd still reads when you look out through the shell.
- * Classic water leaves three.js exp fog alone.
+ * One exponential-squared falloff for everything inside the sphere.
+ * The first `uFogStart` metres stay true. Past that, colour eases toward
+ * deep water and stops at `uFogCap`, so the far side stays readable.
+ * Outside the shell the same mix eases toward a lighter tint instead of
+ * posterizing. Classic water leaves three.js exp fog alone.
  */
 export const waterFogUniforms = {
+  /** 0 classic exp2, 1 full underwater falloff. Values between ease the two. */
   trail: { value: 0 },
-  edges: { value: new THREE.Vector3(6, 14, 26) },
+  density: { value: fogDensityFromClarity(0.68) },
+  start: { value: 8 },
+  cap: { value: WATER_FOG_CAP },
   nearC: { value: new THREE.Color('#2E8A84') },
   midC: { value: new THREE.Color('#1F6066') },
   farC: { value: new THREE.Color('#163A48') },
@@ -19,25 +24,15 @@ export const waterFogUniforms = {
 
 const FOG_CHUNK = /* glsl */ `
 #ifdef USE_FOG
-  if (uTrailFog > 0.5) {
-    float b = bayer4(gl_FragCoord.xy);
-    float dist = vFogDepth;
-    float seam = 0.0;
-    if (abs(dist - uFogEdges.x) < 0.55 || abs(dist - uFogEdges.y) < 0.55 || abs(dist - uFogEdges.z) < 0.55) {
-      seam = (b - 0.5) * 1.05;
-    }
-    float d = dist + seam;
-    vec3 fc = uFogNearC;
-    float m = 0.22;
-    if (d > uFogEdges.x) { fc = uFogNearC; m = 0.48; }
-    if (d > uFogEdges.y) { fc = uFogMidC; m = 0.7; }
-    if (d > uFogEdges.z) { fc = uFogFarC; m = 0.85; }
-    if (length(vTrailWorld) > uArenaRadius * 1.01) {
-      float band = step(0.45, fract(vTrailWorld.y * 0.08 + b * 0.15));
-      fc = mix(uFogOutA, uFogOutB, band);
-      m = 0.34;
-    }
-    gl_FragColor.rgb = mix(gl_FragColor.rgb, fc, m);
+  if (uTrailFog > 0.001) {
+    float dist = max(0.0, vFogDepth - uFogStart);
+    float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
+    fogFactor = min(fogFactor, uFogCap) * clamp(uTrailFog, 0.0, 1.0);
+    vec3 fc = uFogFarC;
+    float outside = smoothstep(uArenaRadius * 0.985, uArenaRadius * 1.1, length(vTrailWorld));
+    fc = mix(fc, uFogOutA, outside);
+    fogFactor *= mix(1.0, 0.28, outside);
+    gl_FragColor.rgb = mix(gl_FragColor.rgb, fc, fogFactor);
   } else {
     #ifdef FOG_EXP2
       float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
@@ -49,24 +44,15 @@ const FOG_CHUNK = /* glsl */ `
 #endif
 `;
 
-const BAYER = /* glsl */ `
-float bayer4(vec2 p) {
-  int x = int(mod(p.x, 4.0));
-  int y = int(mod(p.y, 4.0));
-  if (y == 0) { if (x == 0) return 0.0; if (x == 1) return 0.5; if (x == 2) return 0.125; return 0.625; }
-  if (y == 1) { if (x == 0) return 0.75; if (x == 1) return 0.25; if (x == 2) return 0.875; return 0.375; }
-  if (y == 2) { if (x == 0) return 0.1875; if (x == 1) return 0.6875; if (x == 2) return 0.0625; return 0.5625; }
-  if (x == 0) return 0.9375; if (x == 1) return 0.4375; if (x == 2) return 0.8125; return 0.3125;
-}
-`;
-
 export function installWaterFog(shader: {
   uniforms: Record<string, { value: unknown }>;
   vertexShader: string;
   fragmentShader: string;
 }): void {
   shader.uniforms.uTrailFog = waterFogUniforms.trail;
-  shader.uniforms.uFogEdges = waterFogUniforms.edges;
+  shader.uniforms.uFogDensity = waterFogUniforms.density;
+  shader.uniforms.uFogStart = waterFogUniforms.start;
+  shader.uniforms.uFogCap = waterFogUniforms.cap;
   shader.uniforms.uFogNearC = waterFogUniforms.nearC;
   shader.uniforms.uFogMidC = waterFogUniforms.midC;
   shader.uniforms.uFogFarC = waterFogUniforms.farC;
@@ -98,8 +84,7 @@ export function installWaterFog(shader: {
     );
   }
   shader.fragmentShader =
-    'varying vec3 vTrailWorld;\nuniform float uTrailFog;\nuniform vec3 uFogEdges;\nuniform vec3 uFogNearC;\nuniform vec3 uFogMidC;\nuniform vec3 uFogFarC;\nuniform vec3 uFogOutA;\nuniform vec3 uFogOutB;\nuniform float uArenaRadius;\n' +
-    BAYER +
+    'varying vec3 vTrailWorld;\nuniform float uTrailFog;\nuniform float uFogDensity;\nuniform float uFogStart;\nuniform float uFogCap;\nuniform vec3 uFogNearC;\nuniform vec3 uFogMidC;\nuniform vec3 uFogFarC;\nuniform vec3 uFogOutA;\nuniform vec3 uFogOutB;\nuniform float uArenaRadius;\n' +
     shader.fragmentShader.replace('#include <fog_fragment>', FOG_CHUNK);
 }
 
@@ -126,7 +111,7 @@ export function ensureWaterFog(material: THREE.Material): void {
     installWaterFog(shader);
   };
   const previousKey = material.customProgramCacheKey?.bind(material);
-  material.customProgramCacheKey = () => `${previousKey ? previousKey() : ''}|trailfog`;
+  material.customProgramCacheKey = () => `${previousKey ? previousKey() : ''}|waterfog-exp2`;
   material.needsUpdate = true;
 }
 
@@ -141,16 +126,21 @@ export function patchSceneWaterFog(root: THREE.Object3D): void {
   });
 }
 
-/** Near, mid, and far fog steps. Defaults match the Clearer palette. */
+/** Near tint and the deep-water target. The mid colour is kept for the palette. */
 export function setWaterPalette(tint: string, fog: string, deep: string): void {
   waterFogUniforms.nearC.value.set(tint);
   waterFogUniforms.midC.value.set(fog);
   waterFogUniforms.farC.value.set(deep);
 }
 
-export function setWaterFogState(style: 'trailbound' | 'classic', inside: boolean, arenaRadius: number): void {
-  const scale = arenaRadius / 68;
+/** `inside` is 0 outside the shell and 1 deep inside. Values between are the ease. */
+export function setWaterFogState(style: 'trailbound' | 'classic', inside: number, arenaRadius: number): void {
   waterFogUniforms.radius.value = arenaRadius;
-  waterFogUniforms.edges.value.set(6 * scale, 14 * scale, 26 * scale);
-  waterFogUniforms.trail.value = style === 'trailbound' && inside ? 1 : 0;
+  waterFogUniforms.trail.value = style === 'trailbound' ? THREE.MathUtils.clamp(inside, 0, 1) : 0;
+}
+
+export function setWaterFalloff(density: number, start: number, cap = WATER_FOG_CAP): void {
+  waterFogUniforms.density.value = Math.min(WATER_FOG_DENSITY_MAX, Math.max(0, density));
+  waterFogUniforms.start.value = Math.max(0, start);
+  waterFogUniforms.cap.value = cap;
 }

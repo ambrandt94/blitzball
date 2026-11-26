@@ -7,6 +7,14 @@
 export const WATER_TINT_DEFAULT = '#2E8A84';
 export const WATER_DEEP_DEFAULT = '#163A48';
 export const WATER_FOG_DEFAULT = '#1F6066';
+/** 1 is clear water. 0 is the thickest fog the slider allows. */
+export const WATER_CLARITY_DEFAULT = 0.68;
+/** Metres that stay untinted before the falloff begins. */
+export const WATER_FOG_START_DEFAULT = 8;
+/** Density at clarity 0. Clarity 1 is no fog. */
+export const WATER_FOG_DENSITY_MAX = 0.028;
+/** Far objects keep at least this much of their own colour. */
+export const WATER_FOG_CAP = 0.48;
 
 /**
  * Frames per second of the 4-frame web. 0.4 makes one full cross-fade cycle
@@ -38,6 +46,8 @@ export interface WaterColors {
   tint: string;
   deep: string;
   fog: string;
+  clarity: number;
+  fogStart: number;
 }
 
 export function defaultWaterColors(): WaterColors {
@@ -45,7 +55,26 @@ export function defaultWaterColors(): WaterColors {
     tint: WATER_TINT_DEFAULT,
     deep: WATER_DEEP_DEFAULT,
     fog: WATER_FOG_DEFAULT,
+    clarity: WATER_CLARITY_DEFAULT,
+    fogStart: WATER_FOG_START_DEFAULT,
   };
+}
+
+/** Higher clarity is less fog. 1 leaves colours alone. */
+export function fogDensityFromClarity(clarity: number): number {
+  const c = Math.min(1, Math.max(0, clarity));
+  return (1 - c) * WATER_FOG_DENSITY_MAX;
+}
+
+/**
+ * Exponential-squared underwater falloff. Nothing inside `start` metres is
+ * tinted, the curve is smooth, and the result never passes `cap`.
+ */
+export function waterFogFactor(distance: number, density: number, start: number, cap = WATER_FOG_CAP): number {
+  const dist = Math.max(0, distance - Math.max(0, start));
+  const d = Math.max(0, density);
+  const factor = 1 - Math.exp(-d * d * dist * dist);
+  return Math.min(cap, Math.max(0, factor));
 }
 
 /** Shared palette. Presets differ by shading, then write these into the pickers. */
@@ -103,6 +132,12 @@ export function parseWaterColors(raw: unknown): WaterColors {
   if (validHex(data.tint)) base.tint = data.tint;
   if (validHex(data.deep)) base.deep = data.deep;
   if (validHex(data.fog)) base.fog = data.fog;
+  if (typeof data.clarity === 'number' && Number.isFinite(data.clarity)) {
+    base.clarity = Math.min(1, Math.max(0, data.clarity));
+  }
+  if (typeof data.fogStart === 'number' && Number.isFinite(data.fogStart)) {
+    base.fogStart = Math.min(40, Math.max(0, data.fogStart));
+  }
   return base;
 }
 

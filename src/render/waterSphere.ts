@@ -4,9 +4,12 @@ import {
   CAUSTIC_SCROLL_DEFAULT,
   LIGHT_BANDS_DEFAULT,
   WATER_DEEP_DEFAULT,
+  WATER_FOG_CAP,
+  WATER_FOG_START_DEFAULT,
   WATER_HALO_SCALE,
   WATER_TINT_DEFAULT,
   causticPhase,
+  fogDensityFromClarity,
   gradeMul,
 } from './waterSettings';
 
@@ -84,6 +87,9 @@ uniform float uArcQuad;
 
 uniform sampler2D uFogLUT;
 uniform vec3  uFogSteps;
+uniform float uFogDensity;
+uniform float uFogStart;
+uniform float uFogCap;
 uniform float uInsideBgGain;
 uniform vec3  uInsideCaustic;
 uniform float uInsideCausticCover;
@@ -161,16 +167,19 @@ void main() {
   if (uInside > 0.5) {
     float t = -b + sqrt(max(h, 0.0));
     vec3 p = ro + rd * t, n = normalize(p - uCenter);
-    float tj = t + (bay - 0.5) * 2.0;
-    float stp = tj < uFogSteps.x ? 0.0 : (tj < uFogSteps.y ? 1.0 : 2.0);
-    float k = 2.0 - stp;
+    // Same exp2 curve as the swimmers and the ball. No distance steps.
+    float dist = max(0.0, t - uFogStart);
+    float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
+    fogFactor = clamp(fogFactor, 0.0, uFogCap);
+    float k = 2.0;
     if (uRefraction > 0.5) k += floor(luma(texture(uBg, suv).rgb) * uInsideBgGain);
     if (uRays > 0.5 && mod(vp.x - (uResolution.y / uPixel - vp.y) * uRay.z, uRay.x) < uRay.y) k += 1.0;
     vec3 col = lut(uBodyLUT, clamp(k, 0.0, uBodySteps - 1.0), uBodySteps).rgb;
-    if (uRefraction < 0.5) col = lut(uFogLUT, stp, 3.0).rgb;
-    if (uRefraction < 0.5 && uRays > 0.5 && mod(vp.x - (uResolution.y / uPixel - vp.y) * uRay.z, uRay.x) < uRay.y) col = lut(uBodyLUT, 3.0 - stp, uBodySteps).rgb;
+    if (uRefraction < 0.5) col = lut(uFogLUT, 0.0, 3.0).rgb;
+    vec3 deepCol = lut(uFogLUT, 2.0, 3.0).rgb;
+    col = mix(col, deepCol, fogFactor);
     if (bay < uInsideCausticCover) {
-      col = mix(col, uInsideCaustic, webMask(p, n, vp, cvp, uInsideWebTile));
+      col = mix(col, uInsideCaustic, webMask(p, n, vp, cvp, uInsideWebTile) * (1.0 - fogFactor));
     }
     fragColor = vec4(gradeWater(col), 1.0);
     return;
@@ -268,6 +277,7 @@ export interface WaterSphere {
   setCausticScroll(speed: number): void;
   setLightBands(on: boolean): void;
   setColors(tint: string, deep: string): void;
+  setFalloff(density: number, start: number): void;
   dispose(): void;
 }
 
@@ -330,6 +340,9 @@ export function createWaterSphere(opts: {
     uArcQuad: { value: 0.35 },
     uFogLUT: { value: lutTexture(loader, `${base}lut_inner_fog_3x1.png`) },
     uFogSteps: { value: new THREE.Vector3(radius * 0.9, radius * 1.5, radius * 2) },
+    uFogDensity: { value: fogDensityFromClarity(0.68) },
+    uFogStart: { value: WATER_FOG_START_DEFAULT },
+    uFogCap: { value: WATER_FOG_CAP },
     uInsideBgGain: { value: 2 },
     uInsideCaustic: { value: hex(WATER[6]) },
     uInsideCausticCover: { value: 0.75 },
@@ -469,6 +482,11 @@ export function createWaterSphere(opts: {
       const deepMul = gradeMul(deep, WATER_DEEP_DEFAULT);
       u.uGradeTint.value.set(tintMul[0], tintMul[1], tintMul[2]);
       u.uGradeDeep.value.set(deepMul[0], deepMul[1], deepMul[2]);
+    },
+    setFalloff(density: number, start: number): void {
+      u.uFogDensity.value = Math.max(0, density);
+      u.uFogStart.value = Math.max(0, start);
+      u.uFogCap.value = WATER_FOG_CAP;
     },
     dispose(): void {
       state.rt?.dispose();
