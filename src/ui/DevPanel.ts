@@ -17,6 +17,8 @@ import {
 } from './indicatorSettings';
 import { matchRoster, presetAllowsGoalieToggle } from './matchPresets';
 import { SettingsPanel, type SettingValue } from './settingsPanel';
+import { resolvePowerMode } from './powerMode';
+import { cycleWaterLook, loadCustomWaterLook, saveCustomWaterLook, WATER_LOOKS, type WaterLookId } from './waterLooks';
 import {
   applyCameraPreset,
   applyCameraSave,
@@ -35,6 +37,7 @@ import {
   CAUSTIC_SCROLL_MIN,
   LIGHT_BANDS_DEFAULT,
   colorsForPreset,
+  defaultWaterColors,
   loadWaterColors,
   saveWaterColors,
   type WaterColors,
@@ -71,17 +74,6 @@ export interface RosterControl {
 export interface CharacterMenu {
   outfits: { id: string; label: string }[];
   onChange: (settings: CharacterSettings) => void;
-}
-
-function loadPowerMode(): PowerMode | null {
-  try {
-    if (typeof localStorage === 'undefined') return null;
-    const value = localStorage.getItem(POWER_MODE_KEY);
-    if (value === 'meter' || value === 'tap' || value === 'hold' || value === 'target' || value === 'pull') return value;
-  } catch {
-    // Headless or blocked storage. Keep the built-in default.
-  }
-  return null;
 }
 
 function savePowerMode(mode: PowerMode): void {
@@ -243,8 +235,14 @@ function saveCurveAimOffset(value: number): void {
   }
 }
 
+function assignTunables(target: Tunables, source: Tunables): void {
+  const into = target as unknown as Record<string, unknown>;
+  const from = source as unknown as Record<string, unknown>;
+  for (const key of Object.keys(from)) into[key] = from[key];
+}
+
 export function defaultTunables(): Tunables {
-  const waterColors = loadWaterColors();
+  const waterColors = defaultWaterColors();
   return {
     // World-Y reads clearer in greybox; goal-axis remains a Dev toggle (Alex unsure).
     goalAxisUp: false,
@@ -315,7 +313,7 @@ export function defaultTunables(): Tunables {
     arcHandCurve: SHOT_ARC.handCurve,
     shotPowerRate: SHOT_ARC.powerRate,
     shotPowerAngle: SHOT_ARC.powerAngle,
-    powerMode: 'meter',
+    powerMode: 'hold',
     tapWindow: SHOT_ARC.tapWindow,
     tapMax: SHOT_ARC.tapMax,
     teammateLockRadius: SHOT_ARC.teammateLockRadius,
@@ -340,6 +338,7 @@ export function defaultTunables(): Tunables {
     throwSpeedScale: 0.88,
     waterStyle: 'trailbound',
     waterPreset: 'Clearer',
+    waterLook: 'classic',
     waterRefraction: true,
     waterQuality: 'high',
     waterPixelScale: 1,
@@ -414,8 +413,20 @@ export class DevPanel {
     this.onStepFrame = playback?.step ?? null;
     this.indicators = loadIndicatorSettings();
     this.mount = root;
-    const saved = loadPowerMode();
-    if (saved) this.tunables.powerMode = saved;
+    this.settings = new SettingsPanel(this.root, 'blitzball.settings');
+    this.render();
+  }
+
+  /** Real modes. Copies the shipped defaults onto the live tunables and does not write them back. */
+  applyShipped(): void {
+    assignTunables(this.tunables, defaultTunables());
+    this.render();
+    this.onChange('waterPreset');
+    this.onChange('arenaRadius');
+  }
+
+  /** Debug mode. Reads the saved tuning, including pins, without disturbing that store. */
+  applySavedDebug(): void {
     const savedOffset = loadCurveAimOffset();
     if (savedOffset !== null) this.tunables.curveAimOffset = savedOffset;
     const savedScale = loadTimeScale();
@@ -425,6 +436,20 @@ export class DevPanel {
     this.tunables.snapAimStrength = loadSnapAimStrength();
     this.tunables.showHelp = loadShowHelp();
     this.tunables.zoomHoldMode = loadZoomHoldMode();
+    const colors = loadWaterColors();
+    this.tunables.waterTint = colors.tint;
+    this.tunables.waterDeep = colors.deep;
+    this.tunables.waterFog = colors.fog;
+    this.tunables.waterClarity = colors.clarity;
+    this.tunables.waterFogStart = colors.fogStart;
+    const savedCamera = loadCameraSettings();
+    if (savedCamera) applyCameraSave(this.tunables, savedCamera);
+    this.applySavedSettings();
+    const power = resolvePowerMode(localStorage);
+    this.tunables.powerMode = power.mode;
+    if (!Object.prototype.hasOwnProperty.call(this.settings.values(), 'showDebugStats')) {
+      this.tunables.showDebugStats = true;
+    }
     const savedRoster = loadRoster();
     if (savedRoster) {
       this.matchPreset = savedRoster.preset ?? 'custom';
@@ -435,12 +460,22 @@ export class DevPanel {
       this.tunables.goalieHomeOverride = savedRoster.goalieHomeOverride === true;
       this.tunables.goalieAwayOverride = savedRoster.goalieAwayOverride === true;
       this.roster.applyRoster(savedRoster);
+    } else if (this.tunables.soloOpponent) {
+      this.roster.applyRoster({ home: [], away: ['chaser'], preset: 'custom', withGoalies: false });
+    } else {
+      this.roster.applyRoster({ home: ['normal'], away: ['normal'], preset: 'custom', withGoalies: false });
     }
-    const savedCamera = loadCameraSettings();
-    if (savedCamera) applyCameraSave(this.tunables, savedCamera);
-    this.settings = new SettingsPanel(this.root, 'blitzball.settings');
-    this.applySavedSettings();
     this.render();
+    this.onChange('waterPreset');
+    this.onChange('arenaRadius');
+    this.onChange('showHelp');
+  }
+
+  useIndicators(settings: IndicatorSettings, save: boolean): void {
+    this.indicators = settings;
+    this.syncIndicatorWidgets();
+    if (save) this.commitIndicators();
+    else this.onIndicators?.(settings);
   }
 
   /** Panel edits from the last session, including pins' values. */
@@ -728,11 +763,7 @@ export class DevPanel {
         { value: 'trailbound', label: 'Trailbound v2' },
         { value: 'classic', label: 'Classic' },
       ], () => this.onChange('waterStyle'));
-      this.select('Water preset', 'waterPreset', [
-        { value: 'Mockup', label: 'Mockup' },
-        { value: 'Clearer', label: 'Clearer' },
-        { value: 'Deeper', label: 'Deeper' },
-      ], () => this.applyWaterPresetColors());
+      this.waterLookPicker();
       this.select('Water quality', 'waterQuality', [
         { value: 'high', label: 'High' },
         { value: 'low', label: 'Low' },
@@ -1400,13 +1431,85 @@ export class DevPanel {
     if (this.waterFogInput) this.waterFogInput.value = this.tunables.waterFog;
   }
 
-  private applyWaterPresetColors(): void {
-    const colors = colorsForPreset(this.tunables.waterPreset);
-    this.tunables.waterTint = colors.tint;
-    this.tunables.waterDeep = colors.deep;
-    this.tunables.waterFog = colors.fog;
+  private waterLookPicker(): void {
+    this.offer('waterLook', 'Water look', (parent) => {
+      const row = document.createElement('div');
+      row.className = 'row water-look';
+      const name = document.createElement('span');
+      name.textContent = 'Water look';
+      const prev = document.createElement('button');
+      prev.type = 'button';
+      prev.textContent = 'Prev';
+      const next = document.createElement('button');
+      next.type = 'button';
+      next.textContent = 'Next';
+      const select = document.createElement('select');
+      select.dataset.key = 'waterLook';
+      for (const look of WATER_LOOKS) {
+        const item = document.createElement('option');
+        item.value = look.id;
+        item.textContent = look.label;
+        select.append(item);
+      }
+      const custom = document.createElement('option');
+      custom.value = 'custom';
+      custom.textContent = 'Custom';
+      select.append(custom);
+      select.value = WATER_LOOKS.some((look) => look.id === this.tunables.waterLook) || this.tunables.waterLook === 'custom'
+        ? this.tunables.waterLook
+        : 'classic';
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.textContent = 'Save current as custom';
+      const apply = (id: string) => {
+        this.applyWaterLook(id);
+        select.value = this.tunables.waterLook;
+      };
+      prev.addEventListener('click', () => apply(cycleWaterLook(select.value, -1).id));
+      next.addEventListener('click', () => apply(cycleWaterLook(select.value, 1).id));
+      select.addEventListener('change', () => apply(select.value));
+      save.addEventListener('click', () => {
+        saveCustomWaterLook({
+          shader: this.tunables.waterPreset,
+          colors: this.waterColors(),
+        });
+        this.tunables.waterLook = 'custom';
+        this.commit('waterLook');
+        select.value = 'custom';
+      });
+      row.append(name, prev, select, next, save);
+      parent.append(row);
+    });
+  }
+
+  private applyWaterLook(id: string): void {
+    const lookId = id as WaterLookId;
+    if (lookId === 'custom') {
+      const saved = loadCustomWaterLook();
+      this.tunables.waterLook = 'custom';
+      if (saved) {
+        this.tunables.waterPreset = saved.shader;
+        this.tunables.waterTint = saved.colors.tint;
+        this.tunables.waterDeep = saved.colors.deep;
+        this.tunables.waterFog = saved.colors.fog;
+        this.tunables.waterClarity = saved.colors.clarity;
+        this.tunables.waterFogStart = saved.colors.fogStart;
+      }
+    } else {
+      const look = WATER_LOOKS.find((entry) => entry.id === lookId) ?? WATER_LOOKS[1]!;
+      this.tunables.waterLook = look.id;
+      this.tunables.waterPreset = look.shader;
+      this.tunables.waterTint = look.colors.tint;
+      this.tunables.waterDeep = look.colors.deep;
+      this.tunables.waterFog = look.colors.fog;
+      this.tunables.waterClarity = look.colors.clarity;
+      this.tunables.waterFogStart = look.colors.fogStart;
+    }
+    saveWaterColors(this.waterColors());
+    for (const key of ['waterLook', 'waterPreset', 'waterTint', 'waterDeep', 'waterFog', 'waterClarity', 'waterFogStart'] as const) {
+      this.commit(key);
+    }
     this.syncWaterColorInputs();
-    saveWaterColors(colors);
     this.onChange('waterPreset');
   }
 
@@ -1453,33 +1556,6 @@ export class DevPanel {
       for (const [key, value] of Object.entries(fresh) as [keyof Tunables, number][]) {
         (this.tunables as unknown as Record<string, number>)[key] = value;
         this.commit(key);
-        const input = this.root.querySelector<HTMLInputElement>(`input[data-key="${key}"]`);
-        if (!input) continue;
-        input.value = String(value);
-        const readout = input.parentElement?.querySelector('.value');
-        if (readout) readout.textContent = value.toFixed(2);
-      }
-    });
-    this.mount.append(button);
-  }
-
-  private tackleReset(): void {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'add-bot';
-    button.textContent = 'Reset tackle';
-    button.addEventListener('click', () => {
-      const fresh = {
-        tackleStaggerChance: 0.5,
-        tackleMomentumKill: 0.6,
-        tackleKnockoutChance: 0.4,
-        tackleAutograbChance: 0.35,
-        grabReach: 2.4,
-        diveSpeed: 26,
-        diveCooldown: 0.75,
-      };
-      for (const [key, value] of Object.entries(fresh) as [keyof Tunables, number][]) {
-        (this.tunables as unknown as Record<string, number>)[key] = value;
         const input = this.root.querySelector<HTMLInputElement>(`input[data-key="${key}"]`);
         if (!input) continue;
         input.value = String(value);

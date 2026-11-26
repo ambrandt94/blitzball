@@ -2571,6 +2571,7 @@ function checkHoldLookOrder(): void {
 
 function checkPowerMeter(): void {
   const { sim, hold } = aimingSim();
+  sim.tunables.powerMode = 'meter';
   sim.tunables.shotCarry = 0;
   sim.tunables.shotPowerRate = 1;
   sim.tunables.shotPowerAngle = 0.2;
@@ -3677,6 +3678,7 @@ function checkThrowPower(): void {
   if (Math.abs(side) > 0.08) fail(`no-movement throw curved ${side.toFixed(2)}`);
 
   const slide = aimingSim();
+  slide.sim.tunables.powerMode = 'meter';
   slide.sim.tunables.shotPowerRate = 1;
   slide.sim.tunables.shotCarry = 0;
   slide.sim.step(1 / 60, slide.hold);

@@ -32,23 +32,46 @@ export function recipeForOutfit(cf: CFRuntime, outfit: OutfitId, teamHex: string
   return recipe;
 }
 
+/** Human look from the splash flow: skin, hair, and a team-tinted kit piece. */
+export function recipeForLook(
+  cf: CFRuntime,
+  look: { outfit: OutfitId; teamColor: string; tone: number; hair: string; hairColor: string },
+): Recipe {
+  let recipe = cf.normalize(cf.blankRecipe('human'));
+  try {
+    recipe = cf.edit(recipe, { tone: look.tone, hair: look.hair, hairColor: look.hairColor }).recipe;
+  } catch {
+    // An unknown style leaves the blank human. The suit still equips.
+  }
+  for (const [slot, id] of OUTFIT_PIECES[look.outfit]) {
+    recipe = cf.equip(recipe, slot, id).recipe;
+    recipe = cf.dye(recipe, id, 'team', look.teamColor).recipe;
+  }
+  return recipe;
+}
+
 let runtime: CFRuntime | null = null;
+let starting: Promise<CFRuntime> | null = null;
 
 export function forgeRuntime(): CFRuntime | null {
   return runtime;
 }
 
 /** Load the vendored 2.2.0 runtime and the Blitzball kit. Assets resolve from the manifest URL. */
-export async function initForge(): Promise<CFRuntime> {
-  if (runtime) return runtime;
-  const base = new URL(`${import.meta.env.BASE_URL}cf/2.2.0/`, window.location.href);
-  const kit = new URL(`${import.meta.env.BASE_URL}cf/kits/blitzball/blitzball.cfkit.json`, window.location.href);
-  const mod = (await import(/* @vite-ignore */ new URL('cf-runtime.mjs', base).href)) as { default: CFRuntime };
-  const cf = mod.default;
-  await cf.init({ THREE, baseUrl: base.href });
-  await cf.loadKit(kit.href);
-  runtime = cf;
-  return cf;
+export function initForge(): Promise<CFRuntime> {
+  if (runtime) return Promise.resolve(runtime);
+  if (starting) return starting;
+  starting = (async () => {
+    const base = new URL(`${import.meta.env.BASE_URL}cf/2.2.0/`, window.location.href);
+    const kit = new URL(`${import.meta.env.BASE_URL}cf/kits/blitzball/blitzball.cfkit.json`, window.location.href);
+    const mod = (await import(/* @vite-ignore */ new URL('cf-runtime.mjs', base).href)) as { default: CFRuntime };
+    const cf = mod.default;
+    await cf.init({ THREE, baseUrl: base.href });
+    await cf.loadKit(kit.href);
+    runtime = cf;
+    return cf;
+  })();
+  return starting;
 }
 
 export async function buildOutfit(cf: CFRuntime, outfit: OutfitId, teamHex: string): Promise<Body> {

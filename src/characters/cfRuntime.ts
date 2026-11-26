@@ -30,5 +30,6 @@ export interface CFRuntime {
   normalize(recipe: object): Recipe;
   equip(recipe: Recipe, slot: string, garmentId: string): WardrobeResult;
   dye(recipe: Recipe, garmentId: string, region: string, value?: string): WardrobeResult;
+  edit(recipe: Recipe, patch: Record<string, unknown>): WardrobeResult;
   build(recipe: Recipe): Promise<Body>;
 }
