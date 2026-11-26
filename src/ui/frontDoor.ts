@@ -285,7 +285,7 @@ export class FrontDoor {
       heading('Controls'),
       note('WASD swim. Space up, Ctrl down. Mouse looks. Right mouse aims.'),
       note('Left click grabs. Double-click dives. Hold left click to throw, and move the mouse or right stick to curve. Let go and it straightens.'),
-      note('C kicks. Q dives. F passes. P pauses. ` opens the developer panel.'),
+      note('C kicks. Q dives. F passes. P pauses.'),
       skip,
       choice('Play', () => this.start(true)),
       choice('Back', () => this.show('mode')),

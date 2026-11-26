@@ -5,13 +5,29 @@ import { SceneView } from '../render/SceneView';
 import { Simulation } from '../sim/Simulation';
 import { BLITZBALL_OUTFITS } from '../characters/outfits';
 import { loadCharacterSettings, saveCharacterSettings } from '../ui/characterSettings';
-import { loadIndicatorSettings, saveIndicatorSettings } from '../ui/indicatorSettings';
+import {
+  cleanIndicatorSettings,
+  debugIndicatorSettings,
+  loadIndicatorSettings,
+  saveIndicatorSettings,
+  type IndicatorSettings,
+} from '../ui/indicatorSettings';
 import { DevPanel, defaultTunables } from '../ui/DevPanel';
 import { FrontDoor } from '../ui/frontDoor';
-import { cleanIndicatorSettings } from '../ui/indicatorSettings';
 import { matchRoster } from '../ui/matchPresets';
-import type { PlayMode, PlayerProfile } from '../ui/playerProfile';
+import { loadPlayerProfile, type PlayMode, type PlayerProfile } from '../ui/playerProfile';
 import type { InputIntent } from './types';
+
+function savedOrDebugIndicators(): IndicatorSettings {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('blitzball.indicators')) {
+      return loadIndicatorSettings();
+    }
+  } catch {
+    // No saved debug HUD. Use the full preset.
+  }
+  return debugIndicatorSettings();
+}
 
 /** Keep one-frame button edges until a physics step actually consumes them. */
 function orEdges(pending: InputIntent, fresh: InputIntent): InputIntent {
@@ -62,6 +78,9 @@ export class Game {
   private input: InputManager;
   private dev: DevPanel;
   private front: FrontDoor | null = null;
+  private debugPlay = false;
+  private played = 0;
+  private clockEl: HTMLElement | null = null;
   private canvas: HTMLCanvasElement;
   private accum = 0;
   private paused = false;
@@ -173,7 +192,13 @@ export class Game {
       if (this.front?.isFlowOpen()) return;
       this.openPause();
     };
-    if (!devQuery && !shotLaunch) {
+    if (devQuery && !shotLaunch) {
+      const profile = loadPlayerProfile();
+      this.beginPlay({ ...profile, mode: 'debug' });
+    } else if (shotLaunch) {
+      this.dev.applySavedDebug();
+      this.dev.setVisible(false);
+    } else {
       this.dev.setVisible(false);
       this.input.setSuspended(true);
       this.paused = true;
@@ -193,6 +218,7 @@ export class Game {
 
     this.scoreA = document.getElementById('score-a')!;
     this.scoreB = document.getElementById('score-b')!;
+    this.clockEl = document.getElementById('clock');
     this.status = document.getElementById('status')!;
     this.possessionEl = document.getElementById('possession')!;
     this.debugStats = document.getElementById('debug-stats')!;
@@ -279,7 +305,8 @@ export class Game {
 
   private frame = (now: number): void => {
     if (!this.running) return;
-    const dt = Math.min(0.05, (now - this.last) / 1000);
+    const wallDt = Math.min(1, (now - this.last) / 1000);
+    const dt = Math.min(0.05, wallDt);
     this.last = now;
 
     if (this.shotMode) {
@@ -293,8 +320,9 @@ export class Game {
     const playback = this.input.takePlayback();
     if (playback.pause) this.togglePause();
     if (playback.step) this.stepOnce = true;
-    if (playback.help) this.dev.setShowHelp(!this.tunables.showHelp);
-    if (fresh.toggleDev) this.dev.toggle();
+    if (playback.help && this.debugPlay) this.dev.setShowHelp(!this.tunables.showHelp);
+    if (fresh.toggleDev && this.debugPlay) this.dev.toggle();
+    if (!this.paused && !this.front?.isFlowOpen()) this.played += wallDt;
     // Mouse look is a per-frame distance, not a per-tick rate. Arm the shot
     // first so this sample is the curve's origin: it does not bend the arc
     // and it does not turn the camera. Later samples do. Apply it once.
@@ -365,6 +393,7 @@ export class Game {
         this.paused = true;
         this.input.setSuspended(true);
         this.hideHud(true);
+        this.dev.setVisible(false);
         this.front?.openFlow();
       },
     });
@@ -380,7 +409,24 @@ export class Game {
   }
 
   private beginPlay(profile: PlayerProfile): void {
-    this.applyPlayMode(profile.mode);
+    this.played = 0;
+    if (profile.mode === 'debug') {
+      this.debugPlay = true;
+      this.dev.applySavedDebug();
+      this.dev.useIndicators(savedOrDebugIndicators(), false);
+      this.dev.setVisible(true);
+      this.setHudClean(false);
+    } else {
+      this.debugPlay = false;
+      this.dev.applyShipped();
+      this.tunables.showDebugStats = false;
+      this.tunables.showHelp = false;
+      this.dev.useIndicators(cleanIndicatorSettings(), false);
+      this.dev.setVisible(false);
+      this.applyPlayMode(profile.mode);
+      this.setHudClean(true);
+      this.applyHelp();
+    }
     this.view.setPlayerLook(profile);
     this.sim.resetKickoff();
     this.front?.closeFlow();
@@ -404,9 +450,11 @@ export class Game {
       this.sim.applyRoster({ home: [], away: [], preset: 'custom', withGoalies: false });
       return;
     }
-    this.tunables.defenseActive = false;
-    this.tunables.soloOpponent = true;
-    this.sim.applyRoster({ home: [], away: ['chaser'], preset: 'custom', withGoalies: false });
+    if (mode === 'dummy') {
+      this.tunables.defenseActive = false;
+      this.tunables.soloOpponent = true;
+      this.sim.applyRoster({ home: [], away: ['chaser'], preset: 'custom', withGoalies: false });
+    }
   }
 
   private hideHud(hidden: boolean): void {
@@ -414,31 +462,47 @@ export class Game {
     if (hud) hud.hidden = hidden;
   }
 
+  private setHudClean(clean: boolean): void {
+    document.getElementById('hud')?.classList.toggle('hud-clean', clean);
+  }
+
   private updateHud(): void {
     this.scoreA.textContent = String(this.sim.match.score[0]);
     this.scoreB.textContent = String(this.sim.match.score[1]);
+    if (this.clockEl) {
+      const total = Math.max(0, Math.floor(this.played));
+      const minutes = Math.floor(total / 60);
+      const seconds = total % 60;
+      this.clockEl.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
     this.status.textContent = this.sim.match.statusMessage;
     this.goalBanner?.classList.toggle('show', this.sim.goalCelebrate > 0);
 
     const b = this.sim.ball;
     this.possessionEl.classList.remove('you', 'orange', 'free');
-    if (b.possession === 'held' && b.ownerId !== null) {
+    if (this.sim.goalCelebrate > 0) {
+      this.possessionEl.textContent = 'Goal';
+      this.possessionEl.classList.add('you');
+    } else if (this.sim.kickoffLock > 0) {
+      this.possessionEl.textContent = 'Face-off';
+      this.possessionEl.classList.add('free');
+    } else if (b.possession === 'held' && b.ownerId !== null) {
       if (b.ownerId === this.sim.humanId) {
         this.possessionEl.textContent = 'You have the ball';
         this.possessionEl.classList.add('you');
       } else {
         const owner = this.sim.players[b.ownerId];
         if (owner?.team === 0 && owner.role === 'ai') {
-          this.possessionEl.textContent = 'Teammate has the ball';
+          this.possessionEl.textContent = this.debugPlay ? 'Teammate has the ball' : 'Teammate has it';
           this.possessionEl.classList.add('you');
         } else {
           const team = owner?.team === 1 ? 'Orange' : 'Blue';
-          this.possessionEl.textContent = `${team} has the ball`;
+          this.possessionEl.textContent = this.debugPlay ? `${team} has the ball` : 'They have the ball';
           this.possessionEl.classList.add(owner?.team === 1 ? 'orange' : 'you');
         }
       }
     } else {
-      this.possessionEl.textContent = 'Ball free — LMB grab, double-click dive';
+      this.possessionEl.textContent = this.debugPlay ? 'Ball free — LMB grab, double-click dive' : 'Ball is free';
       this.possessionEl.classList.add('free');
     }
 

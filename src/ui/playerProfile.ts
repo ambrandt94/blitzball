@@ -1,6 +1,6 @@
 import { isOutfitId, type OutfitId } from '../characters/outfits';
 
-export type PlayMode = 'match' | 'practice' | 'dummy';
+export type PlayMode = 'match' | 'practice' | 'dummy' | 'debug';
 
 export interface PlayerProfile {
   name: string;
@@ -54,6 +54,7 @@ export const PLAY_MODES: { id: PlayMode; label: string; detail: string }[] = [
   { id: 'match', label: '3v3 match', detail: 'You, two teammates, and a full side with goalies.' },
   { id: 'practice', label: 'Practice', detail: 'Free swim. Just you and the ball.' },
   { id: 'dummy', label: 'Vs dummy', detail: 'One opponent who chases the ball and does not play a match.' },
+  { id: 'debug', label: 'Debug', detail: 'Sandbox. Dev panel, debug HUD, and your saved tuning.' },
 ];
 
 const STORAGE_KEY = 'blitzball.player';
@@ -88,7 +89,10 @@ export function parsePlayerProfile(raw: string | null): PlayerProfile | null {
   const record = data as Record<string, unknown>;
   const base = defaultPlayerProfile();
   const outfit = outfitOf(record.outfit) ?? base.outfit;
-  const mode = record.mode === 'match' || record.mode === 'practice' || record.mode === 'dummy' ? record.mode : base.mode;
+  const mode =
+    record.mode === 'match' || record.mode === 'practice' || record.mode === 'dummy' || record.mode === 'debug'
+      ? record.mode
+      : base.mode;
   const tone = typeof record.tone === 'number' && record.tone >= 0 && record.tone <= 4 ? Math.round(record.tone) : base.tone;
   const hair = HAIR_STYLES.some((style) => style.id === record.hair) ? (record.hair as string) : base.hair;
   const hairColor = HAIR_COLORS.some((color) => color.id === record.hairColor) ? (record.hairColor as string) : base.hairColor;

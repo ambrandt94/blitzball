@@ -37,6 +37,7 @@ import {
   CAUSTIC_SCROLL_MIN,
   LIGHT_BANDS_DEFAULT,
   colorsForPreset,
+  defaultWaterColors,
   loadWaterColors,
   saveWaterColors,
   type WaterColors,
@@ -234,8 +235,14 @@ function saveCurveAimOffset(value: number): void {
   }
 }
 
+function assignTunables(target: Tunables, source: Tunables): void {
+  const into = target as unknown as Record<string, unknown>;
+  const from = source as unknown as Record<string, unknown>;
+  for (const key of Object.keys(from)) into[key] = from[key];
+}
+
 export function defaultTunables(): Tunables {
-  const waterColors = loadWaterColors();
+  const waterColors = defaultWaterColors();
   return {
     // World-Y reads clearer in greybox; goal-axis remains a Dev toggle (Alex unsure).
     goalAxisUp: false,
@@ -406,6 +413,20 @@ export class DevPanel {
     this.onStepFrame = playback?.step ?? null;
     this.indicators = loadIndicatorSettings();
     this.mount = root;
+    this.settings = new SettingsPanel(this.root, 'blitzball.settings');
+    this.render();
+  }
+
+  /** Real modes. Copies the shipped defaults onto the live tunables and does not write them back. */
+  applyShipped(): void {
+    assignTunables(this.tunables, defaultTunables());
+    this.render();
+    this.onChange('waterPreset');
+    this.onChange('arenaRadius');
+  }
+
+  /** Debug mode. Reads the saved tuning, including pins, without disturbing that store. */
+  applySavedDebug(): void {
     const savedOffset = loadCurveAimOffset();
     if (savedOffset !== null) this.tunables.curveAimOffset = savedOffset;
     const savedScale = loadTimeScale();
@@ -415,6 +436,20 @@ export class DevPanel {
     this.tunables.snapAimStrength = loadSnapAimStrength();
     this.tunables.showHelp = loadShowHelp();
     this.tunables.zoomHoldMode = loadZoomHoldMode();
+    const colors = loadWaterColors();
+    this.tunables.waterTint = colors.tint;
+    this.tunables.waterDeep = colors.deep;
+    this.tunables.waterFog = colors.fog;
+    this.tunables.waterClarity = colors.clarity;
+    this.tunables.waterFogStart = colors.fogStart;
+    const savedCamera = loadCameraSettings();
+    if (savedCamera) applyCameraSave(this.tunables, savedCamera);
+    this.applySavedSettings();
+    const power = resolvePowerMode(localStorage);
+    this.tunables.powerMode = power.mode;
+    if (!Object.prototype.hasOwnProperty.call(this.settings.values(), 'showDebugStats')) {
+      this.tunables.showDebugStats = true;
+    }
     const savedRoster = loadRoster();
     if (savedRoster) {
       this.matchPreset = savedRoster.preset ?? 'custom';
@@ -425,15 +460,22 @@ export class DevPanel {
       this.tunables.goalieHomeOverride = savedRoster.goalieHomeOverride === true;
       this.tunables.goalieAwayOverride = savedRoster.goalieAwayOverride === true;
       this.roster.applyRoster(savedRoster);
+    } else if (this.tunables.soloOpponent) {
+      this.roster.applyRoster({ home: [], away: ['chaser'], preset: 'custom', withGoalies: false });
+    } else {
+      this.roster.applyRoster({ home: ['normal'], away: ['normal'], preset: 'custom', withGoalies: false });
     }
-    const savedCamera = loadCameraSettings();
-    if (savedCamera) applyCameraSave(this.tunables, savedCamera);
-    this.settings = new SettingsPanel(this.root, 'blitzball.settings');
-    this.applySavedSettings();
-    const power = resolvePowerMode(localStorage);
-    this.tunables.powerMode = power.mode;
-    if (power.migrated) this.settings.writeValue('powerMode', power.mode);
     this.render();
+    this.onChange('waterPreset');
+    this.onChange('arenaRadius');
+    this.onChange('showHelp');
+  }
+
+  useIndicators(settings: IndicatorSettings, save: boolean): void {
+    this.indicators = settings;
+    this.syncIndicatorWidgets();
+    if (save) this.commitIndicators();
+    else this.onIndicators?.(settings);
   }
 
   /** Panel edits from the last session, including pins' values. */

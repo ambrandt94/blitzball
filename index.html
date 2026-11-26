@@ -87,6 +87,43 @@
         opacity: 0.65;
         text-transform: uppercase;
       }
+      #clock {
+        min-width: 3.2rem;
+        text-align: center;
+        font-size: 0.95rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: #f4f8ff;
+        opacity: 0.85;
+      }
+      #hud.hud-clean #scoreboard,
+      #hud.hud-clean #possession {
+        background: rgba(8, 20, 38, 0.94);
+        border: 1px solid rgba(150, 190, 255, 0.28);
+        border-radius: 14px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+      }
+      #hud.hud-clean #possession {
+        top: 78px;
+        font-size: 0.95rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        text-transform: none;
+        color: #f4f8ff;
+        text-shadow: none;
+      }
+      #hud.hud-clean #possession.you,
+      #hud.hud-clean #possession.orange,
+      #hud.hud-clean #possession.free {
+        color: #f4f8ff;
+      }
+      #hud.hud-clean #hints,
+      #hud.hud-clean #status,
+      #hud.hud-clean #debug-stats,
+      #hud.hud-clean #help-hint,
+      #hud.hud-clean #fullscreen-btn {
+        display: none;
+      }
       #hints {
         position: absolute;
         left: 12px;
@@ -216,6 +253,7 @@
         width: 0%;
         background: linear-gradient(90deg, #ff8a3d, #ffe066);
       }
+      #charge {
         position: absolute;
         bottom: 148px;
         left: 50%;
@@ -647,6 +685,7 @@
             <div class="label">Blue</div>
             <div class="team-a" id="score-a">0</div>
           </div>
+          <div id="clock">0:00</div>
           <div>
             <div class="label">Orange</div>
             <div class="team-b" id="score-b">0</div>

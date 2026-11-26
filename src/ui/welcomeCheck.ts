@@ -52,5 +52,7 @@ if (!parsed || parsed.name !== 'Ada' || parsed.mode !== 'practice' || !parsed.re
 }
 const unknown = parsePlayerProfile('{"mode":"nope","outfit":"onepiece"}');
 if (!unknown || unknown.mode !== 'match') fail('an unknown mode falls back to a match');
+const debug = parsePlayerProfile(JSON.stringify({ ...defaultPlayerProfile(), mode: 'debug' }));
+if (!debug || debug.mode !== 'debug') fail('debug should be a selectable mode');
 
 console.log('welcome checks passed');
