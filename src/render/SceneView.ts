@@ -368,7 +368,7 @@ export class SceneView {
     } catch (err) {
       console.warn('forge build failed', err);
     } finally {
-      if (group.userData.building === outfit) delete group.userData.building;
+      if (group.userData.building === lookKey) delete group.userData.building;
       this.pendingBuilds = Math.max(0, this.pendingBuilds - 1);
       if (this.forgeReady && this.pendingBuilds === 0) this.hideBoot();
     }

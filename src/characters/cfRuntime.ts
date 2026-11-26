@@ -30,6 +30,7 @@ export interface CFRuntime {
   normalize(recipe: object): Recipe;
   equip(recipe: Recipe, slot: string, garmentId: string): WardrobeResult;
   dye(recipe: Recipe, garmentId: string, region: string, value?: string): WardrobeResult;
-  edit(recipe: Recipe, patch: Record<string, unknown>): WardrobeResult;
+  /** Returns the edited recipe itself. Equip and dye return a `{ recipe }` wrapper. */
+  edit(recipe: Recipe, patch: Record<string, unknown>): Recipe;
   build(recipe: Recipe): Promise<Body>;
 }

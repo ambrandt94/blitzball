@@ -428,6 +428,8 @@ export class Game {
       this.applyHelp();
     }
     this.view.setPlayerLook(profile);
+    const nameEl = document.getElementById('score-name');
+    if (nameEl) nameEl.textContent = profile.name || 'Blue';
     this.sim.resetKickoff();
     this.front?.closeFlow();
     this.front?.hidePause();
