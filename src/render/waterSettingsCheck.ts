@@ -8,12 +8,17 @@ import {
   WATER_DEEP_DEFAULT,
   WATER_FOG_DEFAULT,
   WATER_HALO_SCALE,
+  WATER_CLARITY_DEFAULT,
+  WATER_FOG_CAP,
+  WATER_FOG_START_DEFAULT,
   WATER_TINT_DEFAULT,
   basinBowlDrop,
   causticPhase,
   colorsForPreset,
+  fogDensityFromClarity,
   gradeMul,
   parseWaterColors,
+  waterFogFactor,
 } from './waterSettings';
 
 function fail(message: string): never {
@@ -54,6 +59,22 @@ const parsed = parseWaterColors({ tint: '#112233', deep: 'nope', fog: '#abcdef' 
 if (parsed.tint !== '#112233' || parsed.deep !== WATER_DEEP_DEFAULT || parsed.fog !== '#abcdef') {
   fail('colour restore should keep valid hexes and fall back the rest');
 }
+if (parsed.clarity !== WATER_CLARITY_DEFAULT || parsed.fogStart !== WATER_FOG_START_DEFAULT) {
+  fail('missing fog settings should keep the defaults');
+}
+
+const density = fogDensityFromClarity(WATER_CLARITY_DEFAULT);
+const near = waterFogFactor(3, density, WATER_FOG_START_DEFAULT);
+const atStart = waterFogFactor(WATER_FOG_START_DEFAULT, density, WATER_FOG_START_DEFAULT);
+const midFog = waterFogFactor(28, density, WATER_FOG_START_DEFAULT);
+const farther = waterFogFactor(55, density, WATER_FOG_START_DEFAULT);
+const across = waterFogFactor(120, density, WATER_FOG_START_DEFAULT);
+if (near !== 0 || atStart !== 0) fail(`the first metres should stay clear (${near}, ${atStart})`);
+if (!(midFog > 0.02 && midFog < farther && farther <= across)) fail('fog should deepen smoothly with distance');
+if (across > WATER_FOG_CAP + 1e-6) fail(`far water went opaque (${across})`);
+const step = waterFogFactor(36, density, WATER_FOG_START_DEFAULT) - waterFogFactor(34, density, WATER_FOG_START_DEFAULT);
+if (step > 0.04) fail(`fog jumped ${step.toFixed(3)} across two metres`);
+if (fogDensityFromClarity(1) !== 0) fail('full clarity should remove the fog');
 
 const drop = basinBowlDrop(KIT_SPHERE_CENTER_Y, KIT_SPHERE_RADIUS);
 const discY = BASIN_DISC_Y - drop;

@@ -174,6 +174,8 @@ export class SceneView {
     waterTint: '#2E8A84',
     waterDeep: '#163A48',
     waterFog: '#1F6066',
+    waterClarity: 0.68,
+    waterFogStart: 8,
     stadiumDetail: 'high',
     crowdDensity: 'high',
   };

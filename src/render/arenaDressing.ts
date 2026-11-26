@@ -3,9 +3,9 @@ import { ARENA_RADIUS, ARENA_REFERENCE } from '../game/constants';
 import { attachStadium, type StadiumDetail } from './stadiumKit';
 import type { CrowdDensity } from './stadiumLayout';
 import { createWaterMeshes } from './waterShell';
-import { patchSceneWaterFog, setWaterFogState, setWaterPalette } from './waterFog';
+import { patchSceneWaterFog, setWaterFalloff, setWaterFogState, setWaterPalette } from './waterFog';
 import { createWaterFallback, createWaterSphere, type WaterPresetName } from './waterSphere';
-import { WATER_DEEP_DEFAULT, WATER_TINT_DEFAULT, gradeMul } from './waterSettings';
+import { WATER_DEEP_DEFAULT, WATER_TINT_DEFAULT, fogDensityFromClarity, gradeMul } from './waterSettings';
 
 export type WaterStyle = 'trailbound' | 'classic';
 export type WaterQuality = 'high' | 'low' | 'basic';
@@ -26,6 +26,10 @@ export interface ArenaVisuals {
   waterTint: string;
   waterDeep: string;
   waterFog: string;
+  /** 1 is clear. 0 is the thickest fog. */
+  waterClarity: number;
+  /** Metres that stay untinted. */
+  waterFogStart: number;
   stadiumDetail: StadiumDetail;
   crowdDensity: CrowdDensity;
 }
@@ -217,6 +221,8 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
   let waterTint = visuals.waterTint;
   let waterDeep = visuals.waterDeep;
   let waterFog = visuals.waterFog;
+  let waterClarity = visuals.waterClarity;
+  let waterFogStart = visuals.waterFogStart;
   let detail = visuals.stadiumDetail;
   let crowd: CrowdDensity = visuals.crowdDensity;
   const fog = scene.fog instanceof THREE.FogExp2 ? scene.fog : new THREE.FogExp2(0x0a4d66, 0.0065);
@@ -236,6 +242,7 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
     fallback.setColors(waterTint);
     fallback.setScroll(causticScroll);
     setWaterPalette(waterTint, waterFog, waterDeep);
+    setWaterFalloff(fogDensityFromClarity(waterClarity), waterFogStart);
   };
 
   const showV2 = () => {
@@ -248,19 +255,25 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
     water.caustic.visible = false;
   };
 
-  const applyFogLook = (inside: boolean) => {
-    // v2 paints its own inside steps. The older per-material fog stays on Classic only.
-    setWaterFogState('classic', inside, ARENA_RADIUS);
+  const outsideFog = new THREE.Color(0x8ec8ea);
+  const deepFog = new THREE.Color(waterDeep);
+  let insideBlend = 1;
+  let fogClock = 0;
+
+  const applyFogLook = (blend: number) => {
+    const density = fogDensityFromClarity(waterClarity);
+    setWaterFalloff(density, waterFogStart);
+    sphere.setFalloff(density * blend, waterFogStart);
+    setWaterFogState(style, blend, ARENA_RADIUS);
     const dress = ARENA_REFERENCE / ARENA_RADIUS;
-    if (style === 'trailbound' && !inside) {
-      fog.color.set(0x8ec8ea);
-      fog.density = 0.0011 * dress;
-    } else if (style === 'classic') {
+    deepFog.set(waterDeep);
+    if (style === 'classic') {
       fog.color.set(0x0a4d66);
-      fog.density = 0.0065 * dress;
+      fog.density = 0.0065 * dress * (0.35 + 0.65 * (1 - THREE.MathUtils.clamp(waterClarity, 0, 1)));
     } else {
-      fog.color.set(waterFog);
-      fog.density = 0.0022 * dress;
+      // Patched materials use the shared exp2 chunk. This covers anything not patched yet.
+      fog.color.copy(deepFog).lerp(outsideFog, 1 - blend);
+      fog.density = density * blend * dress;
     }
     guides.visible = style === 'classic';
     beams.material.uniforms.uPixel!.value = style === 'trailbound' ? 1 : 0;
@@ -268,15 +281,20 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
   };
 
   applyWaterLook();
-  applyFogLook(true);
+  applyFogLook(1);
 
   return {
     update(time, cameraPosition, sunbeams, intensity, ballPosition, nearShell, impact) {
-      const inside = cameraPosition.length() < ARENA_RADIUS - 0.35;
+      const dt = Math.max(0, Math.min(0.1, time - fogClock));
+      fogClock = time;
+      const radial = cameraPosition.length();
+      const target = 1 - THREE.MathUtils.smoothstep(ARENA_RADIUS - 7, ARENA_RADIUS + 2, radial);
+      const ease = dt > 0 ? 1 - Math.exp(-2.8 * dt) : 0;
+      insideBlend += (target - insideBlend) * ease;
       water.update(time, cameraPosition, ballPosition, nearShell, impact, style, ARENA_RADIUS);
       showV2();
       stadium.update(time);
-      applyFogLook(inside);
+      applyFogLook(insideBlend);
       const strength = sunbeams ? Math.max(0, intensity) : 0;
       beams.group.visible = strength > 0.001;
       beams.material.uniforms.uIntensity!.value = strength;
@@ -316,6 +334,8 @@ export function buildArenaDressing(scene: THREE.Scene, visuals: ArenaVisuals): W
       waterTint = next.waterTint;
       waterDeep = next.waterDeep;
       waterFog = next.waterFog;
+      waterClarity = next.waterClarity;
+      waterFogStart = next.waterFogStart;
       detail = next.stadiumDetail;
       crowd = next.crowdDensity;
       sphere.applyPreset(preset);

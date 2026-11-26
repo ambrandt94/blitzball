@@ -109,6 +109,8 @@ export class Game {
           key === 'waterTint' ||
           key === 'waterDeep' ||
           key === 'waterFog' ||
+          key === 'waterClarity' ||
+          key === 'waterFogStart' ||
           key === 'stadiumDetail' ||
           key === 'crowdDensity'
         ) {
@@ -189,6 +191,8 @@ export class Game {
       waterTint: this.tunables.waterTint,
       waterDeep: this.tunables.waterDeep,
       waterFog: this.tunables.waterFog,
+      waterClarity: this.tunables.waterClarity,
+      waterFogStart: this.tunables.waterFogStart,
       stadiumDetail: this.tunables.stadiumDetail,
       crowdDensity: this.tunables.crowdDensity,
     };
