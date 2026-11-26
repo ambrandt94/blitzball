@@ -157,6 +157,10 @@ export interface Tunables {
    * Zero keeps the end on the aim ray. Throws and kicks both use it.
    */
   curveAimOffset: number;
+  /** How fast curve eases toward the current stick or mouse offset, per second. */
+  curveReturnSpeed: number;
+  /** Fraction of full deflection that still counts as straight. */
+  curveDeadzone: number;
   /** Resting lob height as a fraction of the hand→marker chord. */
   arcHeight: number;
   /**
@@ -459,6 +463,11 @@ export interface ChargeState {
 export interface InputIntent {
   move: THREE.Vector3; // camera-relative desired thrust, magnitude 0..1
   lookDelta: { x: number; y: number };
+  /**
+   * Right stick, after the stick deadzone, about -1..1.
+   * While a throw is held this is the curve, not a look rate.
+   */
+  aimStick?: { x: number; y: number };
   up: number; // -1..1 vertical
   sprint: boolean;
   /** Right mouse held: body stays on the camera aim and swim speed drops. */

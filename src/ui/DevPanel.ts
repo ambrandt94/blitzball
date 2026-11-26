@@ -16,6 +16,7 @@ import {
   type IndicatorSettings,
 } from './indicatorSettings';
 import { matchRoster, presetAllowsGoalieToggle } from './matchPresets';
+import { SettingsPanel, type SettingValue } from './settingsPanel';
 import {
   applyCameraPreset,
   applyCameraSave,
@@ -49,8 +50,6 @@ const SNAP_AIM_STRENGTH_KEY = 'blitzball.snapAimStrength';
 const SHOW_HELP_KEY = 'blitzball.showHelp';
 const ZOOM_HOLD_KEY = 'blitzball.zoomHoldMode';
 const ZOOM_HOLD_VERSION_KEY = 'blitzball.zoomHoldVersion';
-const SECTIONS_KEY = 'blitzball.devSections';
-
 export interface RosterBotView {
   id: number;
   team: 0 | 1;
@@ -244,31 +243,6 @@ function saveCurveAimOffset(value: number): void {
   }
 }
 
-function loadCollapsed(): Record<string, boolean> {
-  try {
-    if (typeof localStorage === 'undefined') return {};
-    const raw = localStorage.getItem(SECTIONS_KEY);
-    if (!raw) return {};
-    const data = JSON.parse(raw) as Record<string, unknown>;
-    if (!data || typeof data !== 'object') return {};
-    const out: Record<string, boolean> = {};
-    for (const [key, value] of Object.entries(data)) {
-      if (typeof value === 'boolean') out[key] = value;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function saveCollapsed(state: Record<string, boolean>): void {
-  try {
-    localStorage.setItem(SECTIONS_KEY, JSON.stringify(state));
-  } catch {
-    // Ignore quota and private-mode failures.
-  }
-}
-
 export function defaultTunables(): Tunables {
   const waterColors = loadWaterColors();
   return {
@@ -335,6 +309,8 @@ export function defaultTunables(): Tunables {
     arcBendSpeed: SHOT_ARC.bendSpeed,
     arcBendLimit: SHOT_ARC.bendLimit,
     curveAimOffset: SHOT_ARC.curveAimOffset,
+    curveReturnSpeed: SHOT_ARC.curveReturnSpeed,
+    curveDeadzone: SHOT_ARC.curveDeadzone,
     arcHeight: SHOT_ARC.height,
     arcHandCurve: SHOT_ARC.handCurve,
     shotPowerRate: SHOT_ARC.powerRate,
@@ -400,8 +376,9 @@ export class DevPanel {
   private tunables: Tunables;
   private onChange: (key: keyof Tunables) => void;
   private roster: RosterControl;
-  private collapsed: Record<string, boolean>;
   private mount: HTMLElement;
+  private settings: SettingsPanel;
+  private sectionId = '';
   private rosterBody: HTMLElement | null = null;
   private waterTintInput: HTMLInputElement | null = null;
   private waterDeepInput: HTMLInputElement | null = null;
@@ -461,8 +438,19 @@ export class DevPanel {
     }
     const savedCamera = loadCameraSettings();
     if (savedCamera) applyCameraSave(this.tunables, savedCamera);
-    this.collapsed = loadCollapsed();
+    this.settings = new SettingsPanel(this.root, 'blitzball.settings');
+    this.applySavedSettings();
     this.render();
+  }
+
+  /** Panel edits from the last session, including pins' values. */
+  private applySavedSettings(): void {
+    const tunables = this.tunables as unknown as Record<string, SettingValue>;
+    for (const [key, value] of Object.entries(this.settings.values())) {
+      if (!(key in tunables)) continue;
+      if (typeof tunables[key] !== typeof value) continue;
+      tunables[key] = value;
+    }
   }
 
   resetTimeScale(): void {
@@ -548,21 +536,29 @@ export class DevPanel {
   private renderIndicators(): void {
     this.section('HUD / Indicators', 'indicators', () => {
       const toggle = (label: string, key: keyof IndicatorSettings) => {
-        const row = document.createElement('div');
-        row.className = 'row';
-        const lab = document.createElement('label');
-        lab.style.flex = '1';
-        lab.textContent = label;
-        const input = document.createElement('input');
-        input.type = 'checkbox';
-        input.dataset.indicator = key;
-        input.checked = this.indicators[key];
-        input.addEventListener('change', () => {
-          this.indicators = { ...this.indicators, [key]: input.checked };
-          this.commitIndicators();
+        const saved = this.settings.values()[`indicator.${key}`];
+        if (typeof saved === 'boolean') this.indicators[key] = saved;
+        this.offer(`indicator.${key}`, label, (parent) => {
+          const row = document.createElement('div');
+          row.className = 'row';
+          const lab = document.createElement('label');
+          lab.style.flex = '1';
+          lab.textContent = label;
+          const input = document.createElement('input');
+          input.type = 'checkbox';
+          input.dataset.indicator = key;
+          input.checked = this.indicators[key];
+          input.addEventListener('change', () => {
+            this.indicators = { ...this.indicators, [key]: input.checked };
+            this.commitIndicators();
+            this.settings.writeValue(`indicator.${key}`, input.checked);
+            for (const box of this.root.querySelectorAll<HTMLInputElement>(`input[data-indicator="${key}"]`)) {
+              box.checked = input.checked;
+            }
+          });
+          row.append(lab, input);
+          parent.append(row);
         });
-        row.append(lab, input);
-        this.mount.append(row);
       };
       toggle('Player rings', 'rings');
       toggle('Ball bubble', 'ballBubble');
@@ -615,6 +611,7 @@ export class DevPanel {
     const h = document.createElement('h2');
     h.textContent = 'Dev toggles';
     this.root.appendChild(h);
+    this.settings.mountChrome();
     this.renderRosterCard();
     this.renderCharacter();
     this.renderIndicators();
@@ -636,8 +633,10 @@ export class DevPanel {
       this.range('Arc aim distance', 'arcAimDistance', 8, 90, 0.5);
       this.range('Arc aim speed', 'arcAimSpeed', 4, 70, 1);
       this.range('Arc bend speed', 'arcBendSpeed', 0, 140, 1);
-      this.range('Arc bend limit', 'arcBendLimit', 0, 1.5, 0.05);
-      this.range('Curve aim offset', 'curveAimOffset', 0, 1.25, 0.05);
+      this.range('Max curve', 'arcBendLimit', 0, 1.8, 0.05);
+      this.range('Max displacement', 'curveAimOffset', 0, 2, 0.05);
+      this.range('Curve return speed', 'curveReturnSpeed', 2, 40, 0.5);
+      this.range('Deadzone', 'curveDeadzone', 0, 0.4, 0.01);
       this.range('Arc height', 'arcHeight', 0, 0.8, 0.01);
       this.range('Arc hand curve', 'arcHandCurve', 0, 0.6, 0.01);
       this.range('Shot carry', 'shotCarry', 0, 60, 0.5);
@@ -828,6 +827,7 @@ export class DevPanel {
       this.bool('Show AI intent', 'showAiIntent');
       this.bool('Show help', 'showHelp');
     });
+    this.settings.finish();
   }
 
   private renderRosterCard(): void {
@@ -1028,37 +1028,57 @@ export class DevPanel {
   }
 
   private section(title: string, key: string, build: () => void): void {
-    const collapsed = this.collapsed[key] === true;
-    const block = document.createElement('section');
-    block.className = 'dev-section';
-    const head = document.createElement('button');
-    head.type = 'button';
-    head.className = 'dev-section-head';
-    head.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-    const label = document.createElement('span');
-    label.textContent = title;
-    const mark = document.createElement('span');
-    mark.className = 'chevron';
-    mark.setAttribute('aria-hidden', 'true');
-    mark.textContent = collapsed ? '▸' : '▾';
-    head.append(label, mark);
-    const body = document.createElement('div');
-    body.className = 'dev-section-body';
-    if (collapsed) body.hidden = true;
+    const body = this.settings.section(key, title);
     const previous = this.mount;
+    const previousId = this.sectionId;
     this.mount = body;
+    this.sectionId = key;
     build();
     this.mount = previous;
-    head.addEventListener('click', () => {
-      const nextCollapsed = !body.hidden;
-      body.hidden = nextCollapsed;
-      mark.textContent = nextCollapsed ? '▸' : '▾';
-      head.setAttribute('aria-expanded', nextCollapsed ? 'false' : 'true');
-      this.collapsed[key] = nextCollapsed;
-      saveCollapsed(this.collapsed);
+    this.sectionId = previousId;
+  }
+
+  /** A live setting. The same builder fills the section and, if pinned, the top group. */
+  private offer(key: string, label: string, build: (parent: HTMLElement) => void): void {
+    const row = document.createElement('div');
+    row.className = 'setting-row';
+    build(row);
+    this.mount.append(row);
+    this.settings.track(row, {
+      key,
+      label,
+      sectionId: this.sectionId,
+      render: (parent) => {
+        const copy = document.createElement('div');
+        copy.className = 'setting-row';
+        build(copy);
+        parent.append(copy);
+      },
     });
-    block.append(head, body);
-    this.root.append(block);
+  }
+
+  private commit(key: string): void {
+    const value = (this.tunables as unknown as Record<string, SettingValue>)[key];
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string') {
+      this.settings.writeValue(key, value);
+    }
+    this.paint(key);
+  }
+
+  private paint(key: string): void {
+    const raw = (this.tunables as unknown as Record<string, SettingValue>)[key];
+    const nodes = [
+      ...this.root.querySelectorAll<HTMLElement>(`[data-key="${key}"]`),
+      ...this.root.querySelectorAll<HTMLElement>(`[data-cam="${key}"]`),
+    ];
+    for (const el of nodes) {
+      if (el instanceof HTMLInputElement && el.type === 'checkbox') el.checked = Boolean(raw);
+      else if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement) el.value = String(raw);
+      const readout = el.parentElement?.querySelector('.value');
+      if (readout && typeof raw === 'number') {
+        readout.textContent = key === 'timeScale' ? `${raw.toFixed(2)}x` : raw.toFixed(2);
+      }
+    }
   }
 
   private cameraPresetRow(): void {
@@ -1133,100 +1153,113 @@ export class DevPanel {
   }
 
   private camRange(label: string, key: keyof Tunables, min: number, max: number, step: number): void {
-    const wrap = document.createElement('label');
-    const name = document.createElement('span');
-    name.textContent = label;
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.dataset.cam = key;
-    input.min = String(min);
-    input.max = String(max);
-    input.step = String(step);
-    input.value = String(this.tunables[key]);
-    const value = document.createElement('span');
-    value.className = 'value';
-    value.textContent = Number(this.tunables[key]).toFixed(2);
-    input.addEventListener('input', () => {
-      const n = parseFloat(input.value);
-      (this.tunables as unknown as Record<string, unknown>)[key] = n;
-      value.textContent = n.toFixed(2);
-      this.markCameraCustom();
-      saveCameraSettings(this.tunables);
+    this.offer(String(key), label, (parent) => {
+      const wrap = document.createElement('label');
+      const name = document.createElement('span');
+      name.textContent = label;
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.dataset.cam = key;
+      input.dataset.key = key;
+      input.min = String(min);
+      input.max = String(max);
+      input.step = String(step);
+      input.value = String(this.tunables[key]);
+      const value = document.createElement('span');
+      value.className = 'value';
+      value.textContent = Number(this.tunables[key]).toFixed(2);
+      input.addEventListener('input', () => {
+        const n = parseFloat(input.value);
+        (this.tunables as unknown as Record<string, unknown>)[key] = n;
+        value.textContent = n.toFixed(2);
+        this.markCameraCustom();
+        saveCameraSettings(this.tunables);
+        this.commit(String(key));
+      });
+      wrap.append(name, input, value);
+      parent.append(wrap);
     });
-    wrap.append(name, input, value);
-    this.mount.append(wrap);
   }
 
   private camBool(label: string, key: keyof Tunables): void {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const lab = document.createElement('label');
-    lab.style.flex = '1';
-    lab.textContent = label;
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.dataset.cam = key;
-    input.checked = Boolean(this.tunables[key]);
-    input.addEventListener('change', () => {
-      (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
-      this.markCameraCustom();
-      saveCameraSettings(this.tunables);
+    this.offer(String(key), label, (parent) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const lab = document.createElement('label');
+      lab.style.flex = '1';
+      lab.textContent = label;
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.dataset.cam = key;
+      input.dataset.key = key;
+      input.checked = Boolean(this.tunables[key]);
+      input.addEventListener('change', () => {
+        (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
+        this.markCameraCustom();
+        saveCameraSettings(this.tunables);
+        this.commit(String(key));
+      });
+      row.append(lab, input);
+      parent.append(row);
     });
-    row.append(lab, input);
-    this.mount.append(row);
   }
 
   private camChoice(label: string, key: 'lookAhead', options: { value: string; label: string }[]): void {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const lab = document.createElement('label');
-    lab.style.flex = '1';
-    lab.textContent = label;
-    const input = document.createElement('select');
-    input.dataset.cam = key;
-    for (const option of options) {
-      const item = document.createElement('option');
-      item.value = option.value;
-      item.textContent = option.label;
-      input.append(item);
-    }
-    input.value = this.tunables.lookAhead;
-    input.addEventListener('change', () => {
-      if (!isLookAhead(input.value)) return;
-      this.tunables.lookAhead = input.value;
-      this.markCameraCustom();
-      saveCameraSettings(this.tunables);
+    this.offer(key, label, (parent) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const lab = document.createElement('label');
+      lab.style.flex = '1';
+      lab.textContent = label;
+      const input = document.createElement('select');
+      input.dataset.cam = key;
+      input.dataset.key = key;
+      for (const option of options) {
+        const item = document.createElement('option');
+        item.value = option.value;
+        item.textContent = option.label;
+        input.append(item);
+      }
+      input.value = this.tunables.lookAhead;
+      input.addEventListener('change', () => {
+        if (!isLookAhead(input.value)) return;
+        this.tunables.lookAhead = input.value;
+        this.markCameraCustom();
+        saveCameraSettings(this.tunables);
+        this.commit(key);
+      });
+      row.append(lab, input);
+      parent.append(row);
     });
-    row.append(lab, input);
-    this.mount.append(row);
   }
 
   private bool(label: string, key: keyof Tunables): void {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const lab = document.createElement('label');
-    lab.style.flex = '1';
-    lab.textContent = label;
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.dataset.key = key;
-    input.checked = Boolean(this.tunables[key]);
-    input.addEventListener('change', () => {
-      (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
-      // Only the up-axis change rebuilds the chase basis. Invert toggles and
-      // other checkboxes must not snap yaw/pitch back to kickoff.
-      if (key === 'goalAxisUp' || key === 'waterRefraction' || key === 'showLightBands') this.onChange(key);
-      if (key === 'goalieHomeOverride' || key === 'goalieAwayOverride') this.persistRoster();
-      if (key === 'timeScaleFlightOnly') saveFlightOnly(input.checked);
-      if (key === 'showHelp') {
-        saveShowHelp(input.checked);
-        this.onChange(key);
-      }
-      if (key === 'zoomHoldMode') saveZoomHoldMode(input.checked);
-      if (key === 'snapAimToTeammates') saveSnapAim(input.checked);
+    this.offer(String(key), label, (parent) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const lab = document.createElement('label');
+      lab.style.flex = '1';
+      lab.textContent = label;
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.dataset.key = key;
+      input.checked = Boolean(this.tunables[key]);
+      input.addEventListener('change', () => {
+        (this.tunables as unknown as Record<string, unknown>)[key] = input.checked;
+        if (key === 'goalAxisUp' || key === 'waterRefraction' || key === 'showLightBands') this.onChange(key);
+        if (key === 'goalieHomeOverride' || key === 'goalieAwayOverride') this.persistRoster();
+        if (key === 'timeScaleFlightOnly') saveFlightOnly(input.checked);
+        if (key === 'showHelp') {
+          saveShowHelp(input.checked);
+          this.onChange(key);
+        }
+        if (key === 'zoomHoldMode') saveZoomHoldMode(input.checked);
+        if (key === 'snapAimToTeammates') saveSnapAim(input.checked);
+        this.commit(String(key));
+      });
+      row.append(lab, input);
+      parent.append(row);
     });
-    row.append(lab, input);
-    this.mount.append(row);
   }
 
   private select<K extends keyof Tunables>(
@@ -1235,103 +1268,110 @@ export class DevPanel {
     options: { value: Tunables[K]; label: string }[],
     onPick: () => void,
   ): void {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const lab = document.createElement('label');
-    lab.style.flex = '1';
-    lab.textContent = label;
-    const input = document.createElement('select');
-    for (const option of options) {
-      const item = document.createElement('option');
-      item.value = String(option.value);
-      item.textContent = option.label;
-      input.append(item);
-    }
-    input.value = String(this.tunables[key]);
-    input.addEventListener('change', () => {
-      const value = input.value as Tunables[K];
-      if (!options.some((option) => option.value === value)) return;
-      this.tunables[key] = value;
-      onPick();
+    this.offer(String(key), label, (parent) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const lab = document.createElement('label');
+      lab.style.flex = '1';
+      lab.textContent = label;
+      const input = document.createElement('select');
+      input.dataset.key = String(key);
+      for (const option of options) {
+        const item = document.createElement('option');
+        item.value = String(option.value);
+        item.textContent = option.label;
+        input.append(item);
+      }
+      input.value = String(this.tunables[key]);
+      input.addEventListener('change', () => {
+        const value = input.value as Tunables[K];
+        if (!options.some((option) => option.value === value)) return;
+        this.tunables[key] = value;
+        onPick();
+        this.commit(String(key));
+      });
+      row.append(lab, input);
+      parent.append(row);
     });
-    row.append(lab, input);
-    this.mount.append(row);
   }
 
   private choice(label: string, key: 'powerMode', options: { value: PowerMode; label: string }[]): void {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const lab = document.createElement('label');
-    lab.style.flex = '1';
-    lab.textContent = label;
-    const input = document.createElement('select');
-    for (const option of options) {
-      const item = document.createElement('option');
-      item.value = option.value;
-      item.textContent = option.label;
-      input.append(item);
-    }
-    input.value = this.tunables[key];
-    input.addEventListener('change', () => {
-      const value = input.value;
-      if (value !== 'meter' && value !== 'tap' && value !== 'hold' && value !== 'target' && value !== 'pull') return;
-      this.tunables[key] = value;
-      savePowerMode(value);
+    this.offer(key, label, (parent) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const lab = document.createElement('label');
+      lab.style.flex = '1';
+      lab.textContent = label;
+      const input = document.createElement('select');
+      input.dataset.key = key;
+      for (const option of options) {
+        const item = document.createElement('option');
+        item.value = option.value;
+        item.textContent = option.label;
+        input.append(item);
+      }
+      input.value = this.tunables[key];
+      input.addEventListener('change', () => {
+        const value = input.value;
+        if (value !== 'meter' && value !== 'tap' && value !== 'hold' && value !== 'target' && value !== 'pull') return;
+        this.tunables[key] = value;
+        savePowerMode(value);
+        this.commit(key);
+      });
+      row.append(lab, input);
+      parent.append(row);
     });
-    row.append(lab, input);
-    this.mount.append(row);
   }
 
   private range(label: string, key: keyof Tunables, min: number, max: number, step: number): void {
-    const wrap = document.createElement('label');
-    const name = document.createElement('span');
-    name.textContent = label;
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = String(min);
-    input.max = String(max);
-    input.step = String(step);
-    input.dataset.key = key;
-    input.value = String(this.tunables[key]);
-    if (key === 'timeScale') input.dataset.timeScale = '1';
-    const value = document.createElement('span');
-    value.className = 'value';
-    value.textContent =
-      key === 'timeScale' ? `${Number(this.tunables[key]).toFixed(2)}x` : Number(this.tunables[key]).toFixed(2);
-    input.addEventListener('input', () => {
-      const n = parseFloat(input.value);
-      (this.tunables as unknown as Record<string, unknown>)[key] = n;
-      value.textContent = n.toFixed(2);
-      if (
-        key === 'arenaRadius' ||
-        key === 'waterPixelScale' ||
-        key === 'causticFps' ||
-        key === 'causticScroll' ||
-        key === 'waterClarity' ||
-        key === 'waterFogStart'
-      ) {
-        this.onChange(key);
-      }
-      if (key === 'waterClarity' || key === 'waterFogStart') saveWaterColors(this.waterColors());
-      if (key === 'curveAimOffset') saveCurveAimOffset(n);
-      if (key === 'snapAimStrength') {
-        const clamped = Math.min(1, Math.max(0, n));
-        this.tunables.snapAimStrength = clamped;
-        input.value = String(clamped);
-        value.textContent = clamped.toFixed(2);
-        saveSnapAimStrength(clamped);
-      }
-      if (key === 'timeScale') {
-        const clamped = clampTimeScale(n);
-        this.tunables.timeScale = clamped;
-        input.value = String(clamped);
-        value.textContent = `${clamped.toFixed(2)}x`;
-        saveTimeScale(clamped);
-      }
-      if (key === 'goalieSkill' || key === 'goalieSkillHome' || key === 'goalieSkillAway') this.persistRoster();
+    this.offer(String(key), label, (parent) => {
+      const wrap = document.createElement('label');
+      const name = document.createElement('span');
+      name.textContent = label;
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = String(min);
+      input.max = String(max);
+      input.step = String(step);
+      input.dataset.key = key;
+      input.value = String(this.tunables[key]);
+      if (key === 'timeScale') input.dataset.timeScale = '1';
+      const value = document.createElement('span');
+      value.className = 'value';
+      value.textContent =
+        key === 'timeScale' ? `${Number(this.tunables[key]).toFixed(2)}x` : Number(this.tunables[key]).toFixed(2);
+      input.addEventListener('input', () => {
+        let n = parseFloat(input.value);
+        (this.tunables as unknown as Record<string, unknown>)[key] = n;
+        if (
+          key === 'arenaRadius' ||
+          key === 'waterPixelScale' ||
+          key === 'causticFps' ||
+          key === 'causticScroll' ||
+          key === 'waterClarity' ||
+          key === 'waterFogStart'
+        ) {
+          this.onChange(key);
+        }
+        if (key === 'waterClarity' || key === 'waterFogStart') saveWaterColors(this.waterColors());
+        if (key === 'curveAimOffset') saveCurveAimOffset(n);
+        if (key === 'snapAimStrength') {
+          n = Math.min(1, Math.max(0, n));
+          this.tunables.snapAimStrength = n;
+          saveSnapAimStrength(n);
+        }
+        if (key === 'timeScale') {
+          n = clampTimeScale(n);
+          this.tunables.timeScale = n;
+          saveTimeScale(n);
+        }
+        if (key === 'goalieSkill' || key === 'goalieSkillHome' || key === 'goalieSkillAway') this.persistRoster();
+        value.textContent = key === 'timeScale' ? `${n.toFixed(2)}x` : n.toFixed(2);
+        this.commit(String(key));
+      });
+      wrap.append(name, input, value);
+      parent.append(wrap);
     });
-    wrap.append(name, input, value);
-    this.mount.append(wrap);
   }
 
   private waterColors(): WaterColors {
@@ -1371,25 +1411,28 @@ export class DevPanel {
   }
 
   private waterColor(label: string, key: 'waterTint' | 'waterDeep' | 'waterFog'): void {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const lab = document.createElement('label');
-    lab.style.flex = '1';
-    lab.textContent = label;
-    const input = document.createElement('input');
-    input.type = 'color';
-    input.dataset.key = key;
-    input.value = this.tunables[key];
-    input.addEventListener('input', () => {
-      this.tunables[key] = input.value;
-      saveWaterColors(this.waterColors());
-      this.onChange(key);
+    this.offer(key, label, (parent) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const lab = document.createElement('label');
+      lab.style.flex = '1';
+      lab.textContent = label;
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.dataset.key = key;
+      input.value = this.tunables[key];
+      input.addEventListener('input', () => {
+        this.tunables[key] = input.value;
+        saveWaterColors(this.waterColors());
+        this.onChange(key);
+        this.commit(key);
+      });
+      if (key === 'waterTint') this.waterTintInput = input;
+      if (key === 'waterDeep') this.waterDeepInput = input;
+      if (key === 'waterFog') this.waterFogInput = input;
+      row.append(lab, input);
+      parent.append(row);
     });
-    if (key === 'waterTint') this.waterTintInput = input;
-    if (key === 'waterDeep') this.waterDeepInput = input;
-    if (key === 'waterFog') this.waterFogInput = input;
-    row.append(lab, input);
-    this.mount.append(row);
   }
 
   private tackleReset(): void {
@@ -1409,6 +1452,7 @@ export class DevPanel {
       };
       for (const [key, value] of Object.entries(fresh) as [keyof Tunables, number][]) {
         (this.tunables as unknown as Record<string, number>)[key] = value;
+        this.commit(key);
         const input = this.root.querySelector<HTMLInputElement>(`input[data-key="${key}"]`);
         if (!input) continue;
         input.value = String(value);

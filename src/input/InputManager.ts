@@ -411,10 +411,8 @@ export class InputManager {
 
     return {
       move: new THREE.Vector3(lx, 0, -ly),
-      lookDelta: {
-        x: rx * INPUT.gamepadLookSens,
-        y: ry * INPUT.gamepadLookSens,
-      },
+      lookDelta: { x: 0, y: 0 },
+      aimStick: { x: rx, y: ry },
       up: (dUp ? 1 : 0) - (dDown ? 1 : 0),
       sprint: down(10),
       strafe: lt,
@@ -495,10 +493,7 @@ export class InputManager {
     const pad = this.readGamepad(frameDt);
     if (pad) {
       if (pad.move && pad.move.lengthSq() > intent.move.lengthSq()) intent.move.copy(pad.move);
-      if (pad.lookDelta) {
-        intent.lookDelta.x += pad.lookDelta.x * frameDt;
-        intent.lookDelta.y += pad.lookDelta.y * frameDt;
-      }
+      if (pad.aimStick) intent.aimStick = pad.aimStick;
       if (pad.up) intent.up = Math.max(-1, Math.min(1, intent.up + (pad.up ?? 0)));
       intent.sprint = intent.sprint || Boolean(pad.sprint);
       intent.strafe = intent.strafe || Boolean(pad.strafe);

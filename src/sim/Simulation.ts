@@ -4,6 +4,7 @@ import {
   ARENA_REFERENCE,
   BALL,
   CAMERA,
+  INPUT,
   MATCH,
   PLAYER,
   ROSTER,
@@ -190,6 +191,9 @@ export class Simulation {
   };
   /** Marker was steered after the hold began, so do not snap back onto a teammate. */
   private shotAimManual = false;
+  /** Mouse cursor offset from the focus-ring center while a throw is held, in look radians. */
+  private curveOffsetX = 0;
+  private curveOffsetY = 0;
   /** Added to Arc aim distance by the mouse wheel. */
   private aimDistanceBias = 0;
   /** Smoothed lateral camera shift. Positive sits on the aim's right shoulder. */
@@ -941,11 +945,13 @@ export class Simulation {
     this.charge.kind = kick ? 'kick' : 'shoot';
   }
 
-  applyFrameLook(intent: InputIntent): void {
+  applyFrameLook(intent: InputIntent, frameDt = 1 / 60): void {
     const sx = this.tunables.mouseLookInvertX ? -1 : 1;
     const sy = this.tunables.mouseLookInvertY ? -1 : 1;
-    // While a shot is held the view stays put so the marker doesn't swim,
-    // and the same mouse deltas bend the Bezier control point instead.
+    const dt = Math.max(0, frameDt);
+    // While a shot is held the view stays put so the marker doesn't swim.
+    // Curve is the current stick, or the mouse offset from the ring center.
+    // It is not added up, and a released stick eases back to straight.
     if (this.shotAim.active) {
       if (this.holdLookPending) {
         this.holdLookPending = false;
@@ -955,19 +961,7 @@ export class Simulation {
         }
         return;
       }
-      const mode = this.tunables.powerMode;
-      if (mode === 'target') {
-        // Horizontal bends the arc. Vertical, and the wheel, slide the landing spot.
-        this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
-        this.nudgeTargetReach(-intent.lookDelta.y * sy * TARGET_DISTANCE_SPEED);
-      } else if (mode === 'pull') {
-        // Sideways drift is the curve. Dragging down, toward the player, is the pull.
-        this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
-        this.nudgePull(intent.lookDelta.y * sy);
-      } else {
-        this.shotAim.bendRight += intent.lookDelta.x * sx * this.tunables.arcBendSpeed;
-        this.shotAim.bendUp += -intent.lookDelta.y * sy * this.tunables.arcBendSpeed;
-      }
+      this.aimAbsoluteCurve(intent, sx, sy, dt);
       this.clampStoredBend();
       if (this.charge.kind === 'shoot' || this.charge.kind === 'kick') {
         this.refreshShotTarget();
@@ -981,8 +975,66 @@ export class Simulation {
     // The aim itself is immediate. ChaseRig is what lags the picture a little.
     this.easeLook = false;
     this.viewReady = false;
-    this.yaw += intent.lookDelta.x * sx;
-    this.pitch = clampLookPitch(this.pitch - intent.lookDelta.y * sy);
+    const stickX = intent.aimStick?.x ?? 0;
+    const stickY = intent.aimStick?.y ?? 0;
+    this.yaw += (intent.lookDelta.x + stickX * INPUT.gamepadLookSens * dt) * sx;
+    this.pitch = clampLookPitch(this.pitch - (intent.lookDelta.y + stickY * INPUT.gamepadLookSens * dt) * sy);
+  }
+
+  /**
+   * Bend follows the live deflection. Full stick, or a mouse offset of one
+   * full swipe, is a full curve. Letting go eases to zero. There is no leftover.
+   */
+  private aimAbsoluteCurve(intent: InputIntent, sx: number, sy: number, dt: number): void {
+    const mode = this.tunables.powerMode;
+    this.curveOffsetX += intent.lookDelta.x * sx;
+    this.curveOffsetY += -intent.lookDelta.y * sy;
+    const maxOff = FOCUS_FULL_SWIPE;
+    const span = maxOff * 1.25;
+    this.curveOffsetX = THREE.MathUtils.clamp(this.curveOffsetX, -span, span);
+    this.curveOffsetY = THREE.MathUtils.clamp(this.curveOffsetY, -span, span);
+
+    const dead = THREE.MathUtils.clamp(this.tunables.curveDeadzone, 0, 0.45);
+    const stickX = (intent.aimStick?.x ?? 0) * sx;
+    const stickY = -((intent.aimStick?.y ?? 0) * sy);
+    const stick = Math.hypot(intent.aimStick?.x ?? 0, intent.aimStick?.y ?? 0);
+    let nx: number;
+    let ny: number;
+    if (stick > dead) {
+      this.curveOffsetX = 0;
+      this.curveOffsetY = 0;
+      nx = this.pastDeadzone(stickX, dead);
+      ny = this.pastDeadzone(stickY, dead);
+    } else {
+      nx = this.pastDeadzone(this.curveOffsetX / maxOff, dead);
+      ny = this.pastDeadzone(this.curveOffsetY / maxOff, dead);
+    }
+    if (mode === 'target') {
+      ny = 0;
+      this.nudgeTargetReach(-intent.lookDelta.y * sy * TARGET_DISTANCE_SPEED);
+      this.nudgeTargetReach(-(intent.aimStick?.y ?? 0) * sy * INPUT.gamepadLookSens * dt * TARGET_DISTANCE_SPEED);
+    } else if (mode === 'pull') {
+      ny = 0;
+      this.nudgePull(intent.lookDelta.y * sy);
+      this.nudgePull((intent.aimStick?.y ?? 0) * sy * INPUT.gamepadLookSens * dt);
+    }
+    const full = Math.max(1, this.tunables.arcBendSpeed) * FOCUS_FULL_SWIPE;
+    const targetX = nx * full;
+    const targetY = ny * full;
+    const speed = Math.max(0.5, this.tunables.curveReturnSpeed);
+    const follow = 1 - Math.exp(-speed * dt);
+    this.shotAim.bendRight += (targetX - this.shotAim.bendRight) * follow;
+    this.shotAim.bendUp += (targetY - this.shotAim.bendUp) * follow;
+    if (Math.abs(targetX) < 1e-4 && Math.abs(this.shotAim.bendRight) < 0.04) this.shotAim.bendRight = 0;
+    if (Math.abs(targetY) < 1e-4 && Math.abs(this.shotAim.bendUp) < 0.04) this.shotAim.bendUp = 0;
+  }
+
+  /** Map a -1..1 deflection to 0 outside the deadzone, reaching ±1 at full throw. */
+  private pastDeadzone(value: number, dead: number): number {
+    const mag = Math.abs(value);
+    if (mag <= dead) return 0;
+    const span = Math.max(1e-4, 1 - dead);
+    return Math.sign(value) * Math.min(1, (mag - dead) / span);
   }
 
   /** Pull yaw and pitch toward the ball. The view eases, it does not snap. */
@@ -1668,6 +1720,8 @@ export class Simulation {
     this.shotAim.active = false;
     this.shotAim.bendRight = 0;
     this.shotAim.bendUp = 0;
+    this.curveOffsetX = 0;
+    this.curveOffsetY = 0;
     this.shotAim.lockId = null;
     this.shotAimManual = false;
     this.holdLookPending = false;
@@ -1722,13 +1776,13 @@ export class Simulation {
       return `Tap for power ${this.power.taps()}/${max}`;
     }
     if (this.shotAim.lockId !== null) {
-      return 'Teammate locked — mouse bends the arc, release throws';
+      return 'Teammate locked — stick sets the curve, release throws';
     }
     if (this.power.mode === 'tap') return 'Aim locked — release, then tap for power';
     if (this.power.mode === 'hold') return 'Hold to charge — release throws';
     if (this.power.mode === 'target') return 'Mouse up/down sets distance, left/right bends — release throws';
     if (this.power.mode === 'pull') return 'Drag down to pull, sideways bends — release throws';
-    return 'Throwing — power slides the marker, mouse bends the arc';
+    return 'Throwing — stick or mouse sets the curve, let go to go straight';
   }
 
   /**
@@ -1835,6 +1889,8 @@ export class Simulation {
     this.shotAim.active = true;
     this.shotAim.bendRight = 0;
     this.shotAim.bendUp = 0;
+    this.curveOffsetX = 0;
+    this.curveOffsetY = 0;
     this.shotAim.lockId = null;
     this.shotAimManual = false;
     this.power = createPowerStrategy(this.tunables.powerMode);
@@ -1945,7 +2001,7 @@ export class Simulation {
     const curve = this.kickingDelivery() ? Math.max(0, this.tunables.kickCurve) : 1;
     const speed = Math.max(1, this.tunables.arcBendSpeed);
     const full = speed * FOCUS_FULL_SWIPE;
-    const cap = Math.min(1, Math.max(0, this.tunables.arcBendLimit) / Math.max(0.05, SHOT_ARC.bendLimit));
+    const cap = Math.max(0, this.tunables.arcBendLimit) / Math.max(0.05, SHOT_ARC.bendLimit);
     let right = (this.shotAim.bendRight * curve) / full;
     let up = (this.shotAim.bendUp * curve) / full;
     const len = Math.hypot(right, up);
@@ -1966,7 +2022,7 @@ export class Simulation {
   }
 
   private applyCurveAimOffset(origin: THREE.Vector3, target: THREE.Vector3): void {
-    const slider = THREE.MathUtils.clamp(this.tunables.curveAimOffset, 0, 1);
+    const slider = THREE.MathUtils.clamp(this.tunables.curveAimOffset, 0, 2);
     if (slider <= 1e-4 || this.shotAim.lockId !== null) return;
     const chord = this.tmp.predictPos.copy(target).sub(origin);
     const chordLen = chord.length();

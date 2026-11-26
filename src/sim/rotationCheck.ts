@@ -204,7 +204,7 @@ function checkPreviewMatchesFlight(): void {
     if (kick) look.kickHeld = true;
     else look.shootHeld = true;
     look.lookDelta.x = x;
-    sim.applyFrameLook(look);
+    sim.applyFrameLook(look, 1);
     sim.step(1 / 60, look);
   };
 
@@ -856,6 +856,7 @@ function checkArcBend(): void {
   const { sim, hold } = aimingSim();
   sim.tunables.shotCarry = 0;
   sim.tunables.curveAimOffset = 0;
+  sim.tunables.curveDeadzone = 0;
   sim.step(1 / 60, hold);
   if (sim.chargeGhost.length < 4) fail('arc preview missing');
   const start = sim.chargeGhost[0];
@@ -865,15 +866,15 @@ function checkArcBend(): void {
   const pitch = sim.pitch;
   const mid = sim.chargeGhost[Math.floor(sim.chargeGhost.length / 2)]!.clone();
   const look = blankIntent();
-  look.lookDelta.x = 0.4;
-  look.lookDelta.y = -0.3;
-  sim.applyFrameLook(look);
+  look.lookDelta.x = 0.16;
+  look.lookDelta.y = -0.12;
+  sim.applyFrameLook(look, 1);
   if (Math.abs(sim.yaw - yaw) > 1e-6 || Math.abs(sim.pitch - pitch) > 1e-6) {
     fail('mouse still turned the camera while aiming');
   }
   if (sim.shotAim.target.distanceTo(target) > 0.02) fail('mouse moved the aim point');
-  const expectRight = 0.4 * sim.tunables.arcBendSpeed;
-  const expectUp = 0.3 * sim.tunables.arcBendSpeed;
+  const expectRight = 0.16 * sim.tunables.arcBendSpeed;
+  const expectUp = 0.12 * sim.tunables.arcBendSpeed;
   if (Math.abs(sim.shotAim.bendRight - expectRight) > 0.05) {
     fail(`side bend ${sim.shotAim.bendRight.toFixed(2)} != ${expectRight.toFixed(2)}`);
   }
@@ -886,6 +887,56 @@ function checkArcBend(): void {
   }
   const last = sim.chargeGhost[sim.chargeGhost.length - 1];
   if (!last || last.distanceTo(sim.shotAim.target) > 0.05) fail('preview does not end on the marker');
+}
+
+/** Stick deflection is the curve. Holding it does not add more. Letting go returns to straight. */
+function checkAbsoluteCurve(): void {
+  const { sim } = aimingSim();
+  sim.tunables.curveDeadzone = 0;
+  const hold = blankIntent();
+  hold.shootHeld = true;
+  sim.armShotAim(hold);
+  sim.applyFrameLook(hold, 1);
+  if (Math.hypot(sim.shotAim.bendRight, sim.shotAim.bendUp) > 0.01) fail('a fresh hold was not straight');
+  const stick = blankIntent();
+  stick.shootHeld = true;
+  stick.aimStick = { x: -1, y: 0 };
+  sim.applyFrameLook(stick, 1);
+  const full = sim.tunables.arcBendSpeed * 0.22;
+  if (Math.abs(sim.shotAim.bendRight + full) > 0.08) {
+    fail(`full left stick bent ${sim.shotAim.bendRight.toFixed(2)}, expected ${(-full).toFixed(2)}`);
+  }
+  const held = sim.shotAim.bendRight;
+  sim.applyFrameLook(stick, 1);
+  if (Math.abs(sim.shotAim.bendRight - held) > 0.02) fail('holding the stick added curve');
+  const right = lookBasis(sim.yaw, sim.pitch, false).right;
+  const slide = sim.shotAim.target.clone().sub(sim.landingMarker.straightPosition).dot(right);
+  if (slide < 0.15) fail(`left stick did not move the hit to the right (${slide.toFixed(2)})`);
+  const gone = blankIntent();
+  gone.shootHeld = true;
+  gone.aimStick = { x: 0, y: 0 };
+  for (let i = 0; i < 40; i++) sim.applyFrameLook(gone, 1 / 60);
+  if (Math.abs(sim.shotAim.bendRight) > 0.05) fail(`released stick left bend ${sim.shotAim.bendRight.toFixed(2)}`);
+
+  const mouse = aimingSim();
+  mouse.sim.tunables.curveDeadzone = 0;
+  const press = blankIntent();
+  press.shootHeld = true;
+  mouse.sim.armShotAim(press);
+  mouse.sim.applyFrameLook(press, 1);
+  const drag = blankIntent();
+  drag.shootHeld = true;
+  drag.lookDelta.x = 0.1;
+  mouse.sim.applyFrameLook(drag, 1);
+  const bent = mouse.sim.shotAim.bendRight;
+  if (bent < 0.08 * mouse.sim.tunables.arcBendSpeed) fail('mouse offset did not curve');
+  const back = blankIntent();
+  back.shootHeld = true;
+  back.lookDelta.x = -0.1;
+  mouse.sim.applyFrameLook(back, 1);
+  if (Math.abs(mouse.sim.shotAim.bendRight) > 0.05) {
+    fail(`recentering the mouse left bend ${mouse.sim.shotAim.bendRight.toFixed(2)}`);
+  }
 }
 
 function checkArcMarker(): void {
@@ -2152,6 +2203,7 @@ function checkHoldStartsStraight(): void {
     sim.tunables.powerMode = 'hold';
     sim.tunables.shotPowerRate = 0;
     sim.tunables.shotCarry = 0;
+    sim.tunables.curveDeadzone = 0;
     sim.tunables.kickWindup = 0.05;
     for (const p of sim.players) {
       if (p.id !== sim.humanId) p.active = false;
@@ -2196,7 +2248,7 @@ function checkHoldStartsStraight(): void {
     drag.lookDelta.x = -0.22;
     if (kick) drag.kickHeld = true;
     else drag.shootHeld = true;
-    sim.applyFrameLook(drag);
+    sim.applyFrameLook(drag, 1);
     const expect = -0.22 * sim.tunables.arcBendSpeed;
     if (Math.abs(sim.shotAim.bendRight - expect) > 0.05) {
       fail(`${label} curve ${sim.shotAim.bendRight.toFixed(2)} != ${expect.toFixed(2)}`);
@@ -2375,18 +2427,19 @@ function checkCurveCircle(): void {
     else drag.shootHeld = true;
     drag.lookDelta.x = x;
     drag.lookDelta.y = y;
-    sim.applyFrameLook(drag);
+    sim.applyFrameLook(drag, 1);
     sim.updateAimPresentation(drag, 1 / 60);
     const radius = sim.landingMarker.focusRadius;
+    const reach = radius * sim.tunables.curveAimOffset;
     if (radius < 0.8) fail(`${label} big ring collapsed (${radius.toFixed(3)})`);
     const shift = sim.landingMarker.position.clone().sub(sim.landingMarker.straightPosition);
-    if (Math.abs(shift.length() - radius) > radius * 0.12) {
-      fail(`${label} landed ${shift.length().toFixed(3)} from center, ring is ${radius.toFixed(3)}`);
+    if (Math.abs(shift.length() - reach) > reach * 0.12) {
+      fail(`${label} landed ${shift.length().toFixed(3)} from center, reach is ${reach.toFixed(3)}`);
     }
     const basis = lookBasis(sim.yaw, sim.pitch, false);
     const along = shift.dot(axis === 'right' ? basis.right : basis.up);
-    if (along * sign < radius * 0.85) {
-      fail(`${label} hit spot is ${along.toFixed(3)} along ${axis}, ring is ${radius.toFixed(3)}`);
+    if (along * sign < reach * 0.85) {
+      fail(`${label} hit spot is ${along.toFixed(3)} along ${axis}, reach is ${reach.toFixed(3)}`);
     }
     const ghost = sim.chargeGhost;
     if (ghost.length < 4) fail(`${label} hid the preview`);
@@ -2406,12 +2459,13 @@ function checkCurveCircle(): void {
   drag.shootHeld = true;
   drag.lookDelta.x = -0.7;
   drag.lookDelta.y = -0.7;
-  diagonal.applyFrameLook(drag);
+  diagonal.applyFrameLook(drag, 1);
   diagonal.updateAimPresentation(drag, 1 / 60);
   const radius = diagonal.landingMarker.focusRadius;
+  const reach = radius * diagonal.tunables.curveAimOffset;
   const shift = diagonal.landingMarker.position.clone().sub(diagonal.landingMarker.straightPosition);
-  if (Math.abs(shift.length() - radius) > radius * 0.12) {
-    fail(`diagonal left the ring (${shift.length().toFixed(3)} vs ${radius.toFixed(3)})`);
+  if (Math.abs(shift.length() - reach) > reach * 0.12) {
+    fail(`diagonal left the reach (${shift.length().toFixed(3)} vs ${reach.toFixed(3)})`);
   }
   const basis = lookBasis(diagonal.yaw, diagonal.pitch, false);
   if (shift.dot(basis.right) < radius * 0.45) fail('diagonal did not shift right');
@@ -2498,7 +2552,7 @@ function checkStraightContinuity(): void {
 function checkHoldLookOrder(): void {
   const { sim, hold } = aimingSim();
   const yaw = sim.yaw;
-  hold.lookDelta.x = 0.25;
+  hold.lookDelta.x = 0.18;
   hold.lookDelta.y = -0.1;
   sim.armShotAim(hold);
   sim.applyFrameLook(hold);
@@ -2507,8 +2561,9 @@ function checkHoldLookOrder(): void {
   if (Math.abs(sim.shotAim.bendRight) > 0.01 || Math.abs(sim.shotAim.bendUp) > 0.01) {
     fail('the press sample bent the arc');
   }
-  sim.applyFrameLook(hold);
-  const expect = 0.25 * sim.tunables.arcBendSpeed;
+  sim.tunables.curveDeadzone = 0;
+  sim.applyFrameLook(hold, 1);
+  const expect = 0.18 * sim.tunables.arcBendSpeed;
   if (Math.abs(sim.shotAim.bendRight - expect) > 0.05) {
     fail(`later drag bend ${sim.shotAim.bendRight.toFixed(2)} != ${expect.toFixed(2)}`);
   }
@@ -2669,7 +2724,8 @@ function checkTeammateLock(): void {
   if (sim.shotAim.target.distanceTo(mate.position) > 1.2) fail('marker did not snap to the teammate');
   const look = blankIntent();
   look.lookDelta.x = 0.2;
-  sim.applyFrameLook(look);
+  sim.tunables.curveDeadzone = 0;
+  sim.applyFrameLook(look, 1);
   if (sim.shotAim.bendRight < 0.15 * sim.tunables.arcBendSpeed) fail('lock ate the mouse bend');
   sim.step(1 / 60, blankIntent());
   if (sim.ball.arc?.receiverId !== mate.id) fail('release did not throw to the teammate');
@@ -3531,7 +3587,8 @@ function checkThrowAim(): void {
   sim.applyFrameLook(shot);
   if (Math.abs(sim.yaw - lockedYaw) > 1e-6) fail('throw hold did not freeze the camera');
   if (Math.abs(sim.shotAim.bendRight) > 0.01) fail('throw hold began with a curve');
-  sim.applyFrameLook(shot);
+  sim.tunables.curveDeadzone = 0;
+  sim.applyFrameLook(shot, 1);
   if (sim.shotAim.bendRight < 0.15 * sim.tunables.arcBendSpeed) fail('throw hold did not bend');
   sim.step(1 / 60, shot);
   sim.updateAimPresentation(shot, 1 / 60);
@@ -5034,6 +5091,7 @@ export function runRotationChecks(): void {
   checkStrafe();
   checkArcHand();
   checkArcBend();
+  checkAbsoluteCurve();
   checkArcMarker();
   checkArcFlight();
   checkArcClamp();

@@ -301,11 +301,68 @@
         opacity: 0.75;
       }
       #dev-panel h3 {
-        margin: 0 0 6px;
+        margin: 14px 0 6px;
         font-size: 0.72rem;
         font-weight: 700;
         letter-spacing: 0.06em;
         text-transform: uppercase;
+      }
+      #dev-panel .settings-chrome {
+        position: sticky;
+        top: -12px;
+        z-index: 2;
+        margin: 0 -14px 8px;
+        padding: 8px 14px 6px;
+        background: rgba(6, 16, 32, 0.96);
+        border-bottom: 1px solid rgba(140, 180, 255, 0.18);
+      }
+      #dev-panel .settings-search {
+        width: 100%;
+        margin: 0 0 6px;
+        box-sizing: border-box;
+      }
+      #dev-panel .settings-toc {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+      }
+      #dev-panel .settings-toc a {
+        color: #9ec4ff;
+        text-decoration: none;
+        font-size: 0.68rem;
+        letter-spacing: 0.03em;
+      }
+      #dev-panel .settings-toc a.is-active {
+        color: #fff;
+        text-decoration: underline;
+      }
+      #dev-panel .settings-pinned {
+        margin: 0 0 8px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid rgba(140, 180, 255, 0.18);
+      }
+      #dev-panel .settings-empty {
+        margin: 0;
+        opacity: 0.7;
+      }
+      #dev-panel .setting-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      #dev-panel .setting-row > label,
+      #dev-panel .setting-row > .row {
+        flex: 1;
+        min-width: 0;
+      }
+      #dev-panel .settings-pin {
+        flex: 0 0 auto;
+        padding: 1px 5px;
+        font-size: 0.62rem;
+        letter-spacing: 0.02em;
+      }
+      #dev-panel .settings-pin[aria-pressed='true'] {
+        color: #ffe066;
       }
       #dev-panel label {
         display: flex;
