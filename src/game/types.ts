@@ -455,9 +455,9 @@ export interface InputIntent {
   burstPower: boolean;
   /** Right-click press. Cancels a held throw, including the tap window. */
   aimCancel: boolean;
-  /** Off-ball tackle press. Space on the keyboard, a short RB tap on a pad. */
+  /** Off-ball tackle press. Q on the keyboard, a short RB tap on a pad. */
   burst: boolean;
-  /** Tackle button held down. Space, or RB. */
+  /** Tackle button held down. Q, or RB. */
   tackleHeld: boolean;
   passHeld: boolean;
   zoomOut: boolean;
