@@ -18,7 +18,7 @@ import { matchRoster } from '../ui/matchPresets';
 import { Simulation } from './Simulation';
 import { goalCornerWorld, goalFrameCurve, goalMouthVertex, goalMouthZ, goalPlaneZ, inGoalPocket, pointInGoalMouth, resolveGoalRim, segmentScores } from './goal';
 import { kickFootPoint } from './kick';
-import { authoritativeUp, lookBasis, rotateToward, stabilizeUp, transportUp } from './math';
+import { lookBasis, rotateToward, stabilizeUp, transportUp } from './math';
 import { arcControl, clampAimMarker, quadraticPoint, shapedControl } from './shotArc';
 import { constrainPlayerToSphere, resolveSphereWall } from './wallPhysics';
 import {
@@ -472,6 +472,141 @@ function checkFlightReach(): void {
   const lightEnd = chord(light.sim);
   if (heavyEnd > lightEnd * 0.6) {
     fail(`double drag still flew ${heavyEnd.toFixed(1)} against ${lightEnd.toFixed(1)}`);
+  }
+}
+
+function pictureAxes(pose: { position: THREE.Vector3; target: THREE.Vector3; up: THREE.Vector3 }): {
+  forward: THREE.Vector3;
+  right: THREE.Vector3;
+  up: THREE.Vector3;
+} {
+  const forward = pose.target.clone().sub(pose.position);
+  if (forward.lengthSq() < 1e-8) forward.set(0, 0, 1);
+  else forward.normalize();
+  const up = pose.up.clone().addScaledVector(forward, -pose.up.dot(forward));
+  if (up.lengthSq() < 1e-8) up.set(0, 1, 0);
+  else up.normalize();
+  const right = new THREE.Vector3().crossVectors(forward, up);
+  if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
+  else right.normalize();
+  return { forward, right, up };
+}
+
+/**
+ * Mouse-right, mouse-up, and WASD have to match the picture at every pitch,
+ * including straight down and against the shell.
+ */
+function checkScreenSteering(): void {
+  const shell = ARENA_RADIUS - PLAYER.radius - 0.2;
+  const spots = [
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, 0, shell),
+    new THREE.Vector3(0, shell, 0),
+    new THREE.Vector3(shell, 0, 0),
+    new THREE.Vector3(0, -shell, 0),
+    new THREE.Vector3(shell * 0.62, -shell * 0.62, shell * 0.35),
+  ];
+  const pitches = [-90, -75, -40, 0, 40, 75, 90];
+  const yaws = [0, 50, 130, 210, -70];
+  const sim = new Simulation(defaultTunables());
+  sim.kickoffLock = 0;
+  sim.tunables.camRecenter = false;
+  sim.setSoloOpponent(false);
+  const human = sim.getHuman();
+  human.velocity.set(0, 0, 0);
+  human.facing.set(0, 0, 1);
+  human.up.set(0, 1, 0);
+  const aim = (yawDeg: number, pitchDeg: number): void => {
+    sim.yaw = (yawDeg * Math.PI) / 180;
+    sim.pitch = (pitchDeg * Math.PI) / 180;
+    sim.noteLookEdit();
+    human.velocity.set(0, 0, 0);
+  };
+  for (const spot of spots) {
+    for (const yawDeg of yaws) {
+      for (const pitchDeg of pitches) {
+        const label = `at (${spot.x.toFixed(0)},${spot.y.toFixed(0)},${spot.z.toFixed(0)}) yaw ${yawDeg} pitch ${pitchDeg}`;
+        human.position.copy(spot);
+        if (human.position.length() > shell) human.position.setLength(shell);
+        aim(yawDeg, pitchDeg);
+        const pose = sim.getCameraPose(blankIntent());
+        const axes = pictureAxes(pose);
+        const chase = new ChaseRig();
+        chase.snap(pose.position, pose.target, pose.up);
+        const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(chase.quaternion);
+        const camRight = new THREE.Vector3().crossVectors(camForward, chase.up);
+        if (camRight.lengthSq() < 1e-8) fail(`picture had no right (${label})`);
+        camRight.normalize();
+        if (camForward.dot(axes.forward) < 0.98) {
+          fail(`picture look left the aim (${label}, ${camForward.dot(axes.forward).toFixed(3)})`);
+        }
+        if (camRight.dot(axes.right) < 0.98) {
+          fail(`picture right left the aim (${label}, ${camRight.dot(axes.right).toFixed(3)})`);
+        }
+        if (angle(chase.up, axes.up) > (12 * Math.PI) / 180) {
+          fail(`picture up rolled off the aim (${label})`);
+        }
+
+        const beforeUp = chase.up.clone();
+        const lookRight = blankIntent();
+        lookRight.lookDelta.x = 0.12;
+        sim.applyFrameLook(lookRight);
+        const turned = pictureAxes(sim.getCameraPose(blankIntent()));
+        const dYaw = turned.forward.clone().sub(axes.forward);
+        if (dYaw.dot(axes.right) < 0.04) {
+          fail(`mouse right went ${dYaw.dot(axes.right).toFixed(3)} on screen-right (${label})`);
+        }
+        if (Math.abs(dYaw.dot(axes.up)) > dYaw.dot(axes.right) * 1.4) {
+          fail(`mouse right pitched more than it yawed (${label})`);
+        }
+        const afterRight = new ChaseRig();
+        const turnedPose = sim.getCameraPose(blankIntent());
+        afterRight.snap(turnedPose.position, turnedPose.target, turnedPose.up);
+        if (angle(beforeUp, afterRight.up) > (25 * Math.PI) / 180) {
+          fail(`mouse right rolled the picture ${deg(angle(beforeUp, afterRight.up)).toFixed(1)}° (${label})`);
+        }
+
+        aim(yawDeg, pitchDeg);
+        const lookUp = blankIntent();
+        lookUp.lookDelta.y = -0.12;
+        sim.applyFrameLook(lookUp);
+        const pitched = pictureAxes(sim.getCameraPose(blankIntent()));
+        const dPitch = pitched.forward.clone().sub(axes.forward);
+        if (dPitch.dot(axes.up) < 0.04) {
+          fail(`mouse up went ${dPitch.dot(axes.up).toFixed(3)} on screen-up (${label})`);
+        }
+
+        aim(yawDeg, pitchDeg);
+        const strafe = blankIntent();
+        strafe.move.set(1, 0, 0);
+        sim.step(1 / 60, strafe);
+        const vRight = human.velocity.dot(axes.right);
+        const vUp = human.velocity.dot(axes.up);
+        const vFwd = human.velocity.dot(axes.forward);
+        if (vRight < 0.35 || vRight < Math.abs(vUp) || vRight < Math.abs(vFwd)) {
+          fail(`D was not screen-right (${label}, ${vRight.toFixed(2)} vs up ${vUp.toFixed(2)} fwd ${vFwd.toFixed(2)})`);
+        }
+
+        aim(yawDeg, pitchDeg);
+        const swim = blankIntent();
+        swim.move.set(0, 0, 1);
+        sim.step(1 / 60, swim);
+        const wFwd = human.velocity.dot(axes.forward);
+        const wRight = human.velocity.dot(axes.right);
+        const wUp = human.velocity.dot(axes.up);
+        if (wFwd < 0.35 || wFwd < Math.abs(wRight) || wFwd < Math.abs(wUp)) {
+          fail(`W was not screen-forward (${label}, ${wFwd.toFixed(2)} vs right ${wRight.toFixed(2)} up ${wUp.toFixed(2)})`);
+        }
+
+        aim(yawDeg, pitchDeg);
+        const rise = blankIntent();
+        rise.up = 1;
+        sim.step(1 / 60, rise);
+        if (human.velocity.dot(new THREE.Vector3(0, 1, 0)) <= 0.15) {
+          fail(`E did not rise (${label})`);
+        }
+      }
+    }
   }
 }
 
@@ -4686,11 +4821,10 @@ function checkOrientationSoak(): void {
   let maxFaceStep = 0;
   let maxLookStep = 0;
   let maxRollStep = 0;
-  const poseUp = authoritativeUp(false);
   const watch = (label: string) => {
     const stepF = angle(prevFace, human.facing);
     const pose = sim.getCameraPose(blankIntent());
-    chase.step(pose.position, pose.target, poseUp, sim.tunables.camLag, dt);
+    chase.step(pose.position, pose.target, pose.up, sim.tunables.camLag, dt);
     const look = pose.target.clone().sub(chase.position);
     if (look.lengthSq() < 1e-8) fail(`camera lost its look during ${label}`);
     look.normalize();
@@ -4712,7 +4846,7 @@ function checkOrientationSoak(): void {
   };
   const reseat = () => {
     const pose = sim.getCameraPose(blankIntent());
-    chase.snap(pose.position, pose.target, poseUp);
+    chase.snap(pose.position, pose.target, pose.up);
     prevFace.copy(human.facing);
     const look = pose.target.clone().sub(chase.position);
     if (look.lengthSq() > 1e-8) look.normalize();
@@ -4871,6 +5005,7 @@ export function runRotationChecks(): void {
   checkCatchBeacon();
   checkGoalBoundArc();
   checkPreviewMatchesFlight();
+  checkScreenSteering();
   checkVerticalLook();
   checkOrientationSoak();
   checkCamera(false, false);
