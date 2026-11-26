@@ -109,6 +109,10 @@ export const PLAYER = {
   /** Added to mitt length + width. The ball has left once it is past this. */
   selfCatchClearance: 1.15,
   tackleCooldown: 0.55,
+  /** How long a grab reach stays open after the click. */
+  grabWindow: 0.25,
+  /** Second click inside this window upgrades the grab into a dive. */
+  grabDouble: 0.25,
   /** Strip range. Kept off the catch radius so a bigger mitt does not lengthen tackles. */
   tackleRange: 1.85,
 };

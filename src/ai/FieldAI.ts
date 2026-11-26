@@ -133,15 +133,15 @@ export class FieldAI {
         const dist = self.position.distanceTo(carrier.position);
         const facing = carrier.position.clone().sub(self.position);
         const aligned = facing.lengthSq() > 0.04 && self.facing.dot(facing.normalize()) > 0.35;
-        if (dist < 2.15 && aligned && self.burstCooldown <= 0) {
-          intent.burstPower = skill > 0.62 && dist < 1.45;
-          intent.burst = !intent.burstPower;
-        }
+        const reach = Math.max(1.2, tunables.grabReach);
+        if (dist < reach && aligned && self.burstCooldown <= 0) intent.burst = true;
       }
     }
     if (!self.hasBall && ball.possession === 'free') {
-      const dist = self.position.distanceTo(ball.position);
-      if (dist < tunables.catchReach + tunables.claimRadius + 0.4) intent.claim = true;
+      const toBall = ball.position.clone().sub(self.position);
+      const dist = toBall.length();
+      const reach = Math.max(0.4, tunables.grabReach);
+      if (dist > 0.05 && dist < reach && self.facing.dot(toBall) / dist > 0.45) intent.claim = true;
     }
 
     this.rememberMark(self, mem);

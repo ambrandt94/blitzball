@@ -347,7 +347,7 @@ export class Game {
         }
       }
     } else {
-      this.possessionEl.textContent = 'Ball free — swim into it or hold RMB to reach';
+      this.possessionEl.textContent = 'Ball free — LMB grab, double-click dive';
       this.possessionEl.classList.add('free');
     }
 

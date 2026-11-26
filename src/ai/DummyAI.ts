@@ -56,7 +56,9 @@ export class DummyAI {
     if (dist > 0.01) toBall.multiplyScalar(1 / dist);
     intent.move.copy(toBall).multiplyScalar(DRILL_CHASE);
     intent.up = toBall.y * DRILL_CHASE;
-    if (dist < tunables.catchReach + tunables.claimRadius) intent.claim = true;
+    if (dist > 0.05 && dist < Math.max(0.4, tunables.grabReach) && self.facing.dot(toBall) > 0.45) {
+      intent.claim = true;
+    }
     return intent;
   }
 

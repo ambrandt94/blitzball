@@ -102,6 +102,20 @@ export interface Tunables {
   /** Chance a power tackle knocks the ball loose, from a short charge to full. */
   tacklePopMin: number;
   tacklePopMax: number;
+  /** Chance a dive staggers harder, pushes, and kills momentum. */
+  tackleStaggerChance: number;
+  /** Share of the target's velocity removed on that stagger. */
+  tackleMomentumKill: number;
+  /** Chance a dive knocks a held ball loose. */
+  tackleKnockoutChance: number;
+  /** After a knock-out, chance the diver comes up with the ball. */
+  tackleAutograbChance: number;
+  /** How far in front a grab or dive can reach, in metres. */
+  grabReach: number;
+  /** Peak speed of a dive lunge. */
+  diveSpeed: number;
+  /** Seconds before another dive. */
+  diveCooldown: number;
   /** Seconds of self-stagger after a full power tackle. */
   tackleSelfStagger: number;
   /** Knockback of a full power tackle, along the check. */
@@ -354,6 +368,8 @@ export interface PlayerState {
   burstStrong: boolean;
   /** Seconds before another check can start. */
   burstCooldown: number;
+  /** Seconds left in a deliberate grab reach. */
+  grabTime: number;
   /** 1 when a check just started, decays for the extra bubble puff. */
   burstPuff: number;
   /** World direction locked at the moment of the check. */
@@ -459,9 +475,9 @@ export interface InputIntent {
   burstPower: boolean;
   /** Right-click press. Cancels a held throw, including the tap window. */
   aimCancel: boolean;
-  /** Off-ball tackle press. Q on the keyboard, a short RB tap on a pad. */
+  /** Dive. Q, a second grab click, or Y / RB on a pad. */
   burst: boolean;
-  /** Tackle button held down. Q, or RB. */
+  /** Old hold-to-charge tackle. The dive does not use it. */
   tackleHeld: boolean;
   passHeld: boolean;
   zoomOut: boolean;
