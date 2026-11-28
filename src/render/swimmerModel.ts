@@ -33,8 +33,14 @@ const HOLD_R = new THREE.Vector3(-0.16, 0.2, 0.5);
  * Thin axis of the hand mesh in bone-local space (the palm normal). Measured
  * from Hand_R / Hand_L at rest. Positive points out of the palm face.
  */
-const PALM_AXIS_L = new THREE.Vector3(0.706, 0.137, 0.695).normalize();
-const PALM_AXIS_R = new THREE.Vector3(-0.706, 0.134, 0.696).normalize();
+const PALM_AXIS_L = new THREE.Vector3(0.592, -0.377, 0.713).normalize();
+const PALM_AXIS_R = new THREE.Vector3(-0.864, -0.261, 0.431).normalize();
+/**
+ * Visual palm on the v2 hand, in the hand bone's local space. The hand_r
+ * socket stayed at the bone, and the mesh center moved off it.
+ */
+const PALM_CENTER_L = new THREE.Vector3(-0.019, -0.018, 0.117);
+const PALM_CENTER_R = new THREE.Vector3(-0.113, 0.057, 0.109);
 /**
  * Preferred palm direction in the swimmer group: out to the throw side.
  * The roll is around the forearm, so a sideways reach leaves the ball on top of the hand.
@@ -534,7 +540,9 @@ export function attachForgeSwimmer(group: THREE.Group, body: ForgeBody, playerId
     const mixer = body.mixer;
     const swim = mixer.clipAction(swimClip);
     const tread = mixer.clipAction(treadClip);
-    const idleClip = body.clips.Idle ?? null;
+    // The default Idle is a full-body standing clip. Under Swim and Tread it
+    // pulls the swimmer upright, so those two clips play on their own.
+    const idleClip = null;
     const idle = idleClip ? mixer.clipAction(idleClip) : null;
     swim.setLoop(THREE.LoopRepeat, Infinity);
     tread.setLoop(THREE.LoopRepeat, Infinity);
@@ -1117,26 +1125,14 @@ export function readCarrierPalm(rig: SwimmerRig, player: PlayerState, out: THREE
   const right = player.throwArm !== 'left';
   const hand = right ? rig.handR : rig.handL;
   const axis = right ? PALM_AXIS_R : PALM_AXIS_L;
-  const socket = right ? rig.palmSocket : null;
-  if (socket) {
-    socket.updateWorldMatrix(true, false);
-    socket.getWorldPosition(_palmOrigin);
-    hand.updateWorldMatrix(true, false);
-    hand.getWorldPosition(_palmWant);
-    _palmNormal.copy(_palmOrigin).sub(_palmWant);
-    if (_palmNormal.lengthSq() < 1e-8) {
-      hand.getWorldQuaternion(_parentQ);
-      _palmNormal.copy(axis).applyQuaternion(_parentQ);
-    }
-    if (_palmNormal.lengthSq() > 1e-8) _palmNormal.normalize();
-    return out.copy(_palmOrigin).addScaledVector(_palmNormal, BALL.radius * 0.35);
-  }
+  const center = right ? PALM_CENTER_R : PALM_CENTER_L;
   hand.updateWorldMatrix(true, false);
-  hand.getWorldPosition(_palmOrigin);
+  _palmOrigin.copy(center);
+  hand.localToWorld(_palmOrigin);
   hand.getWorldQuaternion(_parentQ);
   _palmNormal.copy(axis).applyQuaternion(_parentQ);
   if (_palmNormal.lengthSq() > 1e-8) _palmNormal.normalize();
-  return out.copy(_palmOrigin).addScaledVector(_palmNormal, BALL.radius);
+  return out.copy(_palmOrigin).addScaledVector(_palmNormal, BALL.radius * 0.35);
 }
 
 const _palmOrigin = new THREE.Vector3();

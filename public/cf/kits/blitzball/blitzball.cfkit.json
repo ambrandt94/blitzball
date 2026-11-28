@@ -1,7 +1,7 @@
 {
  "format": "cf-kit/1",
  "namespace": "blitzball",
- "version": "1.0.0",
+ "version": "1.1.0",
  "label": "Blitzball swimwear",
  "license": "CF-authored (Character Forge for Blitzball): meshes, textures, tint masks and the Swim / Tread clips. No third-party or licensed (KI) content.",
  "generator": "Character Forge runtime_v2/kitwork/build_kit.py from Character Forge v2 (blitzball_swimmer/build_wardrobe.py)",
@@ -147,7 +147,17 @@
     "hugMm": 6,
     "minGapMm": 2
    },
-   "bytes": 65692
+   "bytes": 65692,
+   "tags": {
+    "sets": [
+     "blitzball/swimwear"
+    ],
+    "slot": "smallclothes",
+    "style": [
+     "swim",
+     "team-tint"
+    ]
+   }
   },
   "onepiece": {
    "slot": "torso_inner",
@@ -196,7 +206,17 @@
     "hugMm": 8,
     "minGapMm": 2
    },
-   "bytes": 90804
+   "bytes": 90804,
+   "tags": {
+    "sets": [
+     "blitzball/swimwear"
+    ],
+    "slot": "torso_inner",
+    "style": [
+     "swim",
+     "team-tint"
+    ]
+   }
   },
   "boardshorts": {
    "slot": "legs",
@@ -249,7 +269,17 @@
     "hugMm": 8,
     "minGapMm": 2
    },
-   "bytes": 29116
+   "bytes": 29116,
+   "tags": {
+    "sets": [
+     "blitzball/swimwear"
+    ],
+    "slot": "legs",
+    "style": [
+     "swim",
+     "team-tint"
+    ]
+   }
   },
   "boardshorts_asym": {
    "slot": "legs",
@@ -306,7 +336,17 @@
     "hugMm": 8,
     "minGapMm": 2
    },
-   "bytes": 28092
+   "bytes": 28092,
+   "tags": {
+    "sets": [
+     "blitzball/swimwear"
+    ],
+    "slot": "legs",
+    "style": [
+     "swim",
+     "team-tint"
+    ]
+   }
   }
  },
  "clips": {
@@ -342,5 +382,14 @@
   "equip": "CF.equip(recipe, 'legs', 'blitzball/boardshorts') | ('torso_inner', 'blitzball/onepiece') | ('smallclothes', 'blitzball/trunks'); asym look = trunks + ('legs', 'blitzball/boardshorts_asym')",
   "tint": "CF.dye(recipe, 'blitzball/boardshorts', 'team', '#rrggbb')  // painted change, no rebuild",
   "clips": "body.play('Swim') | body.play('Tread')  // CF-authored, every race"
- }
+ },
+ "sets": {
+  "blitzball/swimwear": {
+   "label": "Swimwear",
+   "note": "Blitzball kit (mesh garments, team tint)"
+  }
+ },
+ "changelog": [
+  "1.1.0 (2026-11-25): set tags (garments[].tags {sets, slot, style}, top-level sets) for Character Forge wardrobe tabs and runtime 2.3.0 access lists; no geometry change"
+ ]
 }

@@ -72,12 +72,12 @@ export function forgeRuntime(): CFRuntime | null {
   return runtime;
 }
 
-/** Load the vendored 2.2.0 runtime and the Blitzball kit. Assets resolve from the manifest URL. */
+/** Load the vendored 2.6.0 runtime and the Blitzball kit. Assets resolve from the manifest URL. */
 export function initForge(): Promise<CFRuntime> {
   if (runtime) return Promise.resolve(runtime);
   if (starting) return starting;
   starting = (async () => {
-    const base = new URL(`${import.meta.env.BASE_URL}cf/2.2.0/`, window.location.href);
+    const base = new URL(`${import.meta.env.BASE_URL}cf/2.6.0/`, window.location.href);
     const kit = new URL(`${import.meta.env.BASE_URL}cf/kits/blitzball/blitzball.cfkit.json`, window.location.href);
     const mod = (await import(/* @vite-ignore */ new URL('cf-runtime.mjs', base).href)) as { default: CFRuntime };
     const cf = mod.default;

@@ -1,6 +1,6 @@
 import type * as THREE from 'three';
 
-/** The slice of Character Forge runtime 2.2.0 this game calls. */
+/** The slice of Character Forge runtime 2.6.0 this game calls. */
 export interface Recipe {
   race: string;
   outfit: Record<string, { id: string; variant?: string }>;
