@@ -375,7 +375,7 @@ export class SceneView {
   }
 
   /**
-   * Character Forge runtime 2.2.0. Bodies are built at load, before play, because
+   * Character Forge runtime 2.6.0. Bodies are built at load, before play, because
    * each garment fit blocks the frame for a stretch.
    */
   private async tryLoadSwimmerModel(): Promise<void> {

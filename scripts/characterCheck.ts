@@ -1,10 +1,10 @@
 /**
- * Character Forge runtime 2.2.0 wardrobe. Run with:
+ * Character Forge runtime 2.6.0 wardrobe. Run with:
  *   npx vite-node scripts/characterCheck.ts
  */
 import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
-import CF from '../public/cf/2.2.0/cf-runtime.mjs';
+import CF from '../public/cf/2.6.0/cf-runtime.mjs';
 import { outfitFromSaved, piecesForOutfit, recipeForOutfit } from '../src/characters/forge';
 import { parseCharacterSettings } from '../src/ui/characterSettings';
 
@@ -36,7 +36,7 @@ const runtime = CF as {
   dye(r: object, id: string, region: string, value: string): { recipe: { outfit: Record<string, { id: string }>; dye: Record<string, Record<string, string>> } };
 };
 
-await runtime.init({ THREE, baseUrl: new URL('../public/cf/2.2.0/', import.meta.url).href });
+await runtime.init({ THREE, baseUrl: new URL('../public/cf/2.6.0/', import.meta.url).href });
 const loaded = await runtime.loadKit(manifest, {
   baseUrl: new URL('../public/cf/kits/blitzball/', import.meta.url).href,
 });
